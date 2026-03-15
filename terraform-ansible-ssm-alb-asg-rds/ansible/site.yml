@@ -1,0 +1,5 @@
+- name: Configure app instances via SSM
+  hosts: all
+  gather_facts: true
+  roles:
+    - nginx

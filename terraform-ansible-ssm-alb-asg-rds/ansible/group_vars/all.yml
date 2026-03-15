@@ -1,0 +1,4 @@
+ansible_connection: amazon.aws.aws_ssm
+ansible_aws_ssm_region: ap-northeast-1
+ansible_aws_ssm_bucket_name: handson-ssm-ansible-20260103-31839
+ansible_python_interpreter: /usr/bin/python3.9

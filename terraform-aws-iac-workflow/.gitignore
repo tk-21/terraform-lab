@@ -1,0 +1,15 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+
+# Terraform lock (OKなら残す / チームなら残すのが普通)
+.terraform.lock.hcl
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/

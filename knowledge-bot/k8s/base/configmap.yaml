@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledgebot-config
+  namespace: knowledgebot
+data:
+  AWS_REGION: REPLACE_AWS_REGION
+  RAG_MODE: REPLACE_RAG_MODE
+  BEDROCK_MODEL_ID: REPLACE_BEDROCK_MODEL_ID
+  KNOWLEDGE_BASE_ID: REPLACE_KNOWLEDGE_BASE_ID

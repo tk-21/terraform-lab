@@ -1,0 +1,44 @@
+name: knowledge-ingest
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ap-northeast-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Sync docs to S3
+        working-directory: infra
+        run: |
+          terraform init -input=false
+          BUCKET=$(terraform output -raw knowledge_bucket)
+          aws s3 sync ../docs "s3://$BUCKET/docs/" --delete
+
+      - name: Start ingestion job
+        run: |
+          bash scripts/kb_ingest.sh

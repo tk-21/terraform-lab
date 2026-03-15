@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: knowledgebot
+  namespace: knowledgebot
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # OIDC認証（Cognito/社内IdP）
+    # alb.ingress.kubernetes.io/auth-type: oidc
+    # alb.ingress.kubernetes.io/auth-scope: "openid"
+    # alb.ingress.kubernetes.io/auth-session-timeout: "3600"
+    # alb.ingress.kubernetes.io/auth-on-unauthenticated-request: authenticate
+    # alb.ingress.kubernetes.io/auth-idp-oidc: >
+    #   {"issuer":"REPLACE_ISSUER",
+    #    "authorizationEndpoint":"REPLACE_AUTHZ",
+    #    "tokenEndpoint":"REPLACE_TOKEN",
+    #    "userInfoEndpoint":"REPLACE_USERINFO",
+    #    "secretName":"oidc-client-secret"}
+
+    # ALB Access Logs（deploy scriptでbucket埋め）
+    # alb.ingress.kubernetes.io/load-balancer-attributes: >
+    #   access_logs.s3.enabled=true,access_logs.s3.bucket=YOUR_BUCKET,access_logs.s3.prefix=knowledgebot
+
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: knowledgebot
+                port:
+                  number: 80

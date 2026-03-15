@@ -1,0 +1,58 @@
+---
+- name: Run migration task on ECS (one-shot)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - "../group_vars/dev.yml"
+
+  tasks:
+    - name: Read terraform outputs (json)
+      command: terraform -chdir={{ tf_dir }} output -json
+      register: tf_out
+
+    - name: Set facts from terraform outputs
+      set_fact:
+        aws_region: "{{ (tf_out.stdout | from_json).aws_region.value }}"
+        ecs_cluster_name: "{{ (tf_out.stdout | from_json).ecs_cluster_name.value }}"
+        migrate_td_arn: "{{ (tf_out.stdout | from_json).ecs_migrate_task_definition_arn.value }}"
+
+    - name: Run migrate task (command override)
+      shell: |
+        set -e
+        aws ecs run-task \
+          --cluster "{{ ecs_cluster_name }}" \
+          --task-definition "{{ migrate_td_arn }}" \
+          --launch-type FARGATE \
+          --network-configuration "$(aws ecs describe-task-definition --task-definition "{{ migrate_td_arn }}" --region "{{ aws_region }}" | jq -r '"'"'.taskDefinition.networkMode'"'"')" \
+          --region "{{ aws_region }}" \
+          --overrides '{
+            "containerOverrides": [{
+              "name": "migrate",
+              "command": ["sh","-lc","{{ migrate_command }}"]
+            }]
+          }' \
+          | jq -r '.tasks[0].taskArn'
+      register: task_arn
+
+    - name: Wait task stopped
+      shell: |
+        set -e
+        aws ecs wait tasks-stopped \
+          --cluster "{{ ecs_cluster_name }}" \
+          --tasks "{{ task_arn.stdout }}" \
+          --region "{{ aws_region }}"
+
+    - name: Show task result (exit code)
+      shell: |
+        set -e
+        aws ecs describe-tasks \
+          --cluster "{{ ecs_cluster_name }}" \
+          --tasks "{{ task_arn.stdout }}" \
+          --region "{{ aws_region }}" \
+        | jq -r '.tasks[0].containers[0] | "lastStatus=\(.lastStatus) exitCode=\(.exitCode // -1) reason=\(.reason // "")"'
+      register: task_result
+
+    - debug:
+        var: task_result.stdout

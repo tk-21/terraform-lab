@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-web
+  namespace: demo
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              echo "intentionally crashing..."
+              exit 1

@@ -1,0 +1,57 @@
+- name: Install Apache + PHP (AL2023)
+  ansible.builtin.dnf:
+    name:
+      - httpd
+      - php
+      - php-mysqlnd
+    state: present
+
+# MySQL Community Repo を入れて MySQL Server を入れる
+- name: Install MySQL Community repo rpm (EL9)
+  ansible.builtin.dnf:
+    name: "https://repo.mysql.com/mysql80-community-release-el9-1.noarch.rpm"
+    state: present
+
+- name: Import MySQL RPM GPG key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+
+- name: Install MySQL Server (community)
+  ansible.builtin.dnf:
+    name:
+      - mysql-community-server
+    state: present
+
+- name: Enable and start services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - httpd
+    - mysqld
+
+- name: Put phpinfo
+  ansible.builtin.copy:
+    dest: /var/www/html/index.php
+    content: |
+      <?php phpinfo(); ?>
+
+# 初期パスワードを拾って root パスワード/DB/ユーザ作成（最速・一括）
+- name: Initialize MySQL (set root password, create db/user)
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    # 初回のみ /var/log/mysqld.log に temporary password が出る
+    TMP_PASS="$(sudo grep 'temporary password' /var/log/mysqld.log | tail -1 | awk '{print $NF}')"
+
+    # 既に設定済みなら何もしない（再実行耐性）
+    mysql -uroot -p'RootPassw0rd!' -e "SELECT 1" >/dev/null 2>&1 && exit 0
+
+    mysql --connect-expired-password -uroot -p"$TMP_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'RootPassw0rd!';"
+    mysql -uroot -p'RootPassw0rd!' -e "CREATE DATABASE IF NOT EXISTS appdb;"
+    mysql -uroot -p'RootPassw0rd!' -e "CREATE USER IF NOT EXISTS 'appuser'@'localhost' IDENTIFIED BY 'AppPassw0rd!';"
+    mysql -uroot -p'RootPassw0rd!' -e "GRANT ALL PRIVILEGES ON appdb.* TO 'appuser'@'localhost'; FLUSH PRIVILEGES;"
+  args:
+    executable: /bin/bash

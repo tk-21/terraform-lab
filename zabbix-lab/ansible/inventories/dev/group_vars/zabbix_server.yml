@@ -1,0 +1,7 @@
+# DBは同居（検証優先）
+zabbix_db_name: "zabbix"
+zabbix_db_user: "zabbix"
+zabbix_db_pass: "zabbixpass"
+
+# Web UI
+zabbix_web_port: 80

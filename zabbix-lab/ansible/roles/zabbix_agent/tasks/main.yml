@@ -1,0 +1,68 @@
+---
+# =========================================================
+# Gather minimal facts
+# =========================================================
+- name: Gather facts (minimal)
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+
+# =========================================================
+# Package cache
+# =========================================================
+- name: Update dnf cache
+  dnf:
+    update_cache: yes
+
+# =========================================================
+# Zabbix repository (AlmaLinux 9)
+# =========================================================
+- name: Add Zabbix repository
+  dnf:
+    name: "https://repo.zabbix.com/zabbix/{{ zabbix_version }}/rhel/9/x86_64/zabbix-release-{{ zabbix_version }}-4.el9.noarch.rpm"
+    state: present
+    disable_gpg_check: true
+
+- name: Update dnf cache after adding Zabbix repo
+  dnf:
+    update_cache: yes
+
+# =========================================================
+# Install Zabbix agent
+# =========================================================
+- name: Install Zabbix agent
+  dnf:
+    name:
+      - zabbix-agent
+    state: present
+
+# =========================================================
+# Zabbix agent configuration
+# =========================================================
+- name: Determine Zabbix server private IP from inventory
+  set_fact:
+    zabbix_server_private_ip: "{{ hostvars[groups['zabbix_server'][0]].private_ip }}"
+
+- name: Configure zabbix_agentd.conf (Server/ServerActive)
+  lineinfile:
+    path: /etc/zabbix/zabbix_agentd.conf
+    regexp: '^{{ item.key }}='
+    line: "{{ item.key }}={{ zabbix_server_private_ip }}"
+  loop:
+    - { key: "Server" }
+    - { key: "ServerActive" }
+
+- name: Configure zabbix_agentd.conf (HostnameItem)
+  lineinfile:
+    path: /etc/zabbix/zabbix_agentd.conf
+    regexp: '^#?HostnameItem='
+    line: "HostnameItem=system.hostname"
+
+# =========================================================
+# Start agent
+# =========================================================
+- name: Enable and restart Zabbix agent
+  service:
+    name: zabbix-agent
+    state: restarted
+    enabled: true

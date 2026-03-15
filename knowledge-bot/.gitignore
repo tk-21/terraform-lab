@@ -1,0 +1,53 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+app/.venv/
+app/venv/
+env/*
+!env/.gitkeep
+
+# Local env files
+.env
+.env.*
+*.local
+
+# Terraform
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+
+# Terraform variable files (often secret)
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Project-specific generated files
+app/src/__pycache__/
+
+# Keep placeholder files
+!.gitkeep

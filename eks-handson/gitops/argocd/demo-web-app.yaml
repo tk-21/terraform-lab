@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-web
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/tk-21/eks-handson.git"
+    targetRevision: HEAD
+    path: apps/demo-web/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

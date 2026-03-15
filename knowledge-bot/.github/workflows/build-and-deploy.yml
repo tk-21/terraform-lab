@@ -1,0 +1,63 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "app/**"
+      - "k8s/**"
+      - "scripts/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ap-northeast-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Terraform outputs (for ECR/EKS)
+        id: tfout
+        working-directory: infra
+        run: |
+          terraform init -input=false
+          echo "REGION=$(terraform output -raw region)" >> $GITHUB_OUTPUT
+          echo "CLUSTER=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+          echo "ECR=$(terraform output -raw ecr_repo_url)" >> $GITHUB_OUTPUT
+          echo "IRSA_APP_ROLE_ARN=$(terraform output -raw irsa_app_role_arn)" >> $GITHUB_OUTPUT
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ steps.tfout.outputs.REGION }} \
+            | docker login --username AWS --password-stdin "${{ steps.tfout.outputs.ECR%%/* }}"
+
+      - name: Build & Push image
+        run: |
+          IMAGE="${{ steps.tfout.outputs.ECR }}:${{ github.sha }}"
+          docker build -t "$IMAGE" ./app
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to EKS
+        run: |
+          APP_IMAGE="${IMAGE}" bash scripts/deploy_k8s.sh
+          kubectl -n knowledgebot rollout status deploy/knowledgebot

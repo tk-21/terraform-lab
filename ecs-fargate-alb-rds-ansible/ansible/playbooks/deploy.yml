@@ -1,0 +1,277 @@
+---
+- name: Deploy to ECS using image digest (robust)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    ansible_shell_executable: /bin/bash
+
+    # buildx 出力から拾う digest 行パターン（環境差対策で複数候補）
+    digest_regex_candidates:
+      - 'digest:\s*(sha256:[0-9a-f]{64})'
+      - 'manifest\s+sha256:([0-9a-f]{64})'
+      - 'sha256:([0-9a-f]{64})'
+
+  vars_files:
+    - "../group_vars/dev.yml"
+
+  tasks:
+    # -----------------------------
+    # Terraform outputs -> facts
+    # -----------------------------
+    - name: Read terraform outputs (json)
+      command: terraform -chdir={{ tf_dir }} output -json
+      register: tf_out
+
+    - name: Set facts from terraform outputs
+      set_fact:
+        aws_region: "{{ (tf_out.stdout | from_json).aws_region.value }}"
+        ecr_repo_url: "{{ (tf_out.stdout | from_json).ecr_repo_url.value }}"
+        ecs_cluster_name: "{{ (tf_out.stdout | from_json).ecs_cluster_name.value }}"
+        ecs_service_name: "{{ (tf_out.stdout | from_json).ecs_service_name.value }}"
+        alb_dns_name: "{{ (tf_out.stdout | from_json).alb_dns_name.value }}"
+
+    # -----------------------------
+    # Preconditions
+    # -----------------------------
+    - name: Ensure required commands exist (aws, docker, jq)
+      shell: |
+        set -e
+        command -v aws >/dev/null
+        command -v docker >/dev/null
+        command -v jq >/dev/null
+      args:
+        executable: /bin/bash
+
+    - name: Debug aws identity (avoid wrong account surprises)
+      shell: |
+        set -e
+        aws sts get-caller-identity --output json
+      args:
+        executable: /bin/bash
+      register: sts_out
+
+    - name: Debug docker context & server
+      shell: |
+        set -e
+        docker context show
+        docker info --format '{{ "{{" }}.ServerVersion{{ "}}" }} RootDir={{ "{{" }}.DockerRootDir{{ "}}" }}'
+      args:
+        executable: /bin/bash
+
+    # -----------------------------
+    # ECR auth + buildx builder
+    # -----------------------------
+    - name: ECR login
+      shell: |
+        set -e
+        aws ecr get-login-password --region "{{ aws_region }}" \
+          | docker login --username AWS --password-stdin "{{ ecr_repo_url.split('/')[0] }}"
+      args:
+        executable: /bin/bash
+
+    - name: Ensure buildx builder exists and is used
+      shell: |
+        set -e
+        docker buildx inspect ecsbuilder >/dev/null 2>&1 || docker buildx create --name ecsbuilder --use
+        docker buildx use ecsbuilder
+        docker buildx inspect --bootstrap
+      args:
+        executable: /bin/bash
+
+    # -----------------------------
+    # Build & Push + capture output
+    # -----------------------------
+    - name: Build and push image to ECR with buildx (capture output)
+      shell: |
+        set -e
+        cd "{{ app_dir }}"
+        docker buildx build \
+          --progress=plain \
+          -t "{{ ecr_repo_url }}:{{ image_tag }}" \
+          --push \
+          .
+      args:
+        executable: /bin/bash
+      register: buildx_out
+
+    # -----------------------------
+    # Extract digest from buildx output (no file dependency)
+    # -----------------------------
+    - name: Extract image digest from buildx output (stdout+stderr)
+      set_fact:
+        buildx_combined: "{{ (buildx_out.stdout | default('')) ~ '\n' ~ (buildx_out.stderr | default('')) }}"
+
+    - name: Parse manifest digest from buildx output
+      set_fact:
+        # まず @sha256:... を優先（push行に必ず出る）
+        image_digest: >-
+          {{
+            (
+              buildx_combined
+              | regex_findall('@(sha256:[0-9a-f]{64})')
+              | last
+            )
+            | default('', true)
+          }}
+
+    - name: "Fallback parse digest: sha256:... (if @sha256 not found)"
+      set_fact:
+        image_digest: >-
+          {{
+            (
+              buildx_combined
+              | regex_findall('digest:\\s*(sha256:[0-9a-f]{64})')
+              | last
+            )
+            | default(image_digest, true)
+          }}
+      when: image_digest | length == 0
+
+    - name: Fail if digest could not be extracted (show buildx tail)
+      fail:
+        msg: |
+          Failed to extract image digest from buildx output (stdout+stderr).
+          ---- buildx combined (last 220 lines) ----
+          {{
+            (
+              (buildx_out.stdout_lines | default([]))
+              +
+              (buildx_out.stderr_lines | default([]))
+            )[-220:] | join('\n')
+          }}
+      when: image_digest | length == 0
+
+    - name: Set image reference to digest (repo@sha256:...)
+      set_fact:
+        image_ref: "{{ ecr_repo_url }}@{{ image_digest }}"
+
+    - name: Show selected image reference
+      debug:
+        msg:
+          - "AWS identity: {{ sts_out.stdout }}"
+          - "Built tag: {{ ecr_repo_url }}:{{ image_tag }}"
+          - "Using digest: {{ image_ref }}"
+
+    # Optional: ECR に digest が見えるまで待つ（反映ラグ対策）
+    - name: Verify image digest exists in ECR (retry)
+      shell: |
+        set -e
+        REPO_NAME="$(echo "{{ ecr_repo_url }}" | cut -d/ -f2)"
+        aws ecr describe-images \
+          --repository-name "$REPO_NAME" \
+          --image-ids imageDigest="{{ image_digest }}" \
+          --region "{{ aws_region }}" >/dev/null
+      args:
+        executable: /bin/bash
+      register: ecr_digest_check
+      retries: 20
+      delay: 3
+      until: ecr_digest_check.rc == 0
+
+    # -----------------------------
+    # ECS update
+    # -----------------------------
+    - name: Get current task definition ARN for service
+      shell: |
+        set -e
+        aws ecs describe-services \
+          --cluster "{{ ecs_cluster_name }}" \
+          --services "{{ ecs_service_name }}" \
+          --region "{{ aws_region }}" \
+          --query 'services[0].taskDefinition' \
+          --output text
+      args:
+        executable: /bin/bash
+      register: current_td_arn
+
+    - name: Create new task definition JSON with digest image
+      shell: |
+        set -e
+        aws ecs describe-task-definition \
+          --task-definition "{{ current_td_arn.stdout }}" \
+          --region "{{ aws_region }}" \
+        | jq '
+          .taskDefinition
+          | del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+          | .containerDefinitions[0].image = "{{ image_ref }}"
+        ' > /tmp/new-td.json
+      args:
+        executable: /bin/bash
+
+    - name: Register new task definition
+      shell: |
+        set -e
+        aws ecs register-task-definition \
+          --cli-input-json file:///tmp/new-td.json \
+          --region "{{ aws_region }}" \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text
+      args:
+        executable: /bin/bash
+      register: new_td_arn
+
+    - name: Update service to new task definition (force deployment)
+      shell: |
+        set -e
+        aws ecs update-service \
+          --cluster "{{ ecs_cluster_name }}" \
+          --service "{{ ecs_service_name }}" \
+          --task-definition "{{ new_td_arn.stdout }}" \
+          --force-new-deployment \
+          --region "{{ aws_region }}" >/dev/null
+      args:
+        executable: /bin/bash
+
+    # wait が終わらない時のために、失敗時イベントを必ず出す
+    - block:
+        - name: Wait service stable
+          shell: |
+            set -e
+            aws ecs wait services-stable \
+              --cluster "{{ ecs_cluster_name }}" \
+              --services "{{ ecs_service_name }}" \
+              --region "{{ aws_region }}"
+          args:
+            executable: /bin/bash
+      rescue:
+        - name: Show ECS service events (latest 20)
+          shell: |
+            set -e
+            aws ecs describe-services \
+              --cluster "{{ ecs_cluster_name }}" \
+              --services "{{ ecs_service_name }}" \
+              --region "{{ aws_region }}" \
+              --query 'services[0].events[0:20].[createdAt,message]' \
+              --output table
+          args:
+            executable: /bin/bash
+
+        - name: Show service desired/running/pending
+          shell: |
+            set -e
+            aws ecs describe-services \
+              --cluster "{{ ecs_cluster_name }}" \
+              --services "{{ ecs_service_name }}" \
+              --region "{{ aws_region }}" \
+              --query 'services[0].{desired:desiredCount,running:runningCount,pending:pendingCount}' \
+              --output json
+          args:
+            executable: /bin/bash
+
+        - name: Fail deployment
+          fail:
+            msg: "ECS service did not become stable. See events above."
+
+    - name: Show endpoint
+      debug:
+        msg: "Deployed. ALB URL: http://{{ alb_dns_name }}/  (health: http://{{ alb_dns_name }}/health)"

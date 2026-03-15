@@ -1,0 +1,22 @@
+---
+- name: Setup Zabbix Server
+  hosts: zabbix_server
+  become: true
+  roles:
+    - zabbix_server
+
+- name: Setup Zabbix Agent on targets
+  hosts: targets
+  become: true
+  vars:
+    zabbix_server_ip: "{{ hostvars[groups['zabbix_server'][0]].ansible_host }}"
+  roles:
+    - role: zabbix_agent
+
+- name: Register targets to Zabbix via API
+  hosts: localhost
+  gather_facts: false
+  vars:
+    zabbix_server_ip: "{{ hostvars[groups['zabbix_server'][0]].ansible_host }}"
+  roles:
+    - zabbix_api

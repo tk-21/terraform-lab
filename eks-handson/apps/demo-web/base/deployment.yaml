@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-web
+  namespace: demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-web
+  template:
+    metadata:
+      labels:
+        app: demo-web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.25
+          ports:
+            - containerPort: 80
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              set -e
+              mkdir -p /data
+              cat >/usr/share/nginx/html/index.html <<'HTML'
+              <html><body>
+              <h1>demo-web</h1>
+              <p>ok</p>
+              </body></html>
+              HTML
+              cat >/usr/share/nginx/html/health <<'TXT'
+              ok
+              TXT
+              exec nginx -g 'daemon off;'
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: demo-pvc
