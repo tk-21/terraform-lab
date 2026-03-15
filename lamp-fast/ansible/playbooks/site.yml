@@ -1,0 +1,5 @@
+- name: Setup LAMP (Apache + PHP + MySQL) on Amazon Linux 2023
+  hosts: lamp
+  become: true
+  roles:
+    - lamp

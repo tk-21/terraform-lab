@@ -1,0 +1,14 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - ap-northeast-1
+
+filters:
+  tag:Role: web
+
+hostnames:
+  - instance-id
+
+compose:
+  ansible_host: instance_id
+  ansible_connection: amazon.aws.aws_ssm
+  ansible_aws_ssm_region: ap-northeast-1

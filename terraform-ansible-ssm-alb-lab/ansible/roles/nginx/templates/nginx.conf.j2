@@ -1,0 +1,10 @@
+events {}
+
+http {
+  server {
+    listen {{ nginx_listen_port }};
+    location / {
+      return 200 "ok\n";
+    }
+  }
+}

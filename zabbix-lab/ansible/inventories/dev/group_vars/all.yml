@@ -1,0 +1,9 @@
+zabbix_version: "6.0"          # LTS想定
+timezone: "Asia/Tokyo"
+
+# Zabbix Web 初期ログイン
+zabbix_admin_user: "Admin"
+zabbix_admin_pass: "zabbix"
+
+# OS切り替え用フラグ
+os_family: almalinux

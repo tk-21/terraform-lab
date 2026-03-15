@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-web
+  namespace: demo
+spec:
+  template:
+    spec:
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: demo-pvc2

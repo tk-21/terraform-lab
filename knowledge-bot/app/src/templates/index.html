@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <section class="shell">
+      <header class="hero">
+        <div class="hero-head">
+          <span class="pill">KNOWLEDGE ASSISTANT</span>
+          <span class="status" id="statusBadge">Ready</span>
+        </div>
+        <h1>社内ナレッジに、素早くアクセス</h1>
+        <p class="sub">質問を送信すると <code>/ask</code> API の回答と引用元を即時表示します。</p>
+      </header>
+
+      <div class="grid">
+        <section class="panel panel-input">
+          <div class="row-head">
+            <h2 class="title">質問</h2>
+            <span class="mono" id="charCount">0 chars</span>
+          </div>
+
+          <div class="chips" id="quickPrompts">
+            <button type="button" class="chip" data-prompt="VPN の接続方法を教えて">VPN 接続</button>
+            <button type="button" class="chip" data-prompt="パスワードリセットの手順を教えて">パスワードリセット</button>
+            <button type="button" class="chip" data-prompt="オンボーディングの初日タスクは？">オンボーディング</button>
+          </div>
+
+          <label for="question">問い合わせ内容</label>
+          <textarea id="question" placeholder="例: VPN の接続方法を教えて"></textarea>
+          <div class="actions">
+            <button id="askBtn">送信する</button>
+            <span class="hint">Ctrl+Enter / Cmd+Enter で送信</span>
+          </div>
+        </section>
+
+        <section class="panel panel-answer">
+          <div class="row-head">
+            <h2 class="title">回答</h2>
+            <span class="mono" id="responseMeta">--</span>
+          </div>
+          <div id="answer" class="result">ここに回答が表示されます。</div>
+        </section>
+      </div>
+
+      <section class="panel panel-citations">
+        <div class="row-head">
+          <h2 class="title">引用</h2>
+          <span class="mono" id="citationCount">0 sources</span>
+        </div>
+        <ul id="citations" class="citations"></ul>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

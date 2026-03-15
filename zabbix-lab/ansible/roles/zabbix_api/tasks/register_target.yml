@@ -1,0 +1,80 @@
+---
+- name: Set target private IP from inventory
+  set_fact:
+    target_private_ip: "{{ hostvars[target_name].private_ip }}"
+
+- name: Get host by name
+  uri:
+    url: "{{ api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.get"
+      params:
+        filter:
+          host: ["{{ target_name }}"]
+        selectInterfaces: ["interfaceid","ip","dns","useip","port","type","main"]
+      auth: "{{ zbx_auth }}"
+      id: 10
+    status_code: 200
+  register: host_get
+
+- name: Create host if missing (use PRIVATE IP for interface)
+  uri:
+    url: "{{ api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.create"
+      params:
+        host: "{{ target_name }}"
+        groups:
+          - groupid: "{{ hostgroupid }}"
+        templates:
+          - templateid: "{{ templateid }}"
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ target_private_ip }}"
+            dns: ""
+            port: "10050"
+      auth: "{{ zbx_auth }}"
+      id: 11
+    status_code: 200
+  when: (host_get.json.result | length) == 0
+  register: host_create
+
+- name: Update host interface IP to PRIVATE IP if host exists
+  uri:
+    url: "{{ api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.update"
+      params:
+        hostid: "{{ host_get.json.result[0].hostid }}"
+        interfaces:
+          - interfaceid: "{{ host_get.json.result[0].interfaces[0].interfaceid }}"
+            type: 1
+            main: 1
+            useip: 1
+            ip: "{{ target_private_ip }}"
+            dns: ""
+            port: "10050"
+        groups:
+          - groupid: "{{ hostgroupid }}"
+        templates:
+          - templateid: "{{ templateid }}"
+      auth: "{{ zbx_auth }}"
+      id: 12
+    status_code: 200
+  when: (host_get.json.result | length) > 0
+  register: host_update
+
+- name: Debug registered target
+  debug:
+    msg: "Target {{ target_name }} registered/updated with agent interface IP={{ target_private_ip }}"

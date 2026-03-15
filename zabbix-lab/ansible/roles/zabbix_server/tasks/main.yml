@@ -1,0 +1,232 @@
+---
+# =========================================================
+# Gather minimal facts
+# =========================================================
+- name: Gather facts (minimal)
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+
+# =========================================================
+# Package cache
+# =========================================================
+- name: Update dnf cache
+  dnf:
+    update_cache: yes
+
+# =========================================================
+# Base packages
+# =========================================================
+- name: Install basic packages
+  dnf:
+    name:
+      - curl
+      - wget
+      - ca-certificates
+      - gnupg2
+      - python3
+      - python3-pip
+      - python3-PyMySQL
+      - gzip
+    state: present
+
+# =========================================================
+# Zabbix repository (AlmaLinux 9)
+# =========================================================
+- name: Add Zabbix repository
+  dnf:
+    name: "https://repo.zabbix.com/zabbix/{{ zabbix_version }}/rhel/9/x86_64/zabbix-release-{{ zabbix_version }}-4.el9.noarch.rpm"
+    state: present
+    disable_gpg_check: true
+
+- name: Update dnf cache after adding Zabbix repo
+  dnf:
+    update_cache: yes
+
+# =========================================================
+# Install Zabbix / DB / Web
+# =========================================================
+- name: Install Zabbix server packages
+  dnf:
+    name:
+      - mariadb-server
+      - zabbix-server-mysql
+      - zabbix-web-mysql
+      - zabbix-apache-conf
+      - zabbix-sql-scripts
+      - zabbix-agent
+      - httpd
+      - php
+      - php-mysqlnd
+    state: present
+
+# =========================================================
+# Service names (fixed for AlmaLinux)
+# =========================================================
+- name: Set service name vars
+  set_fact:
+    db_service: mariadb
+    web_service: httpd
+    zbx_server_service: zabbix-server
+    zbx_agent_service: zabbix-agent
+
+# =========================================================
+# Start DB
+# =========================================================
+- name: Ensure DB service is running
+  service:
+    name: "{{ db_service }}"
+    state: started
+    enabled: true
+
+# =========================================================
+# MariaDB config (required for Zabbix schema)
+# =========================================================
+- name: Persist log_bin_trust_function_creators
+  copy:
+    dest: /etc/my.cnf.d/zabbix.cnf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [mysqld]
+      log_bin_trust_function_creators=1
+
+- name: Restart DB service
+  service:
+    name: "{{ db_service }}"
+    state: restarted
+    enabled: true
+
+# =========================================================
+# Create DB and user
+# =========================================================
+- name: Create Zabbix DB
+  community.mysql.mysql_db:
+    name: "{{ zabbix_db_name }}"
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_bin
+    login_unix_socket: /var/lib/mysql/mysql.sock
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+- name: Create Zabbix DB user
+  community.mysql.mysql_user:
+    name: "{{ zabbix_db_user }}"
+    password: "{{ zabbix_db_pass }}"
+    priv: "{{ zabbix_db_name }}.*:ALL"
+    host: "localhost"
+    state: present
+    login_unix_socket: /var/lib/mysql/mysql.sock
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+# =========================================================
+# Import schema (robust)
+# =========================================================
+- name: Import initial schema (robust)
+  shell: |
+    set -e
+    DB="{{ zabbix_db_name }}"
+    USER="{{ zabbix_db_user }}"
+    PASS="{{ zabbix_db_pass }}"
+    SQLGZ="/usr/share/zabbix-sql-scripts/mysql/server.sql.gz"
+
+    tbl=$(mysql -u"${USER}" -p"${PASS}" -N -s \
+      -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB}' AND table_name='users';" 2>/dev/null || echo 0)
+
+    if [ "${tbl}" -eq 0 ]; then
+      zcat "${SQLGZ}" | mysql -u"${USER}" -p"${PASS}" "${DB}"
+      exit 0
+    fi
+
+    rows=$(mysql -u"${USER}" -p"${PASS}" -N -s \
+      -e "SELECT COUNT(*) FROM users;" "${DB}" 2>/dev/null || echo 0)
+
+    if [ "${rows}" -eq 0 ]; then
+      mysql -uroot -e "DROP DATABASE IF EXISTS ${DB}; CREATE DATABASE ${DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
+      zcat "${SQLGZ}" | mysql -u"${USER}" -p"${PASS}" "${DB}"
+    fi
+  args:
+    executable: /bin/bash
+
+# =========================================================
+# Zabbix server DB config
+# =========================================================
+- name: Configure Zabbix server DB settings
+  lineinfile:
+    path: /etc/zabbix/zabbix_server.conf
+    regexp: '^#?{{ item.key }}='
+    line: "{{ item.key }}={{ item.value }}"
+  loop:
+    - { key: DBName,     value: "{{ zabbix_db_name }}" }
+    - { key: DBUser,     value: "{{ zabbix_db_user }}" }
+    - { key: DBPassword, value: "{{ zabbix_db_pass }}" }
+    - { key: DBHost,     value: "localhost" }
+
+# =========================================================
+# PHP timezone
+# =========================================================
+- name: Set PHP timezone via php.ini (AlmaLinux9)
+  lineinfile:
+    path: /etc/php.ini
+    regexp: '^\s*date\.timezone\s*='
+    line: "date.timezone = {{ timezone }}"
+
+- name: Disable php_value timezone directive in zabbix.conf (not supported without mod_php)
+  replace:
+    path: /etc/httpd/conf.d/zabbix.conf
+    regexp: '^\s*php_value\s+date\.timezone.*$'
+    replace: '# php_value date.timezone (disabled: use /etc/php.ini)'
+
+# =========================================================
+# Frontend config (required for API)
+# =========================================================
+- name: Ensure Zabbix web config directory exists
+  file:
+    path: /etc/zabbix/web
+    state: directory
+    owner: root
+    group: apache
+    mode: "0755"
+
+- name: Create Zabbix frontend config
+  copy:
+    dest: /etc/zabbix/web/zabbix.conf.php
+    owner: root
+    group: apache
+    mode: "0640"
+    content: |
+      <?php
+      $DB['TYPE']     = 'MYSQL';
+      $DB['SERVER']   = 'localhost';
+      $DB['PORT']     = '0';
+      $DB['DATABASE'] = '{{ zabbix_db_name }}';
+      $DB['USER']     = '{{ zabbix_db_user }}';
+      $DB['PASSWORD'] = '{{ zabbix_db_pass }}';
+      $DB['SCHEMA']   = '';
+      $ZBX_SERVER      = 'localhost';
+      $ZBX_SERVER_PORT = '10051';
+      $ZBX_SERVER_NAME = 'Zabbix Lab';
+      $IMAGE_FORMAT_DEFAULT = IMAGE_FORMAT_PNG;
+
+# =========================================================
+# Start services
+# =========================================================
+- name: Enable and start services
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - "{{ zbx_agent_service }}"
+    - "{{ web_service }}"
+    - "{{ zbx_server_service }}"
+
+# =========================================================
+# Output
+# =========================================================
+- name: Show Zabbix URL
+  debug:
+    msg: "Zabbix UI: http://{{ ansible_host }}/zabbix (Login: Admin / zabbix)"

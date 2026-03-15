@@ -1,0 +1,9 @@
+---
+tf_dir: "{{ playbook_dir }}/../../terraform/envs/dev"
+app_dir: "{{ playbook_dir }}/../../app"
+
+# デフォルトは date ベース。git があるなら git sha に変えてOK
+image_tag: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+# migration のコマンド（あなたのアプリに合わせて差し替え）
+migrate_command: "echo 'migrate placeholder'; exit 0"

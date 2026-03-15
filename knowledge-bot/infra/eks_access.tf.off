@@ -1,0 +1,18 @@
+# EKS の API に kubectl で入るための “管理者アクセス” を付与
+# ※ いったん admin。動作確認後に最小権限へ落とすのが実務的。
+
+resource "aws_eks_access_entry" "admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = data.aws_caller_identity.current.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = data.aws_caller_identity.current.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}

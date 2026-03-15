@@ -1,0 +1,24 @@
+- name: Install nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Place index
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /usr/share/nginx/html/index.html
+    mode: "0644"
+
+- name: Enable & start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Write DB env file
+  ansible.builtin.template:
+    src: db.env.j2
+    dest: /etc/app/db.env
+    owner: root
+    group: root
+    mode: "0600"

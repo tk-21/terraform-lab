@@ -1,0 +1,1 @@
+# agent から見える Zabbix server のIPは playbook内で動的に注入する

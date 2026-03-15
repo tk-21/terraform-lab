@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowledgebot
+  namespace: knowledgebot
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: { app: knowledgebot }
+  template:
+    metadata:
+      labels: { app: knowledgebot }
+    spec:
+      serviceAccountName: knowledgebot-sa
+      containers:
+        - name: api
+          image: REPLACE_WITH_ECR_IMAGE
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: knowledgebot-config
+                  key: AWS_REGION
+            - name: RAG_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: knowledgebot-config
+                  key: RAG_MODE
+            - name: BEDROCK_MODEL_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: knowledgebot-config
+                  key: BEDROCK_MODEL_ID
+            - name: KNOWLEDGE_BASE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: knowledgebot-config
+                  key: KNOWLEDGE_BASE_ID
+            - name: KB_MODEL_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: knowledgebot-secrets
+                  key: KB_MODEL_ARN
+                  optional: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1024Mi
+          startupProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10

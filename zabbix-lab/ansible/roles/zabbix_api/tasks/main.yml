@@ -1,0 +1,131 @@
+---
+- name: Derive Zabbix server public IP for API endpoint from inventory
+  set_fact:
+    zabbix_server_ip: "{{ hostvars[groups['zabbix_server'][0]].ansible_host }}"
+  when: zabbix_server_ip is not defined
+
+- name: Wait for Zabbix API to be ready
+  uri:
+    url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "apiinfo.version"
+      params: {}
+      id: 1
+    status_code: 200
+  register: api_version
+  retries: 30
+  delay: 10
+  until: api_version.status == 200
+
+- name: Login to Zabbix API
+  uri:
+    url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "user.login"
+      params:
+        user: "{{ zabbix_admin_user }}"
+        password: "{{ zabbix_admin_pass }}"
+      id: 2
+    status_code: 200
+  register: login_resp
+
+- name: Debug login response (raw)
+  debug:
+    var: login_resp
+
+- name: Debug login response json
+  debug:
+    var: login_resp.json
+
+- name: Fail if login failed (show error)
+  fail:
+    msg: "Zabbix API login failed: {{ login_resp.json.error | default(login_resp.json) }}"
+  when: login_resp.json.result is not defined
+
+- name: Set auth token
+  set_fact:
+    zbx_auth: "{{ login_resp.json.result }}"
+
+- name: Ensure hostgroup LAB exists
+  uri:
+    url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostgroup.get"
+      params:
+        filter:
+          name: ["LAB"]
+      auth: "{{ zbx_auth }}"
+      id: 2
+    status_code: 200
+  register: hg_get
+
+- name: Create hostgroup LAB if missing
+  uri:
+    url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostgroup.create"
+      params:
+        name: "LAB"
+      auth: "{{ zbx_auth }}"
+      id: 3
+    status_code: 200
+  when: (hg_get.json.result | length) == 0
+  register: hg_create
+
+- name: Determine hostgroupid
+  set_fact:
+    hostgroupid: >-
+      {{
+        (hg_get.json.result[0].groupid
+          if (hg_get.json.result | length) > 0
+          else hg_create.json.result.groupids[0])
+      }}
+
+- name: Get template id for 'Linux by Zabbix agent'
+  uri:
+    url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "template.get"
+      params:
+        filter:
+          host: ["Linux by Zabbix agent"]
+      auth: "{{ zbx_auth }}"
+      id: 4
+    status_code: 200
+  register: tpl_get
+
+- name: Fail if template not found
+  fail:
+    msg: "Template 'Linux by Zabbix agent' not found. Check Zabbix version / templates."
+  when: (tpl_get.json.result | length) == 0
+
+- name: Set templateid
+  set_fact:
+    templateid: "{{ tpl_get.json.result[0].templateid }}"
+
+- name: Create / ensure hosts for all targets
+  vars:
+    api_url: "http://{{ zabbix_server_ip }}/zabbix/api_jsonrpc.php"
+  include_tasks: register_target.yml
+  loop: "{{ groups['targets'] }}"
+  loop_control:
+    loop_var: target_name
+
+- name: Show registered info
+  debug:
+    msg: "Registered targets to Zabbix. Open: http://{{ zabbix_server_ip }}/zabbix (Admin/zabbix)"

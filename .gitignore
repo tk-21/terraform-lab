@@ -1,0 +1,80 @@
+################
+# Terraform
+################
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# lockは追跡する
+# .terraform.lock.hcl ← 削除して追跡
+
+*.tfvars
+*.tfvars.json
+
+################
+# Ansible
+################
+*.retry
+collections/
+.ansible/
+ansible.log
+
+*vault_pass*
+**/vault_pass.txt
+
+################
+# Python
+################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+
+################
+# Node / Frontend
+################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+
+################
+# Env / Secrets
+################
+.env
+.env.*
+*.local
+
+################
+# OS / Editor / Logs
+################
+.DS_Store
+.AppleDouble
+.LSOverride
+.Trash-*/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
