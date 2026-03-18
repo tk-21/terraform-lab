@@ -79,7 +79,18 @@ networking
 
 - Terraform >= 1.5.0
 - AWS CLI 設定済み（`aws configure` または OIDC）
-- `terraform.tfvars` の `owner` を自分の名前に変更
+- `terraform.tfvars` の `owner` を自分の名前に変更（GitHubユーザー名や自分の名前を入れる。リソースの `Owner` タグに使用される）
+
+### Step 0: terraform.tfvars の設定
+
+`environments/dev/terraform.tfvars` に `owner` を設定しておくと、plan/apply/destroy のたびに `-var` を指定しなくて済む。
+
+```hcl
+# environments/dev/terraform.tfvars
+owner = "your-github-username"  # GitHubユーザー名や自分の名前（英数字・ハイフン）
+```
+
+> `owner` はリソースの `Owner` タグに使われる識別子。設定しないと `terraform plan` 時にエラーになる。
 
 ### Step 1: Terraform State バックエンドの作成
 
