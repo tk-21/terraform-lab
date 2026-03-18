@@ -1,0 +1,115 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Infra Ops API",
+    "version": "1.0.0",
+    "description": "Infrastructure operations API for the Bedrock Agent Action Group"
+  },
+  "paths": {
+    "/infrastructure/status": {
+      "get": {
+        "summary": "Get infrastructure status",
+        "description": "Returns the current operational status of all infrastructure components including Bedrock API, Knowledge Base, and Aurora database",
+        "operationId": "getInfrastructureStatus",
+        "responses": {
+          "200": {
+            "description": "Current infrastructure status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InfrastructureStatus" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/costs/summary": {
+      "get": {
+        "summary": "Get monthly cost summary",
+        "description": "Returns an estimated breakdown of AWS costs for the current month and total token consumption",
+        "operationId": "getCostSummary",
+        "responses": {
+          "200": {
+            "description": "Monthly cost summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CostSummary" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts/acknowledge": {
+      "post": {
+        "summary": "Acknowledge an operational alert",
+        "description": "Acknowledges a specific operational alert by its ID to indicate it has been reviewed",
+        "operationId": "acknowledgeAlert",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AcknowledgeAlertRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Alert acknowledged successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AcknowledgeAlertResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "InfrastructureStatus": {
+        "type": "object",
+        "properties": {
+          "status":    { "type": "string", "description": "Overall status: healthy, degraded, or down" },
+          "timestamp": { "type": "string", "description": "ISO8601 timestamp" },
+          "services": {
+            "type": "object",
+            "description": "Per-service operational status",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "CostSummary": {
+        "type": "object",
+        "properties": {
+          "month":                    { "type": "string",  "description": "Month in YYYY-MM format" },
+          "currency":                 { "type": "string" },
+          "total_estimated":          { "type": "number",  "description": "Total estimated USD cost this month" },
+          "total_tokens_this_month":  { "type": "integer", "description": "Total tokens consumed across all tenants" },
+          "breakdown": {
+            "type": "object",
+            "description": "Cost breakdown by AWS service in USD",
+            "additionalProperties": { "type": "number" }
+          }
+        }
+      },
+      "AcknowledgeAlertRequest": {
+        "type": "object",
+        "required": ["alert_id"],
+        "properties": {
+          "alert_id": { "type": "string", "description": "Unique identifier of the alert to acknowledge" },
+          "reason":   { "type": "string", "description": "Reason or notes for acknowledging the alert" }
+        }
+      },
+      "AcknowledgeAlertResponse": {
+        "type": "object",
+        "properties": {
+          "status":    { "type": "string" },
+          "alert_id":  { "type": "string" },
+          "timestamp": { "type": "string", "description": "ISO8601 acknowledgment timestamp" }
+        }
+      }
+    }
+  }
+}
