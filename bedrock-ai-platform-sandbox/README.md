@@ -16,6 +16,79 @@
 
 ---
 
+## アーキテクチャ構成図
+
+```mermaid
+graph TB
+    Client["Client"]
+
+    subgraph AWS["AWS ap-northeast-1"]
+        subgraph Gateway["API Entry Point"]
+            WAF["WAF v2\nOWASP Rules + Rate Limit"]
+            APIGW["API Gateway HTTP v2\nPOST /chat"]
+        end
+
+        subgraph VPC["VPC (10.0.0.0/16)"]
+            subgraph Private["Private Subnets (1a / 1c)"]
+                Router["Router Lambda\nHaiku / Sonnet 自動選択"]
+                Cost["Cost Controller Lambda\nトークン上限監視"]
+                Action["Action Handler Lambda\ninfra-ops"]
+            end
+            EP["VPC Endpoints\nbedrock-runtime / S3 / DynamoDB / SM"]
+        end
+
+        subgraph Bedrock["Amazon Bedrock"]
+            GR["Guardrails\nPII匿名化 / コンテンツフィルタ"]
+            Haiku["Claude 3 Haiku\n軽量タスク"]
+            Sonnet["Claude 3.5 Sonnet\n複雑タスク"]
+            Agent["Bedrock Agent\ninfra-ops"]
+            KB["Knowledge Base\nRAG"]
+        end
+
+        subgraph Data["Data Layer"]
+            Aurora["Aurora PostgreSQL Serverless v2\npgvector"]
+            S3["S3 Documents"]
+            DDB["DynamoDB\ntenants / usage"]
+        end
+
+        subgraph Ops["Observability & Cost Control"]
+            XRay["X-Ray Tracing"]
+            CW["CloudWatch\nDashboard / Alarms"]
+            CT["CloudTrail\nBedrock API Audit"]
+            SNS["SNS Budget Alerts"]
+            Budget["AWS Budgets $30/月"]
+            EB["EventBridge 1h毎"]
+        end
+    end
+
+    CICD["GitHub Actions\nOIDC + Terraform"]
+
+    Client --> WAF --> APIGW --> Router
+
+    Router -- "テナント確認 / 使用量記録" --> DDB
+    Router -- "短いPrompt" --> Haiku
+    Router -- "複雑なPrompt" --> Sonnet
+    GR -. "フィルタ適用" .-> Haiku & Sonnet
+
+    Router -- "Agent呼び出し" --> Agent
+    Agent --> KB
+    KB --> Aurora & S3
+    Agent --> Action --> DDB
+
+    EB --> Cost --> DDB
+    Cost --> SNS
+    Budget --> SNS
+    CW -- "Alarm" --> SNS
+
+    Router -. "Trace" .-> XRay
+    Router -. "Metrics / Logs" .-> CW
+    CT --> CW
+
+    CICD -. "plan / apply" .-> AWS
+```
+
+---
+
 ## ディレクトリ構成
 
 ```
