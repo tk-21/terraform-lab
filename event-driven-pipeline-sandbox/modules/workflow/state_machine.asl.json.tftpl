@@ -1,0 +1,247 @@
+{
+  "Comment": "Event-driven AI job processing pipeline. Routes by complexity, invokes Bedrock via SDK integration (no Lambda), then saves result and notifies in parallel.",
+  "StartAt": "RouteByComplexity",
+  "States": {
+
+    "RouteByComplexity": {
+      "Type": "Choice",
+      "Comment": "complexity=complex なら Sonnet、それ以外は Haiku へルーティング",
+      "Choices": [
+        {
+          "Variable": "$.complexity",
+          "StringEquals": "complex",
+          "Next": "InvokeSonnet"
+        }
+      ],
+      "Default": "InvokeHaiku"
+    },
+
+    "InvokeHaiku": {
+      "Type": "Task",
+      "Comment": "Bedrock SDK 統合 — Lambda を経由せず Step Functions が直接 Bedrock を呼ぶ",
+      "Resource": "arn:aws:states:::bedrock:invokeModel",
+      "Parameters": {
+        "ModelId": "anthropic.claude-3-haiku-20240307-v1:0",
+        "Body": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 1024,
+          "messages": [
+            {
+              "role": "user",
+              "content.$": "$.prompt"
+            }
+          ]
+        }
+      },
+      "ResultSelector": {
+        "model_used": "haiku",
+        "response.$": "$.Body.content[0].text",
+        "input_tokens.$": "$.Body.usage.input_tokens",
+        "output_tokens.$": "$.Body.usage.output_tokens"
+      },
+      "ResultPath": "$.llm_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Bedrock.ThrottlingException",
+            "Bedrock.ServiceQuotaExceededException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "ParallelFinalize"
+    },
+
+    "InvokeSonnet": {
+      "Type": "Task",
+      "Comment": "Bedrock SDK 統合 — Sonnet は複雑タスク向け、max_tokens を多めに設定",
+      "Resource": "arn:aws:states:::bedrock:invokeModel",
+      "Parameters": {
+        "ModelId": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "Body": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 4096,
+          "messages": [
+            {
+              "role": "user",
+              "content.$": "$.prompt"
+            }
+          ]
+        }
+      },
+      "ResultSelector": {
+        "model_used": "sonnet",
+        "response.$": "$.Body.content[0].text",
+        "input_tokens.$": "$.Body.usage.input_tokens",
+        "output_tokens.$": "$.Body.usage.output_tokens"
+      },
+      "ResultPath": "$.llm_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Bedrock.ThrottlingException",
+            "Bedrock.ServiceQuotaExceededException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "ParallelFinalize"
+    },
+
+    "ParallelFinalize": {
+      "Type": "Parallel",
+      "Comment": "DynamoDB への結果保存と SNS への通知を並列実行 — どちらも Lambda 不要",
+      "Branches": [
+        {
+          "StartAt": "SaveResult",
+          "States": {
+            "SaveResult": {
+              "Type": "Task",
+              "Comment": "DynamoDB SDK 統合 — ジョブ結果を直接 UpdateItem",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${jobs_table_name}",
+                "Key": {
+                  "job_id": {"S.$": "$.job_id"}
+                },
+                "UpdateExpression": "SET #s = :s, #r = :r, #m = :m, #it = :it, #ot = :ot, completed_at = :ca",
+                "ExpressionAttributeNames": {
+                  "#s": "status",
+                  "#r": "result",
+                  "#m": "model_used",
+                  "#it": "input_tokens",
+                  "#ot": "output_tokens"
+                },
+                "ExpressionAttributeValues": {
+                  ":s":  {"S": "COMPLETED"},
+                  ":r":  {"S.$": "$.llm_result.response"},
+                  ":m":  {"S.$": "$.llm_result.model_used"},
+                  ":it": {"S.$": "States.Format('{}', $.llm_result.input_tokens)"},
+                  ":ot": {"S.$": "States.Format('{}', $.llm_result.output_tokens)"},
+                  ":ca": {"S.$": "$$.State.EnteredTime"}
+                }
+              },
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "NotifyCompletion",
+          "States": {
+            "NotifyCompletion": {
+              "Type": "Task",
+              "Comment": "SNS SDK 統合 — ジョブ完了通知を直接 Publish",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "${notification_topic_arn}",
+                "Message.$": "States.Format('Job {} completed using {}', $.job_id, $.llm_result.model_used)",
+                "Subject": "Job Completed",
+                "MessageAttributes": {
+                  "tenant_id": {
+                    "DataType": "String",
+                    "StringValue.$": "$.tenant_id"
+                  },
+                  "event_type": {
+                    "DataType": "String",
+                    "StringValue": "job.completed"
+                  },
+                  "model_used": {
+                    "DataType": "String",
+                    "StringValue.$": "$.llm_result.model_used"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "JobCompleted"
+    },
+
+    "JobCompleted": {
+      "Type": "Succeed"
+    },
+
+    "HandleFailure": {
+      "Type": "Task",
+      "Comment": "DynamoDB SDK 統合 — エラー情報を記録してステータスを FAILED に更新",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${jobs_table_name}",
+        "Key": {
+          "job_id": {"S.$": "$.job_id"}
+        },
+        "UpdateExpression": "SET #s = :s, #e = :e",
+        "ExpressionAttributeNames": {
+          "#s": "status",
+          "#e": "error_message"
+        },
+        "ExpressionAttributeValues": {
+          ":s": {"S": "FAILED"},
+          ":e": {"S.$": "$.error.Cause"}
+        }
+      },
+      "ResultPath": null,
+      "Next": "NotifyFailure"
+    },
+
+    "NotifyFailure": {
+      "Type": "Task",
+      "Comment": "SNS SDK 統合 — ジョブ失敗通知を直接 Publish",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${notification_topic_arn}",
+        "Message.$": "States.Format('Job {} failed: {}', $.job_id, $.error.Error)",
+        "Subject": "Job Failed",
+        "MessageAttributes": {
+          "tenant_id": {
+            "DataType": "String",
+            "StringValue.$": "$.tenant_id"
+          },
+          "event_type": {
+            "DataType": "String",
+            "StringValue": "job.failed"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Next": "JobFailed"
+    },
+
+    "JobFailed": {
+      "Type": "Fail",
+      "Error": "JobProcessingFailed",
+      "Cause": "Job processing failed. Check error_message attribute in DynamoDB jobs table."
+    }
+  }
+}

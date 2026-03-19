@@ -1,0 +1,137 @@
+name: Terraform
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "event-driven-pipeline-sandbox/environments/**"
+      - "event-driven-pipeline-sandbox/modules/**"
+      - "event-driven-pipeline-sandbox/.github/workflows/terraform.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "event-driven-pipeline-sandbox/environments/**"
+      - "event-driven-pipeline-sandbox/modules/**"
+      - "event-driven-pipeline-sandbox/.github/workflows/terraform.yml"
+
+permissions:
+  id-token: write   # OIDC トークン取得
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.9.0"
+  TF_WORKING_DIR: event-driven-pipeline-sandbox/environments/dev
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event_name == 'push' && 'Apply' || 'Plan' }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-Terraform
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -input=false
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -var="owner=github-actions" \
+            2>&1 | tee plan_output.txt
+        env:
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ github.workspace }}/${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8');
+
+            const truncated = planOutput.length > 60000
+              ? planOutput.substring(0, 60000) + '\n\n... (出力が長いため省略されました)'
+              : planOutput;
+
+            const body = [
+              '## Terraform Plan',
+              '',
+              '| | ステータス |',
+              '|---|---|',
+              `| Format | ${{ steps.fmt.outcome == 'success' && '✅ Pass' || '⚠️ Warning' }} |`,
+              `| Validate | ${{ steps.validate.outcome == 'success' && '✅ Pass' || '❌ Fail' }} |`,
+              `| Plan | ${{ steps.plan.outcome == 'success' && '✅ Success' || '❌ Fail' }} |`,
+              '',
+              '<details><summary>Plan 詳細</summary>',
+              '',
+              '```',
+              truncated,
+              '```',
+              '',
+              '</details>',
+              '',
+              `*実行者: \`${{ github.actor }}\` / ワークフロー: \`${{ github.workflow }}\`*`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const comment of comments) {
+              if (comment.user.type === 'Bot' && comment.body.startsWith('## Terraform Plan')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -input=false -auto-approve tfplan
+        env:
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
