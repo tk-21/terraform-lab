@@ -1,0 +1,235 @@
+# ============================================================
+# Terraform CI/CD ワークフロー
+#
+# トリガー:
+#   PR オープン/更新 → terraform plan（結果を PR コメントに投稿）
+#   main マージ     → terraform apply
+#
+# 認証:
+#   OIDC（アクセスキー不使用）
+#   bootstrap/ で作成した IAM ロールを GitHub Secrets に登録すること
+#   Secrets:
+#     AWS_ROLE_ARN  : bootstrap/outputs.tf の github_actions_role_arn
+# ============================================================
+
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+
+# OIDC トークン取得・PR コメント書き込みに必要な最小権限
+permissions:
+  id-token: write   # OIDC JWT トークンの取得
+  contents: read    # リポジトリのチェックアウト
+  pull-requests: write  # Plan 結果を PR コメントに投稿
+
+env:
+  TF_VERSION: "1.9.0"
+  AWS_REGION: "ap-northeast-1"
+  WORKING_DIR: "environments/dev"
+  # terraform plan の出力を GitHub Actions の折り畳みで見やすくするための上限（文字数）
+  PLAN_MAX_LENGTH: "65000"
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # Job 1: Python ユニットテスト（PR・push 共通）
+  # ──────────────────────────────────────────────────────────
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov boto3
+
+      - name: Run unit tests
+        run: |
+          pytest modules/ \
+            --tb=short \
+            --cov=modules \
+            --cov-report=term-missing \
+            -q
+
+  # ──────────────────────────────────────────────────────────
+  # Job 2: Terraform Plan（PR のみ）
+  # ──────────────────────────────────────────────────────────
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: unit-test
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # セッション名でどの PR が実行したかを追跡できるようにする
+          role-session-name: github-actions-plan-pr${{ github.event.pull_request.number }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -no-color
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive -no-color
+        # フォーマットエラーがあっても後続ステップを実行して全エラーを一度に報告する
+        continue-on-error: true
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -out=tfplan 2>&1 | tee /tmp/plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Post Plan result to PR
+        uses: actions/github-script@v7
+        env:
+          PLAN_OUTPUT_FILE: /tmp/plan_output.txt
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync(process.env.PLAN_OUTPUT_FILE, 'utf8');
+
+            // 長すぎる場合は末尾を切り詰めてコメントサイズ制限を回避
+            const maxLen = parseInt(process.env.PLAN_MAX_LENGTH);
+            const truncated = planOutput.length > maxLen
+              ? planOutput.slice(0, maxLen) + '\n\n... (出力が長いため省略。Actions ログを確認してください)'
+              : planOutput;
+
+            const fmtStatus  = '${{ steps.fmt.outcome }}' === 'success' ? '✅' : '❌';
+            const initStatus = '${{ steps.init.outcome }}' === 'success' ? '✅' : '❌';
+            const valStatus  = '${{ steps.validate.outcome }}' === 'success' ? '✅' : '❌';
+            const planStatus = '${{ steps.plan.outcome }}' === 'success' ? '✅' : '❌';
+
+            const body = [
+              '## Terraform Plan 結果',
+              '',
+              `| ステップ | 結果 |`,
+              `|---|---|`,
+              `| Format  | ${fmtStatus} |`,
+              `| Init    | ${initStatus} |`,
+              `| Validate| ${valStatus} |`,
+              `| Plan    | ${planStatus} |`,
+              '',
+              '<details><summary>Plan 詳細（クリックで展開）</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+              '',
+              `> Commit: \`${{ github.sha }}\``,
+            ].join('\n');
+
+            // 同じ PR への既存コメントがあれば更新、なければ新規作成
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('## Terraform Plan 結果')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # Plan か Validate が失敗していた場合はジョブを失敗させる
+      - name: Check result
+        if: steps.plan.outputs.exit_code != '0' || steps.fmt.outcome == 'failure'
+        run: exit 1
+
+  # ──────────────────────────────────────────────────────────
+  # Job 3: Terraform Apply（main マージのみ）
+  # ──────────────────────────────────────────────────────────
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: unit-test
+    # apply は同時実行しない（並行実行による state 競合防止）
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    environment:
+      name: production
+      # GitHub Environments の保護ルール（必要に応じて手動承認を設定可能）
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-apply-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -no-color
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -no-color
