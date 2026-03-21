@@ -1,0 +1,187 @@
+{
+  "Comment": "bedrock-finops-automation: AWS 月次コストレポート自動生成ワークフロー\n  collector → anomaly-detector → ai-reporter → html-formatter → chatwork-notifier",
+  "StartAt": "CollectCostData",
+  "States": {
+
+    "CollectCostData": {
+      "Type": "Task",
+      "Comment": "Cost Explorer API で当月・前月コストデータを収集し S3 / DynamoDB に保存する",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${collector_lambda_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$",
+      "OutputPath": "$.Payload",
+      "Next": "DetectAnomalies",
+      "Retry": [
+        {
+          "Comment": "Lambda 一時障害（スロットリング・サービス例外）に対してリトライ",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WorkflowFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+
+    "DetectAnomalies": {
+      "Type": "Task",
+      "Comment": "前月比・スパイク・サービス集中度の異常を検知する",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${anomaly_detector_lambda_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$",
+      "OutputPath": "$.Payload",
+      "Next": "GenerateAIReport",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WorkflowFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+
+    "GenerateAIReport": {
+      "Type": "Task",
+      "Comment": "Bedrock（Claude 3 Haiku）で AI 所見・改善提案を生成する",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ai_reporter_lambda_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$",
+      "OutputPath": "$.Payload",
+      "Next": "FormatHTMLReport",
+      "Retry": [
+        {
+          "Comment": "Bedrock のスロットリングも対象にするため Lambda エラーに加えて処理側エラーもリトライ",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WorkflowFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+
+    "FormatHTMLReport": {
+      "Type": "Task",
+      "Comment": "コストデータ・異常検知・AI 所見を HTML レポートに整形して S3 に保存する",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${html_formatter_lambda_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$",
+      "OutputPath": "$.Payload",
+      "Next": "SendChatworkNotification",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WorkflowFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+
+    "SendChatworkNotification": {
+      "Type": "Task",
+      "Comment": "月次コストレポートの要約と HTML レポートリンクを Chatwork に送信する",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${chatwork_notifier_lambda_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$",
+      "OutputPath": "$.Payload",
+      "Next": "WorkflowSucceeded",
+      "Retry": [
+        {
+          "Comment": "Chatwork API の一時障害に対してリトライ（通知失敗でもワークフロー全体は成功扱いにするためリトライ上限を抑える）",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WorkflowFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+
+    "WorkflowSucceeded": {
+      "Type": "Succeed",
+      "Comment": "全ステップ正常完了。DynamoDB のステータスが completed になっていることを確認すること。"
+    },
+
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Comment": "いずれかのステップで回復不能なエラーが発生。CloudWatch Logs および Step Functions 実行履歴を確認すること。",
+      "Error": "WorkflowFailed",
+      "Cause": "One or more steps failed. Check CloudWatch Logs for details."
+    }
+
+  }
+}

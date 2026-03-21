@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+testpaths = ["modules"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["modules"]
+omit = ["*/tests/*", "*/dist/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

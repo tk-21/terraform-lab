@@ -1,0 +1,222 @@
+# ============================================================
+# 統合テストワークフロー
+#
+# 用途:
+#   Step Functions ステートマシンをエンドツーエンドで手動実行し、
+#   全 Lambda が正常に連携することを確認する。
+#
+# 実行方法:
+#   GitHub Actions > integration-test > Run workflow
+#   target_year_month を指定しない場合は前月が対象になる
+#
+# 前提条件:
+#   - terraform apply が完了していること
+#   - Chatwork API トークン / ルーム ID が登録済みであること
+#   - GitHub Secrets に以下が登録済みであること
+#       AWS_ROLE_ARN          : bootstrap/ で作成した IAM ロール ARN
+#       STATE_MACHINE_ARN     : environments/dev の terraform output state_machine_arn
+# ============================================================
+
+name: Integration Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_year_month:
+        description: "対象月（例: 2025-01）省略時は前月"
+        required: false
+        default: ""
+      environment:
+        description: "対象環境"
+        required: false
+        default: "dev"
+        type: choice
+        options:
+          - dev
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: "ap-northeast-1"
+  POLL_INTERVAL_SECONDS: "30"
+  POLL_MAX_ATTEMPTS: "20"  # 最大 10 分待機
+
+jobs:
+  integration-test:
+    name: Run FinOps Workflow (E2E)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-integration-test-${{ github.run_id }}
+
+      # ── Step Functions 実行開始 ───────────────────────────
+      - name: Start Step Functions execution
+        id: start
+        run: |
+          # 対象月の入力を構築
+          if [ -n "${{ inputs.target_year_month }}" ]; then
+            INPUT='{"source":"integration-test","target_year_month":"${{ inputs.target_year_month }}"}'
+          else
+            INPUT='{"source":"integration-test"}'
+          fi
+
+          echo "Input: $INPUT"
+
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "${{ secrets.STATE_MACHINE_ARN }}" \
+            --name "integration-test-$(date +%Y%m%d%H%M%S)" \
+            --input "$INPUT" \
+            --query 'executionArn' \
+            --output text)
+
+          echo "execution_arn=${EXECUTION_ARN}" >> $GITHUB_OUTPUT
+          echo "Started execution: ${EXECUTION_ARN}"
+
+      # ── 実行完了をポーリング ──────────────────────────────
+      - name: Wait for execution to complete
+        id: wait
+        run: |
+          EXECUTION_ARN="${{ steps.start.outputs.execution_arn }}"
+          MAX_ATTEMPTS=${{ env.POLL_MAX_ATTEMPTS }}
+          INTERVAL=${{ env.POLL_INTERVAL_SECONDS }}
+
+          echo "Polling execution: ${EXECUTION_ARN}"
+          echo "Interval: ${INTERVAL}s, Max attempts: ${MAX_ATTEMPTS}"
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            STATUS=$(aws stepfunctions describe-execution \
+              --execution-arn "${EXECUTION_ARN}" \
+              --query 'status' \
+              --output text)
+
+            echo "[${i}/${MAX_ATTEMPTS}] Status: ${STATUS}"
+
+            case "$STATUS" in
+              SUCCEEDED)
+                echo "status=SUCCEEDED" >> $GITHUB_OUTPUT
+                echo "Execution SUCCEEDED"
+                exit 0
+                ;;
+              FAILED|ABORTED|TIMED_OUT)
+                echo "status=${STATUS}" >> $GITHUB_OUTPUT
+                echo "Execution ${STATUS}"
+                exit 1
+                ;;
+              RUNNING)
+                sleep $INTERVAL
+                ;;
+              *)
+                echo "Unknown status: ${STATUS}"
+                sleep $INTERVAL
+                ;;
+            esac
+          done
+
+          echo "status=TIMEOUT" >> $GITHUB_OUTPUT
+          echo "Timed out waiting for execution"
+          exit 1
+
+      # ── 実行結果の詳細を取得（成功・失敗どちらも）────────
+      - name: Get execution result
+        if: always()
+        run: |
+          EXECUTION_ARN="${{ steps.start.outputs.execution_arn }}"
+
+          echo "=== Execution Details ==="
+          aws stepfunctions describe-execution \
+            --execution-arn "${EXECUTION_ARN}" \
+            --query '{status:status,startDate:startDate,stopDate:stopDate,name:name}' \
+            --output table
+
+          # 失敗時はエラー詳細も取得
+          STATUS="${{ steps.wait.outputs.status }}"
+          if [ "$STATUS" != "SUCCEEDED" ]; then
+            echo ""
+            echo "=== Execution History (last 5 events) ==="
+            aws stepfunctions get-execution-history \
+              --execution-arn "${EXECUTION_ARN}" \
+              --reverse-order \
+              --max-results 5 \
+              --query 'events[].{timestamp:timestamp,type:type}' \
+              --output table
+          fi
+
+      # ── S3 出力の存在確認（成功時のみ）──────────────────
+      - name: Verify S3 outputs
+        if: steps.wait.outputs.status == 'SUCCEEDED'
+        run: |
+          # Terraform output から S3 バケット名を取得
+          cd environments/dev
+          pip install -q awscli 2>/dev/null || true
+          BUCKET=$(aws cloudformation describe-stacks 2>/dev/null || \
+            aws ssm get-parameter \
+              --name "/bedrock-finops-automation/report-bucket-name" \
+              --query 'Parameter.Value' --output text 2>/dev/null || \
+            echo "")
+
+          if [ -z "$BUCKET" ]; then
+            echo "Skipping S3 check: bucket name not resolvable from SSM"
+            exit 0
+          fi
+
+          TARGET_MONTH="${{ inputs.target_year_month }}"
+          if [ -z "$TARGET_MONTH" ]; then
+            TARGET_MONTH=$(date -d "last month" +%Y-%m 2>/dev/null || \
+                           date -v-1m +%Y-%m 2>/dev/null || \
+                           python3 -c "from datetime import date; d=date.today().replace(day=1); print(f'{d.year}-{d.month-1:02d}' if d.month>1 else f'{d.year-1}-12')")
+          fi
+
+          echo "Checking S3 outputs for month: ${TARGET_MONTH}"
+
+          EXPECTED_KEYS=(
+            "raw/${TARGET_MONTH}/current_month.json"
+            "raw/${TARGET_MONTH}/prev_month.json"
+            "anomaly/${TARGET_MONTH}/anomaly_report.json"
+            "ai-report/${TARGET_MONTH}/analysis.json"
+            "html/${TARGET_MONTH}/report.html"
+          )
+
+          FAILED=0
+          for KEY in "${EXPECTED_KEYS[@]}"; do
+            if aws s3api head-object --bucket "$BUCKET" --key "$KEY" > /dev/null 2>&1; then
+              echo "✅ s3://${BUCKET}/${KEY}"
+            else
+              echo "❌ s3://${BUCKET}/${KEY} (not found)"
+              FAILED=1
+            fi
+          done
+
+          exit $FAILED
+
+      # ── テスト結果サマリー ────────────────────────────────
+      - name: Test summary
+        if: always()
+        run: |
+          STATUS="${{ steps.wait.outputs.status }}"
+          EXECUTION_ARN="${{ steps.start.outputs.execution_arn }}"
+
+          echo "## Integration Test Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "✅ **PASSED** - ワークフロー正常完了" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **FAILED** - ステータス: ${STATUS}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 項目 | 値 |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 実行 ARN | \`${EXECUTION_ARN}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 対象月 | ${{ inputs.target_year_month || '（前月）' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 環境 | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
