@@ -886,6 +886,472 @@ CI/CD 有効化チェックリスト（初回）:
 - `KNOWLEDGE_BASE_ID`（KBモード時必須）
 - `KB_MODEL_ARN`（現状は互換用で未使用）
 
+## このプロジェクトで学んだこと
+
+RAG アプリを AWS 上で動かすには、Bedrock の API だけ知っていても足りません。
+「なぜこう書くのか」「何を間違えるとどうなるか」をまとめます。
+
+---
+
+### Terraform 編
+
+#### 1. OpenSearch Serverless は「ポリシー3つが揃って初めて Collection を作れる」
+
+通常の OpenSearch Service と違い、Amazon OpenSearch Serverless (AOSS) には独自のポリシー体系があります。
+Collection を作る前に、**3種類のポリシーをすべて存在させる**必要があります。
+
+```
+Encryption policy（誰が暗号化するか）
+  +
+Network policy（どこからアクセス可能か）
+  +
+Data Access policy（誰がデータを読み書きできるか）
+  ↓
+この3つが揃って初めて Collection を作れる
+```
+
+これが `infra/opensearch_serverless.tf` で `depends_on` を明示している理由です。
+
+```hcl
+resource "aws_opensearchserverless_collection" "kb" {
+  ...
+  depends_on = [
+    aws_opensearchserverless_security_policy.encryption,
+    aws_opensearchserverless_security_policy.network,
+    aws_opensearchserverless_access_policy.kb   # ← この3つが先
+  ]
+}
+```
+
+Terraform はデフォルトでリソースを並列 apply します。`depends_on` を書かないと、ポリシーが作成される前に Collection の apply が走り、エラーになります。
+
+**よくある失敗：** Data Access policy を後から追加しようとすると「Collection は作られているのに検索ができない」という謎の状態になります。最初から3つ揃えておくことが重要です。
+
+---
+
+#### 2. Bedrock Knowledge Base を動かすには4種類の IAM 権限が必要
+
+「Bedrock の Knowledge Base を作るだけ」と思いがちですが、KB が内部で動く際に複数の AWS サービスを横断します。KB 専用の IAM ロール（`infra/bedrock_kb.tf`）に必要な権限は4種類あります。
+
+```
+Bedrock Knowledge Base が ingestion（取り込み）を実行するとき：
+
+S3 から原文を読む      → s3:GetObject, s3:ListBucket
+AOSS に書き込む        → aoss:APIAccessAll
+文章をベクトル化する   → bedrock:InvokeModel（Titan Embed v2）
+KMS 暗号化を復号する  → kms:Decrypt, kms:DescribeKey
+```
+
+特に **KMS の Decrypt** は見落としやすいです。S3 バケットを KMS 暗号化すると、ファイルの読み取り自体には `s3:GetObject` があれば成功しますが、中身の復号には別途 KMS 権限が必要です。
+
+```hcl
+# infra/kms.tf 抜粋 ─ KB ロールに Decrypt を許可
+statement {
+  sid = "AllowKBRoleDecrypt"
+  principals {
+    type        = "AWS"
+    identifiers = [aws_iam_role.kb.arn]
+  }
+  actions   = ["kms:Decrypt", "kms:DescribeKey"]
+  resources = ["*"]
+  condition {
+    test     = "StringEquals"
+    variable = "kms:ViaService"
+    values   = ["s3.${var.region}.amazonaws.com"]  # S3 経由の復号のみ許可
+  }
+}
+```
+
+**失敗時の症状：** ingestion job のステータスが `FAILED` になるが、エラーメッセージが「AccessDenied on KMS」のように表示されず、S3 や AOSS 側のエラーと区別しにくいです。`kms:ViaService` 条件をつけると「S3 経由でのみ復号可」という最小権限になります。
+
+---
+
+#### 3. IRSA は「AWS 側」と「K8s 側」の両方を設定しないと機能しない
+
+IRSA（IAM Roles for Service Accounts）は、EKS の Pod に AWS の IAM ロールを紐づける仕組みです。
+アクセスキーを Pod に渡さずに済むため、セキュリティ的に優れています。
+
+仕組みを図解すると：
+
+```
+[Pod 起動]
+  ↓
+K8s の ServiceAccount に annotation がある？
+  → eks.amazonaws.com/role-arn: arn:aws:iam::123:role/knowledge-bot-app
+  ↓
+EKS の OIDC プロバイダが「この ServiceAccount は信頼できる」と証明
+  ↓
+AWS STS に AssumeRoleWithWebIdentity を実行
+  ↓
+一時的な IAM 認証情報を取得（15 分～1時間）
+  ↓
+Pod が AWS API（Bedrock 等）を呼べる
+```
+
+設定は「AWS 側（Terraform）」と「K8s 側（マニフェスト）」の**2箇所を一致させる**必要があります。
+
+```hcl
+# AWS 側（infra/irsa_app.tf）
+oidc_providers = {
+  main = {
+    provider_arn = module.eks.oidc_provider_arn
+    namespace_service_accounts = ["knowledgebot:knowledgebot-sa"]
+    #                             ↑namespace  ↑serviceaccount名
+  }
+}
+```
+
+```yaml
+# K8s 側（k8s/base/serviceaccount.yaml）
+metadata:
+  name: knowledgebot-sa          # ← Terraform 側と一致させる
+  namespace: knowledgebot        # ← Terraform 側と一致させる
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_WITH_IRSA_APP_ROLE_ARN
+```
+
+**よくある失敗：** Terraform 側を変えたが K8s のマニフェストを apply し直していない（または逆）。片方だけ変えると `AccessDenied` になります。`deploy_k8s.sh` が ServiceAccount の ARN を自動注入してくれているのはこの理由です。
+
+---
+
+#### 4. ベクトルインデックスは `aws` provider では作れない
+
+AOSS の Collection は `aws` provider で作れますが、その中に作るベクトルインデックスは `aws` provider に対応するリソースがありません。
+別途 `opensearch` provider を追加し、Collection の endpoint に接続してインデックスを作ります（`infra/opensearch_index.tf`）。
+
+```hcl
+resource "opensearch_index" "kb" {
+  name      = var.aoss_index_name
+  index_knn = true   # ベクトル検索を有効化
+
+  mappings = jsonencode({
+    properties = {
+      vector = {
+        type      = "knn_vector"
+        dimension = var.vector_dimension   # 1024（Titan Embed v2 の出力次元）
+        method = {
+          name       = "hnsw"   # 近似最近傍探索アルゴリズム
+          engine     = "faiss"  # Facebook AI が開発したベクトルライブラリ
+          space_type = "l2"     # ユークリッド距離で類似度計算
+        }
+      }
+      text     = { type = "text" }
+      metadata = { type = "text", index = false }
+    }
+  })
+
+  depends_on = [aws_opensearchserverless_collection.kb, ...]
+}
+```
+
+`hnsw`（Hierarchical Navigable Small World）は「大量のベクトルから近い順に探す」アルゴリズムです。全件比較より高速で、RAG のような「似たドキュメントを探す」用途に向いています。
+
+---
+
+#### 5. `data "aws_caller_identity"` で実行者を動的に取得する
+
+AOSS の Data Access policy は「誰がインデックスを読み書きできるか」を定義します。
+ここに Terraform 実行者（インデックスを作る人）を含める必要がありますが、ARN をハードコードすると CI とローカルで設定を分ける必要が生じます。
+
+```hcl
+# infra/opensearch_serverless.tf 抜粋
+Principal = [
+  data.aws_caller_identity.current.arn,  # ← 実行者の ARN を動的取得
+  aws_iam_role.kb.arn                    # ← Bedrock KB が使うロール
+]
+```
+
+`data.aws_caller_identity.current.arn` は `terraform apply` を実行したときの IAM ユーザー/ロールの ARN を自動で返します。ローカルでは開発者の IAM ユーザー、GitHub Actions では OIDC ロールが入ります。ハードコード不要です。
+
+---
+
+### Kubernetes 編
+
+#### 6. 3種類の Probe はそれぞれ別の問題を解決している
+
+`k8s/base/deployment.yaml` に3つの Probe が定義されています。なぜ3種類必要なのかを理解するには、それぞれが「異なるフェーズ」を監視していることを把握する必要があります。
+
+```
+Pod が起動
+  ↓
+[startupProbe] が成功するまで readiness/liveness は無視される
+  - /healthz を 5秒ごとに確認、最大30回（= 150秒待つ）
+  - 失敗したら Pod を再起動
+  ↓ 成功
+[readinessProbe] が成功すると Service の Endpoints に追加される（トラフィックが来る）
+  - 失敗すると Endpoints から除外（トラフィックが来なくなる）
+  ↓
+[livenessProbe] が失敗し続けると強制再起動
+  - プロセスがデッドロックしているが死んでいない状態を検出
+```
+
+**startupProbe を省略すると何が起きるか：**
+
+FastAPI + Bedrock SDK の初期化には数秒かかることがあります。startupProbe がないと、起動中の Pod に livenessProbe が走り「応答なし」と判定して再起動します。再起動してもまた同じことが起きる→ `CrashLoopBackOff` になります。
+
+```yaml
+startupProbe:
+  httpGet: { path: /healthz, port: 8080 }
+  failureThreshold: 30   # 30回 × 5秒 = 最大150秒待つ
+  periodSeconds: 5
+livenessProbe:
+  httpGet: { path: /healthz, port: 8080 }
+  initialDelaySeconds: 20  # startupProbe 成功後さらに20秒待ってから開始
+  periodSeconds: 10
+```
+
+---
+
+#### 7. ConfigMap と Secret の使い分け
+
+Pod の設定値を外から注入する方法として ConfigMap と Secret があります。どちらに入れるかは「機密かどうか」で決まります。
+
+```yaml
+env:
+  # ConfigMap（平文で保存 / git に入れても問題ない設定値）
+  - name: RAG_MODE
+    valueFrom:
+      configMapKeyRef:
+        name: knowledgebot-config
+        key: RAG_MODE
+
+  - name: KNOWLEDGE_BASE_ID
+    valueFrom:
+      configMapKeyRef:
+        name: knowledgebot-config
+        key: KNOWLEDGE_BASE_ID
+
+  # Secret（base64 エンコードされて保存 / 機密情報）
+  - name: KB_MODEL_ARN
+    valueFrom:
+      secretKeyRef:
+        name: knowledgebot-secrets
+        key: KB_MODEL_ARN
+        optional: true   # ← Secret が存在しなくても起動できる
+```
+
+`optional: true` のポイント：Secret がなくても Pod が起動します。「最初は MVP モードで動かし、後から KB モードに切り替える」という段階的な運用が可能になります。`optional: true` を忘れると、Secret を作っていない状態では Pod が起動すらしません。
+
+---
+
+#### 8. RollingUpdate の `maxUnavailable: 0` が「無停止更新」を実現する
+
+新しいバージョンのアプリを停止なしで切り替えるのが RollingUpdate です。
+パラメータの意味を具体的に示します（`replicas: 2` の場合）。
+
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1        # 最大で replicas+1 台（= 3台）まで増やしてよい
+    maxUnavailable: 0  # 最低でも replicas 台（= 2台）を常に維持する
+```
+
+更新中の Pod の増減イメージ：
+
+```
+初期状態:  [v1] [v1]          ← 2台稼働
+更新開始:  [v1] [v1] [v2]    ← v2 を1台追加（最大 maxSurge=1 で3台）
+v2 Ready:  [v1] [v2]          ← v1 を1台削除（最低 2台を維持）
+更新完了:  [v2] [v2]          ← 完了
+```
+
+`maxUnavailable: 1` にすると「旧 Pod を先に落とし、空きができたら新 Pod を起動」という逆順になります。その間 1台しか動かないため、レスポンスが遅くなります。ユーザーへの影響を最小化したい場合は `maxUnavailable: 0` が適切です。
+
+---
+
+#### 9. HPA と PDB はセットで使って初めて意味がある
+
+**HPA（Horizontal Pod Autoscaler）：** CPU 使用率が上がると Pod を増やし、下がると減らします。
+
+```yaml
+# hpa.yaml
+minReplicas: 2
+maxReplicas: 6
+metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60  # CPU 60% を超えたらスケールアウト
+```
+
+**PDB（Pod Disruption Budget）：** ノードメンテナンス（kubectl drain）などの際に「最低何台は維持する」を保証します。
+
+```yaml
+# pdb.yaml
+spec:
+  minAvailable: 1  # 少なくとも 1台は必ず稼働させる
+```
+
+**なぜセットが必要か：**
+
+HPA でスケールインしているとき（Pod が 6台 → 2台に減っている途中）にノードのメンテナンスが走ると、全 Pod が同時に終了することがあります。PDB があると「最低 1台は必ず残す」制約がかかるため、ゼロダウンタイムが保証されます。
+
+```
+HPA スケールイン中:   [v] [v] [v] [v] ← 削減中
+ノード drain 発生:    [v] [v] [×] [×]  ← PDB が「最低1台」を守る
+                      [v] [_]           ← 1台は生き残る（PDB の効果）
+```
+
+---
+
+### Bedrock 編
+
+#### 10. 「検索」と「生成」は別の API エンドポイントを使う
+
+Bedrock というサービスは1つですが、内部で用途ごとにエンドポイントが分かれています。
+
+```
+bedrock-runtime（生成専用）
+  └─ InvokeModel → Claude, Titan 等を直接呼ぶ
+
+bedrock-agent-runtime（エージェント・KB 専用）
+  └─ Retrieve          → KB からドキュメントを検索するだけ
+  └─ RetrieveAndGenerate → 検索 + 生成を1回で完結
+```
+
+このプロジェクトの IRSA ポリシーには両方の権限が必要です（`infra/irsa_app.tf`）：
+
+```hcl
+actions = [
+  "bedrock:InvokeModel",            # ← bedrock-runtime 用
+  "bedrock:Retrieve",               # ← bedrock-agent-runtime 用
+  "bedrock:RetrieveAndGenerate"     # ← bedrock-agent-runtime 用
+]
+```
+
+`InvokeModel` だけ書いて KB 検索が `AccessDenied` になるのは、エンドポイントが別だからです。
+
+---
+
+#### 11. `RetrieveAndGenerate` を使わず2段構成にした理由
+
+Bedrock には `RetrieveAndGenerate` という「検索 + 生成を1回の API で完結させる」便利な API があります。
+このプロジェクトでは意図的に使わず、`retrieve()` → `generate_with_claude()` に分けています（`app/src/rag_kb.py`）。
+
+**比較：**
+
+| 観点 | `RetrieveAndGenerate` | 手動2段（このプロジェクト） |
+|---|---|---|
+| 実装量 | 少ない（API 1回） | 多い（API 2回） |
+| プロンプト制御 | Bedrock 側が自動生成 | 自由に書ける |
+| 引用番号 `[1][2]` の形式 | 制御しにくい | 自分で整形できる |
+| 「ヒットなし」の早期リターン | できない | 検索後に判断できる |
+| 重複引用の除去 | できない | 自前でフィルタできる |
+| 複数 KB の統合 | できない | 複数 retrieve を合成できる |
+
+**2段構成の実装イメージ（`rag_kb.py` の流れ）：**
+
+```
+1. retrieve(kb_id, question, k=3)
+   └─ Bedrock Agent Runtime に「この質問に関係するドキュメントを3件返して」
+   └─ 結果：[{text: "...", source: "docs/vpn.md", score: 0.92}, ...]
+
+2. ヒットが0件なら早期リターン（「該当なし」を返す）
+
+3. generate_with_claude(snippets, question)
+   └─ Bedrock Runtime に「この検索結果を使って質問に答えて」
+   └─ プロンプトに引用番号 [1][2] を自前で埋め込む
+   └─ 結果：「VPN 接続は... [1] 参照してください。」
+```
+
+「まずは動かす」なら `RetrieveAndGenerate`、「回答の品質や形式を細かく制御したい」なら2段構成が適しています。
+
+---
+
+#### 12. 埋め込みモデルと `dim` は必ずセットで考える
+
+ベクトルインデックスの `dimension` は、使う埋め込みモデルの出力次元と**完全に一致させる**必要があります。
+
+```
+RAG の検索がなぜ機能するか：
+
+ドキュメント本文 → 埋め込みモデル → 1024次元のベクトル → AOSS に保存
+                    ↑
+             amazon.titan-embed-text-v2:0 の出力次元 = 1024
+
+質問テキスト  → 埋め込みモデル → 1024次元のベクトル → AOSS で類似検索
+                    ↑
+             同じモデルを使うから次元が揃う
+```
+
+`infra/opensearch_index.tf` の `dimension = var.vector_dimension`（デフォルト 1024）と、`infra/bedrock_kb.tf` の `amazon.titan-embed-text-v2:0` はセットです。
+
+**モデルを変えるときの注意点：**
+
+```
+Titan Embed Text v2   → dim = 1024 ✓（このプロジェクトの設定）
+Cohere Embed v3       → dim = 1024 ✓（そのまま使える）
+OpenAI text-embedding-3-small → dim = 1536 ✗（Bedrock 外なので使えない）
+```
+
+次元が合っていないと ingestion job は FAILED になりますが、エラーメッセージが「dimension mismatch」のように明確には出ません。埋め込みモデルを変えたら必ずインデックスを再作成してください。
+
+---
+
+#### 13. IAM の「委譲の連鎖」 ─ 権限は4層に分かれている
+
+「アプリから Bedrock を呼べる」ことと「Bedrock が Knowledge Base を動かせる」は別の権限体系です。混同するとデバッグが困難になります。
+
+```
+[EKS Pod]（knowledgebot-sa）
+  │
+  │ IRSA（eks.amazonaws.com/role-arn annotation）
+  ▼
+[IRSA App ロール]（infra/irsa_app.tf）
+  ├─ bedrock:InvokeModel    → Claude で回答生成
+  ├─ bedrock:Retrieve       → KB 検索
+  └─ bedrock:RetrieveAndGenerate
+           │
+           │ （Bedrock が内部で KB を呼ぶ）
+           ▼
+    [Bedrock Knowledge Base]（infra/bedrock_kb.tf）
+           │
+           │ KB が使うロール（aws_iam_role.kb）
+           ▼
+    [KB 実行ロール]（bedrock.amazonaws.com が Assume）
+      ├─ s3:GetObject, ListBucket   → ナレッジ原文を読む
+      ├─ aoss:APIAccessAll          → ベクトルを読み書き
+      ├─ bedrock:InvokeModel        → Titan Embed でベクトル化
+      └─ kms:Decrypt, DescribeKey   → KMS 暗号化を復号
+```
+
+**デバッグの切り分け方：**
+
+| エラー発生箇所 | 原因の可能性 |
+|---|---|
+| `POST /ask` が 403 | IRSA ロールの `bedrock:Retrieve` が不足 |
+| ingestion job が FAILED | KB 実行ロールの S3/AOSS/KMS 権限が不足 |
+| 検索は成功するが回答が空 | `bedrock:InvokeModel`（Claude）が不足 |
+| AOSS へのアクセスが拒否 | Data Access policy に KB ロールが含まれていない |
+
+---
+
+#### 14. MVP モードと KB モードで「検索のしくみ」が根本的に異なる
+
+`RAG_MODE=MVP` のとき `rag_mvp.py` が使われます。その実装は非常にシンプルです。
+
+```python
+def simple_retrieve(chunks, query, k=4):
+    q = re.findall(r"\w+", query.lower())        # 質問を単語に分割
+    scored = []
+    for c in chunks:
+        text = c["text"].lower()
+        score = sum(1 for w in q if w in text)   # 単語が何個含まれるか数える
+        if score > 0:
+            scored.append((score, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:k]]
+```
+
+「VPN 接続方法」という質問なら「VPN」「接続」「方法」という単語がチャンクに何個含まれるかを数えるだけです。実装は 10行ですが、同義語や文脈は無視されます。
+
+KB モードでは Titan Embed v2 が文章全体の「意味」をベクトル化するため、「VPN をつなぐ手順」のような言い換えでも正しく検索できます。MVP モードと KB モードの違いは、「文字のマッチング」か「意味のマッチング」かという根本的な差があります。
+
+---
+
 ## コスト注意（運用前に要確認）
 
 常時課金になりやすい主なリソース:
