@@ -3,7 +3,6 @@ set -euo pipefail
 
 NS="knowledgebot"
 APP_NAME="knowledgebot"
-OIDC_SECRET_NAME="oidc-client-secret"
 
 # --- terraform outputs ---
 tf() { (cd infra && terraform output -raw "$1"); }
@@ -13,13 +12,6 @@ CLUSTER="$(tf cluster_name)"
 IRSA_ROLE_ARN="$(tf irsa_app_role_arn)"
 IMAGE="${APP_IMAGE:-$(tf app_image)}"
 ALB_LOG_BUCKET="$(tf alb_logs_bucket)"
-
-OIDC_ISSUER="$(tf oidc_issuer)"
-OIDC_AUTHZ="$(tf oidc_authorization_endpoint)"
-OIDC_TOKEN="$(tf oidc_token_endpoint)"
-OIDC_USERINFO="$(tf oidc_userinfo_endpoint)"
-OIDC_CLIENT_ID="$(tf cognito_client_id)"
-OIDC_CLIENT_SECRET="$(cd infra && terraform output -json cognito_client_secret | jq -r '.')"
 
 # KB (optional)
 KB_ID="$(tf knowledge_base_id || true)"
@@ -63,18 +55,7 @@ kubectl apply -f "${tmp_deploy}"
 echo "[*] Apply Service..."
 kubectl apply -f k8s/base/service.yaml
 
-echo "[*] Ensure OIDC secret (only if Cognito outputs exist)..."
-if [[ -n "${OIDC_CLIENT_SECRET}" && "${OIDC_CLIENT_SECRET}" != "null" && -n "${OIDC_CLIENT_ID}" && "${OIDC_CLIENT_ID}" != "null" ]]; then
-  kubectl -n "${NS}" create secret generic "${OIDC_SECRET_NAME}" \
-    --from-literal=clientID="${OIDC_CLIENT_ID}" \
-    --from-literal=clientSecret="${OIDC_CLIENT_SECRET}" \
-    --dry-run=client -o yaml | kubectl apply -f -
-else
-  echo "    - Cognito client secret not found. Skipping OIDC secret."
-fi
-
 echo "[*] Apply Ingress..."
-# OIDC annotation JSON を埋める（Cognito Hosted UI想定）
 tmp_ing="$(mktemp)"
 
 # ALB access logs annotation
@@ -91,29 +72,6 @@ if [[ -n "${ALB_LOG_BUCKET}" && "${ALB_LOG_BUCKET}" != "null" ]]; then
       $0 ~ /^  annotations:/ {
         print "    alb.ingress.kubernetes.io/load-balancer-attributes: >"
         print "      " attr
-      }
-    ' "${tmp_ing}" > "${tmp_ing}.new" && mv "${tmp_ing}.new" "${tmp_ing}"
-  fi
-fi
-
-# OIDCが揃っているなら auth-idp-oidc を埋める
-if [[ -n "${OIDC_ISSUER}" && "${OIDC_ISSUER}" != "null" && -n "${OIDC_AUTHZ}" && "${OIDC_AUTHZ}" != "null" ]]; then
-  if ! grep -q '^    alb.ingress.kubernetes.io/auth-type:' "${tmp_ing}"; then
-    awk -v issuer="${OIDC_ISSUER}" \
-        -v authz="${OIDC_AUTHZ}" \
-        -v token="${OIDC_TOKEN}" \
-        -v userinfo="${OIDC_USERINFO}" \
-        -v secret="${OIDC_SECRET_NAME}" '
-      {
-        print
-        if ($0 ~ /^  annotations:/) {
-          print "    alb.ingress.kubernetes.io/auth-type: oidc"
-          print "    alb.ingress.kubernetes.io/auth-scope: \"openid\""
-          print "    alb.ingress.kubernetes.io/auth-session-timeout: \"3600\""
-          print "    alb.ingress.kubernetes.io/auth-on-unauthenticated-request: authenticate"
-          print "    alb.ingress.kubernetes.io/auth-idp-oidc: >"
-          print "      {\"issuer\":\"" issuer "\",\"authorizationEndpoint\":\"" authz "\",\"tokenEndpoint\":\"" token "\",\"userInfoEndpoint\":\"" userinfo "\",\"secretName\":\"" secret "\"}"
-        }
       }
     ' "${tmp_ing}" > "${tmp_ing}.new" && mv "${tmp_ing}.new" "${tmp_ing}"
   fi

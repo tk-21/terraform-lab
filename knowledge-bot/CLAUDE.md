@@ -32,7 +32,7 @@ cd infra && terraform validate
 ## Architecture
 
 ```
-User → ALB (WAF) → EKS (knowledgebot namespace)
+User → ALB → EKS (knowledgebot namespace)
                         └─ FastAPI app (port 8080)
                               └─ IRSA → Bedrock RetrieveAndGenerate API
                                             └─ Knowledge Base
@@ -50,7 +50,6 @@ User → ALB (WAF) → EKS (knowledgebot namespace)
 | `opensearch_index.tf` | Vector index (`knn_vector`, hnsw, faiss, l2, dim=1024) |
 | `irsa_app.tf` | IRSA role for EKS pods → `bedrock:InvokeModel`, `Retrieve`, `RetrieveAndGenerate` |
 | `endpoints.tf` | VPC endpoints for Bedrock, ECR, logs, STS, S3 (private DNS) |
-| `cognito_oidc.tf` | Optional Cognito user pool for OIDC auth |
 | `github_oidc_ci.tf` | GitHub OIDC role for CI/CD (set `github_repository` variable) |
 | `helm_addons.tf` | AWS Load Balancer Controller (enabled via `enable_lbc = true`) |
 
@@ -67,7 +66,6 @@ User → ALB (WAF) → EKS (knowledgebot namespace)
 | `aoss_index_name` | `knowledge-bot-index` | OpenSearch index name |
 | `enable_lbc` | `false` | Set `true` to deploy AWS Load Balancer Controller |
 | `github_repository` | `YOURORG/knowledge-bot` | Update before applying CI OIDC role |
-| `cognito_callback_urls` | `["https://example.com/..."]` | Set real URLs before enabling Cognito |
 
 ## CI/CD
 

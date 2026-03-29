@@ -47,7 +47,7 @@ export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
 ```mermaid
 flowchart LR
   User[User Browser]
-  ALB[ALB Ingress<br/>OIDC optional]
+  ALB[ALB Ingress]
   App[FastAPI on EKS<br/>knowledgebot]
   BR[Bedrock Runtime]
   BAR[Bedrock Agent Runtime]
@@ -168,8 +168,6 @@ flowchart TB
     end
 
     subgraph Optional["Optional"]
-      Cognito[Cognito]
-      WAF[WAFv2]
       ALBLogs[S3 ALB Logs]
     end
   end
@@ -188,13 +186,11 @@ flowchart TB
   IRSALbc --> Ingress
   EKSAccess --> EKS
   ALB --> ALBLogs
-  ALB -. optional .-> Cognito
-  ALB -. optional .-> WAF
 
   class VPC,Public,Private net
   class DataAI,S3KB,KMS,KB,AOSS,ECR data
   class IAM,IRSAApp,IRSALbc,KBRole,GHARole,EKSAccess iam
-  class Optional,Cognito,WAF,ALBLogs optional
+  class Optional,ALBLogs optional
 
   classDef net fill:#dff3ff,stroke:#1d4e89,stroke-width:1px,color:#0b2545
   classDef data fill:#e9f7ef,stroke:#2d6a4f,stroke-width:1px,color:#1b4332
@@ -314,14 +310,12 @@ MVP と KB の違い（検索部分）:
 
 - 周辺
 - ALBログ用S3バケット
-- （任意）Cognito OIDC 用リソース
-- （任意）WAFv2
 - VPC Endpoint（Bedrock/ECR/STS/Logs/S3等）
 
 ### Kubernetes デプロイの流れ
 
 `scripts/deploy_k8s.sh` は「Terraformで作った値」を使って、Kubernetesマニフェストへ実値を注入してから適用します。  
-単に `kubectl apply` するだけでなく、IRSA・画像タグ・ConfigMap/Secret・OIDC設定を組み立てるのが主目的です。
+単に `kubectl apply` するだけでなく、IRSA・画像タグ・ConfigMap/Secret を組み立てるのが主目的です。
 
 シーケンス図:
 
@@ -334,14 +328,10 @@ sequenceDiagram
   participant K8s as Kubernetes Resources
 
   Op->>Script: 実行（APP_IMAGE/RAG_MODE等を必要に応じて指定）
-  Script->>TF: terraform output (region, cluster, IRSA, image, OIDC...)
+  Script->>TF: terraform output (region, cluster, IRSA, image...)
   Script->>EKS: aws eks update-kubeconfig
   Script->>K8s: namespace/serviceaccount/deployment/service apply
   Script->>K8s: ingress/hpa apply
-  alt OIDC情報あり
-    Script->>K8s: oidc-client-secret 作成/更新
-    Script->>K8s: Ingress annotation 注入
-  end
   Script->>K8s: get deploy,svc,ingress で状態確認
 ```
 
@@ -350,7 +340,6 @@ sequenceDiagram
 - `irsa_app_role_arn`
 - `app_image`（または `APP_IMAGE` で上書き）
 - `knowledge_base_id`（KB利用時）
-- `cognito_client_id`, `cognito_client_secret`, `oidc_*`（OIDC利用時）
 - `alb_logs_bucket`
 
 実行ステップ（順序）:
@@ -361,10 +350,9 @@ sequenceDiagram
 5. `secret-app.yaml`（`knowledgebot-secrets`）を作成/更新
 6. `deployment.yaml` の `REPLACE_WITH_ECR_IMAGE` を置換して適用
 7. `service.yaml` を適用
-8. OIDC情報がある場合は `oidc-client-secret` を作成/更新
-9. `ingress.yaml` に ALBログ設定とOIDC annotationを必要に応じて注入して適用
-10. `hpa.yaml` と `pdb.yaml` を適用
-11. `kubectl get deploy,svc,ingress,pdb` で状態確認
+8. `ingress.yaml` に ALBログ設定を必要に応じて注入して適用
+9. `hpa.yaml` と `pdb.yaml` を適用
+10. `kubectl get deploy,svc,ingress,pdb` で状態確認
 
 このスクリプトで担保しているポイント:
 - Bedrock呼び出しに必要なIRSAをServiceAccountに確実に紐付け
@@ -374,7 +362,6 @@ sequenceDiagram
 - `resources requests/limits` でPodのリソース境界を明示
 - RollingUpdate（`maxUnavailable: 0`）で無停止に近い更新を実現
 - PDB で voluntary disruption 時の最低可用性を確保
-- OIDC有効時の Ingress annotation と Secret 作成を自動化
 
 `deploy_k8s.sh` 実行時に使える主な上書き環境変数:
 - `APP_IMAGE`: デプロイするコンテナイメージを強制指定（未指定時は Terraform output `app_image`）
@@ -386,11 +373,10 @@ sequenceDiagram
 - `k8s/base/configmap.yaml`: `AWS_REGION`, `RAG_MODE`, `BEDROCK_MODEL_ID`, `KNOWLEDGE_BASE_ID`
 - `k8s/base/serviceaccount.yaml`: `REPLACE_WITH_IRSA_APP_ROLE_ARN`
 - `k8s/base/deployment.yaml`: `REPLACE_WITH_ECR_IMAGE`
-- `k8s/base/ingress.yaml`: ALB access logs annotation と OIDC annotation（条件付き）
+- `k8s/base/ingress.yaml`: ALB access logs annotation（条件付き）
 
 よくある失敗要因:
 - `terraform output` が未作成（`terraform apply` 前）
-- `cognito_callback_urls` 未設定でOIDCログインが成立しない
 - `AWS_ROLE_TO_ASSUME` や OIDC trust policy 不整合でCIがAWS認証に失敗
 
 Kubernetes マニフェストの役割:
@@ -509,37 +495,7 @@ flowchart LR
 ### 現状の注意点（実装に基づく）
 
 - `infra/github_oidc_ci.tf` は `var.github_repository` を参照するため、`infra/envs/dev.tfvars` などで `owner/repo` を指定する必要あり
-- `infra/cognito_oidc.tf` の callback URL はダミー値（`https://example.com/...`）のため、本番URLへ要更新
 - Claudeモデル利用には、AWSアカウントで Anthropic use case details 提出が必要
-
-### Cognito 認証を有効化する手順
-
-このプロジェクトでは、アプリ本体ではなく ALB Ingress 側で OIDC 認証を実施します。
-
-ALBドメインは初回デプロイ後に確定するため、以下の2段階で有効化します。
-
-1. 先に通常デプロイ（OIDC未確定のまま）
-   1. `terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve`
-   2. `./scripts/deploy_k8s.sh`
-2. ALBドメインを取得
-   1. `kubectl -n knowledgebot get ingress`
-   2. `ADDRESS`（`*.elb.amazonaws.com`）を控える
-3. `infra/envs/dev.tfvars` の callback URL を更新
-   - `cognito_callback_urls = ["https://<ALB-DNS>/oauth2/idpresponse"]`
-4. OIDC有効化を反映
-   1. `terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve`
-   2. `./scripts/deploy_k8s.sh`
-5. 有効化確認
-   1. `kubectl -n knowledgebot get secret oidc-client-secret`
-   2. `kubectl -n knowledgebot describe ingress knowledgebot` で `auth-type: oidc` を確認
-   3. Ingress URLアクセス時に Cognito ログイン画面へリダイレクトされることを確認
-
-`deploy_k8s.sh` は以下を自動で行います。
-
-- Cognito の `clientID/clientSecret` から `oidc-client-secret` を作成/更新
-- Ingress に OIDC annotation（`auth-type: oidc`, `auth-idp-oidc` など）を注入
-
-CI (`build-and-deploy.yml`) でも `scripts/deploy_k8s.sh` を呼ぶため、同じ認証設定が反映されます。
 
 ## 前提条件
 
@@ -578,7 +534,6 @@ aws --version
 
 ```hcl
 github_repository = "your-org/knowledge-bot"
-cognito_callback_urls = ["https://<your-alb-domain>/oauth2/idpresponse"] # OIDC利用時
 ```
 
 ### 1. Terraform 初期化と適用
@@ -814,7 +769,6 @@ make kb-ingest
 
 ```hcl
 github_repository = "your-org/knowledge-bot"
-cognito_callback_urls = ["https://<your-alb-domain>/oauth2/idpresponse"]
 ```
 
 対応スクリプト:
@@ -871,12 +825,11 @@ cognito_callback_urls = ["https://<your-alb-domain>/oauth2/idpresponse"]
 CI/CD 有効化チェックリスト（初回）:
 
 1. `infra/envs/dev.tfvars` の `github_repository` を実リポジトリに変更
-2. `infra/envs/dev.tfvars` の `cognito_callback_urls` を実ALBドメインに変更（OIDC利用時）
-3. `terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve` を実行して OIDC trust policy を反映
-4. `terraform -chdir=infra validate` が通ることを確認
-5. GitHub の Repository Secrets に `AWS_ROLE_TO_ASSUME` を設定（`knowledge-bot-gha` 相当ロールARN）
-6. GitHub Actions の実行ログで `Configure AWS credentials (OIDC)` が成功することを確認
-7. `build-and-deploy` で `rollout status deploy/knowledgebot` が成功することを確認
+2. `terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve` を実行して OIDC trust policy を反映
+3. `terraform -chdir=infra validate` が通ることを確認
+4. GitHub の Repository Secrets に `AWS_ROLE_TO_ASSUME` を設定（`knowledge-bot-gha` 相当ロールARN）
+5. GitHub Actions の実行ログで `Configure AWS credentials (OIDC)` が成功することを確認
+6. `build-and-deploy` で `rollout status deploy/knowledgebot` が成功することを確認
 
 ## 主な環境変数（アプリ）
 

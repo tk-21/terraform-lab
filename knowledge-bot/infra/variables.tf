@@ -44,12 +44,6 @@ variable "github_repository" {
   default     = "YOURORG/knowledge-bot"
 }
 
-variable "cognito_callback_urls" {
-  type        = list(string)
-  description = "Allowed OAuth callback URLs for Cognito user pool client"
-  default     = ["https://example.com/oauth2/idpresponse"]
-}
-
 variable "enable_lbc" {
   type        = bool
   description = "Enable AWS Load Balancer Controller resources managed by Terraform/Helm"
