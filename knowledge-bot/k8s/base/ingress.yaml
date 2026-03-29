@@ -8,7 +8,8 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
 
-    # OIDC認証（Cognito/社内IdP）
+    # 必要に応じて ALB の OIDC 認証を有効化する場合の例
+    # 現在は internal ALB のみを使用し、この設定は無効
     # alb.ingress.kubernetes.io/auth-type: oidc
     # alb.ingress.kubernetes.io/auth-scope: "openid"
     # alb.ingress.kubernetes.io/auth-session-timeout: "3600"
