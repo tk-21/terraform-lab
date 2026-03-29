@@ -83,9 +83,7 @@ resource "aws_iam_policy" "gha" {
           "aoss:*",
           "opensearchserverless:*",
           "elasticloadbalancing:*",
-          "autoscaling:*",
-          "wafv2:*",
-          "cognito-idp:*"
+          "autoscaling:*"
         ],
         Resource = "*"
       }
