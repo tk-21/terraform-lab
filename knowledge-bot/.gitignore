@@ -51,3 +51,6 @@ app/src/__pycache__/
 
 # Keep placeholder files
 !.gitkeep
+
+# AI
+.codex
