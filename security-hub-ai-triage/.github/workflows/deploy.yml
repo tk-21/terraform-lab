@@ -1,0 +1,105 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write   # OIDC に必要
+  contents: read
+  pull-requests: write  # PR コメント投稿に必要
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Build Lambda ZIP
+        working-directory: lambda/triage_handler
+        run: |
+          pip install -r requirements.txt -t ./package
+          cd package && zip -r ../triage_handler.zip . && cd ..
+          zip -g triage_handler.zip *.py
+        # archive_file はデプロイ時に Terraform が生成するが、
+        # CI での validate/plan のために事前に ZIP を作成しておく
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
+            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -no-color \
+            -out=tfplan 2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      - name: Post Plan Result to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/plan_output.txt', 'utf8');
+            const truncated = planOutput.length > 65000
+              ? planOutput.substring(0, 65000) + '\n...(出力が長いため省略されました)'
+              : planOutput;
+
+            const body = `## Terraform Plan 結果
+
+            <details>
+            <summary>クリックして展開</summary>
+
+            \`\`\`
+            ${truncated}
+            \`\`\`
+
+            </details>
+
+            **ステータス**: ${{ steps.plan.outcome == 'success' && '✅ 成功' || '❌ 失敗' }}`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Check Plan Result
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          terraform apply \
+            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
+            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -auto-approve \
+            tfplan

@@ -1,0 +1,8 @@
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+__pycache__/
+*.pyc
+*.zip
+.env
