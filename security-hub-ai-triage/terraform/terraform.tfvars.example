@@ -1,0 +1,4 @@
+project_name        = "security-hub-ai-triage"
+environment         = "dev"
+chatwork_secret_arn = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:chatwork-token-xxxx"
+chatwork_room_id    = "your-room-id"
