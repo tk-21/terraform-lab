@@ -1,0 +1,159 @@
+# .github/workflows/ci.yml
+#
+# CI パイプライン — PR 時に実行される。
+# lint → test → terraform plan の順に実行し、品質を担保する。
+#
+# 前提: GitHub の Secrets に以下を設定すること。
+#   AWS_ROLE_ARN: github-oidc.tf で出力された GitHub Actions ロールの ARN
+#   TF_VAR_account_id: AWSアカウントID
+#   TF_VAR_alert_email: アラーム通知先メールアドレス
+
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/**"
+
+permissions:
+  id-token: write   # OIDC トークン取得に必要
+  contents: read
+  pull-requests: write  # plan コメント投稿に必要
+
+jobs:
+  # ============================================================
+  # Python lint & test
+  # ============================================================
+  python-test:
+    name: Python Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pytest \
+            pytest-cov \
+            ruff \
+            boto3 \
+            moto[dynamodb,s3] \
+            pydantic \
+            "aws-lambda-powertools[tracer]"
+
+      - name: Lint with ruff
+        run: |
+          ruff check src/ tests/
+          ruff format --check src/ tests/
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: coverage.xml
+
+  # ============================================================
+  # Terraform lint
+  # ============================================================
+  terraform-lint:
+    name: Terraform Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint
+        run: |
+          cd terraform/environments/dev
+          tflint --init
+          tflint
+
+  # ============================================================
+  # Terraform Plan
+  # ============================================================
+  terraform-plan:
+    name: Terraform Plan (dev)
+    runs-on: ubuntu-latest
+    needs: [python-test, terraform-lint]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+
+      - name: Terraform Init
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: terraform/environments/dev
+        env:
+          TF_VAR_account_id: ${{ secrets.TF_VAR_account_id }}
+          TF_VAR_alert_email: ${{ secrets.TF_VAR_alert_email }}
+        run: |
+          terraform plan \
+            -out=tfplan \
+            -no-color \
+            2>&1 | tee plan_output.txt
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
+            const maxLength = 60000;
+            const truncated = planOutput.length > maxLength
+              ? planOutput.substring(0, maxLength) + '\n...(省略)'
+              : planOutput;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan (dev)\n\`\`\`\n${truncated}\n\`\`\``
+            });
