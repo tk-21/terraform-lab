@@ -1,10 +1,30 @@
 # .github/workflows/cd.yml
 #
 # CD パイプライン — main ブランチへの push 時に実行される。
-# terraform apply → Lambda デプロイ → スモークテスト の順に実行する。
 #
-# CI パイプライン (ci.yml) が成功した PR のみ main にマージできる設定を
-# GitHub の Branch protection rules で行うこと。
+# ジョブの依存関係:
+#   terraform-apply
+#         |
+#   deploy-lambda (matrix: 6 Lambda 関数を並列デプロイ)
+#         |
+#   smoke-test
+#         |
+#   notify (always: 成否に関わらず実行)
+#
+# 設計方針:
+#   - terraform-apply は CI の artifacts から tfplan を取得して apply する。
+#     tfplan が見つからない場合は安全のため fresh plan を実行する。
+#   - deploy-lambda は matrix 戦略で Lambda 関数を並列デプロイする。
+#     fail-fast: false で一つの関数が失敗しても他の更新を続行する。
+#   - smoke-test は Cognito（有効な場合）で JWT を取得し各エンドポイントをテストする。
+#   - notify は成否に関わらず常に実行し SNS Email で結果を通知する。
+#
+# 前提: GitHub の Secrets に以下を設定すること。
+#   AWS_ACCOUNT_ID: AWSアカウントID（12桁）
+#   TF_VAR_alert_email: CloudWatch アラーム通知先メールアドレス
+#
+# 前提: GitHub Environments で "dev" 環境を作成し、
+#       必要に応じて手動承認ルールを設定すること。
 
 name: CD
 
@@ -17,17 +37,269 @@ on:
       - "src/**"
 
 permissions:
-  id-token: write
+  id-token: write  # OIDC トークン取得に必要
   contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  ENVIRONMENT: dev
+  PROJECT: sap
 
 jobs:
   # ============================================================
-  # Terraform Apply
+  # 1. Terraform Apply
   # ============================================================
-  deploy-infrastructure:
+  # CI ワークフローで生成した tfplan を取得して apply する。
+  # PR でレビュー・承認された計画と同一の変更をデプロイすることで
+  # 意図しない変更の混入を防ぐ。
+  # tfplan が取得できない場合は drift 検知のため fresh plan を実行する。
+  terraform-apply:
     name: Terraform Apply (dev)
     runs-on: ubuntu-latest
-    environment: dev  # GitHub Environments で承認フローを設定可能
+    environment: dev  # GitHub Environments で手動承認フローを設定可能
+    outputs:
+      api_endpoint: ${{ steps.get-outputs.outputs.api_endpoint }}
+      lambda_deployment_bucket: ${{ steps.get-outputs.outputs.lambda_deployment_bucket }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC 認証: アクセスキーを使用せず IAM ロールの一時認証情報を取得する
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sap-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+          # terraform_wrapper: false にすることで outputs を正確に取得できる
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      # CI ワークフローの最新成功 run から tfplan をダウンロードする。
+      # gh CLI は GitHub-hosted runner に標準インストールされている。
+      # 取得できない場合は安全のため fresh plan を実行する。
+      - name: Download tfplan from CI workflow
+        id: download-plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo ">> CI ワークフローの最新成功 run から tfplan を取得します..."
+
+          # main ブランチの CI ワークフローで最新の成功 run ID を取得する
+          RUN_ID=$(gh run list \
+            --workflow ci.yml \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+          if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+            echo "CI run ID: $RUN_ID"
+            gh run download "$RUN_ID" \
+              --name tfplan-dev \
+              --dir terraform/environments/dev/ 2>/dev/null && \
+              echo "artifact_found=true" >> $GITHUB_OUTPUT || \
+              echo "artifact_found=false" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::CI ワークフローの成功 run が見つかりません。Fresh plan を実行します。"
+            echo "artifact_found=false" >> $GITHUB_OUTPUT
+          fi
+
+      # CI artifact が見つからない場合のフォールバック。
+      # state drift（CI 実行後に他の変更が加わった場合）も検出できる。
+      - name: Terraform Plan (fallback)
+        if: steps.download-plan.outputs.artifact_found != 'true'
+        working-directory: terraform/environments/dev
+        env:
+          TF_VAR_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
+          TF_VAR_alert_email: ${{ secrets.TF_VAR_alert_email }}
+        run: |
+          echo ">> Fresh plan を実行します..."
+          terraform plan -out=tfplan -no-color 2>&1 | tee plan_output.txt
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: terraform/environments/dev
+        run: |
+          terraform apply -auto-approve tfplan 2>&1 | tee apply_output.txt
+
+      # apply 結果を GitHub Step Summary に記録する。
+      # Actions タブから直接確認でき、Slack 等への転送も容易になる。
+      - name: Record apply result in Step Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply 結果 (dev)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **コミット**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **実行時刻**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f terraform/environments/dev/apply_output.txt ]; then
+            # apply 概要行（Apply complete! / Error）を抽出する
+            SUMMARY=$(grep -E "(Apply complete!|Error:|Changes to Outputs)" \
+              terraform/environments/dev/apply_output.txt | head -5 || echo "出力なし")
+            echo "**概要:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Terraform の output 値を後続ジョブに引き渡す
+      - name: Get Terraform outputs
+        id: get-outputs
+        working-directory: terraform/environments/dev
+        run: |
+          echo "api_endpoint=$(terraform output -raw api_endpoint 2>/dev/null || echo '')" \
+            >> $GITHUB_OUTPUT
+          echo "lambda_deployment_bucket=$(terraform output -raw lambda_deployment_bucket_name 2>/dev/null || \
+            echo sap-${{ env.ENVIRONMENT }}-lambda-deployment-${{ secrets.AWS_ACCOUNT_ID }})" \
+            >> $GITHUB_OUTPUT
+
+  # ============================================================
+  # 2. Lambda デプロイ（matrix: 6 関数を並列実行）
+  # ============================================================
+  # 各 Lambda 関数のソースコードを zip 化して S3 にアップロードし、
+  # Lambda コードを更新する。matrix 戦略で全関数を並列デプロイする。
+  # fail-fast: false で一つが失敗しても他の関数の更新を継続する。
+  deploy-lambda:
+    name: Deploy Lambda (${{ matrix.function.name }})
+    runs-on: ubuntu-latest
+    needs: [terraform-apply]
+
+    strategy:
+      # 一つの関数デプロイ失敗が他の関数に影響しないよう fail-fast を無効化する
+      fail-fast: false
+      matrix:
+        function:
+          - {name: list-items,       src: list_items}
+          - {name: get-item,         src: get_item}
+          - {name: create-item,      src: create_item}
+          - {name: update-item,      src: update_item}
+          - {name: delete-item,      src: delete_item}
+          - {name: stream-processor, src: stream_processor}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sap-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Lambda デプロイパッケージを作成する。
+      # shared モジュールも同梱するため src/shared/ を各関数ディレクトリにコピーする。
+      - name: Build deployment package
+        run: |
+          FUNC_SRC="src/${{ matrix.function.src }}"
+          BUILD_DIR="build/${{ matrix.function.src }}"
+
+          echo ">> ${{ matrix.function.name }} のビルドを開始します..."
+
+          # ビルドディレクトリを準備する
+          mkdir -p "${BUILD_DIR}"
+          cp -r "${FUNC_SRC}"/. "${BUILD_DIR}/"
+
+          # shared モジュールを同梱する（Lambda は src/ 外のモジュールを参照できないため）
+          cp -r src/shared "${BUILD_DIR}/shared"
+
+          # 依存ライブラリをビルドディレクトリにインストールする
+          if [ -f "${FUNC_SRC}/requirements.txt" ]; then
+            pip install -q -r "${FUNC_SRC}/requirements.txt" \
+              --target "${BUILD_DIR}" \
+              --platform manylinux2014_aarch64 \
+              --only-binary=:all: \
+              --implementation cp \
+              --python-version 312 \
+              --no-deps || \
+            pip install -q -r "${FUNC_SRC}/requirements.txt" -t "${BUILD_DIR}"
+          fi
+
+          # zip ファイルを作成する
+          mkdir -p dist
+          cd "${BUILD_DIR}"
+          zip -qr "../../dist/${{ matrix.function.src }}.zip" .
+          cd ../..
+
+          echo ">> ビルド完了: dist/${{ matrix.function.src }}.zip"
+          ls -lh "dist/${{ matrix.function.src }}.zip"
+
+      # S3 にデプロイパッケージをアップロードする。
+      # コミット SHA をキーに含めることで、同一パッケージの重複アップロードを防ぎつつ
+      # ロールバック時に旧バージョンを参照できる。
+      - name: Upload package to S3
+        env:
+          BUCKET: ${{ needs.terraform-apply.outputs.lambda_deployment_bucket }}
+        run: |
+          S3_KEY="lambda/${{ matrix.function.name }}/${{ github.sha }}.zip"
+
+          aws s3 cp \
+            "dist/${{ matrix.function.src }}.zip" \
+            "s3://${BUCKET}/${S3_KEY}" \
+            --no-progress
+
+          echo ">> S3 アップロード完了: s3://${BUCKET}/${S3_KEY}"
+
+      # Lambda 関数のコードを更新する。
+      # --architectures arm64: CLAUDE.md に従い arm64 を指定する（x86_64 より ~20% 安価）
+      - name: Update Lambda function code
+        env:
+          BUCKET: ${{ needs.terraform-apply.outputs.lambda_deployment_bucket }}
+          FUNCTION_NAME: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ matrix.function.name }}
+          S3_KEY: lambda/${{ matrix.function.name }}/${{ github.sha }}.zip
+        run: |
+          echo ">> Lambda 関数コードを更新します: ${FUNCTION_NAME}"
+
+          aws lambda update-function-code \
+            --function-name "${FUNCTION_NAME}" \
+            --s3-bucket "${BUCKET}" \
+            --s3-key "${S3_KEY}" \
+            --architectures arm64 \
+            --no-cli-pager
+
+      # Lambda の更新完了を待機する。
+      # この待機なしに呼び出すと更新前のコードが実行される可能性がある。
+      - name: Wait for Lambda update to complete
+        env:
+          FUNCTION_NAME: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ matrix.function.name }}
+        run: |
+          echo ">> Lambda 更新完了を待機しています: ${FUNCTION_NAME}"
+
+          aws lambda wait function-updated \
+            --function-name "${FUNCTION_NAME}"
+
+          echo ">> 更新完了: ${FUNCTION_NAME}"
+
+          # 更新後のバージョン情報を記録する
+          aws lambda get-function-configuration \
+            --function-name "${FUNCTION_NAME}" \
+            --query '{FunctionName: FunctionName, LastModified: LastModified, CodeSha256: CodeSha256}' \
+            --output table \
+            --no-cli-pager
+
+  # ============================================================
+  # 3. スモークテスト
+  # ============================================================
+  # デプロイ完了後に各エンドポイントに実リクエストを送信して動作確認する。
+  # Cognito が有効な場合はテストユーザーの JWT を取得して認証ヘッダーに付与する。
+  # いずれかのエンドポイントが 2xx 以外を返した場合は SNS でアラートを送信する。
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, deploy-lambda]
 
     steps:
       - uses: actions/checkout@v4
@@ -35,67 +307,296 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ap-northeast-1
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sap-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.7"
-          terraform_wrapper: false  # outputs を正確に取得するため
-
-      - name: Terraform Init
-        working-directory: terraform/environments/dev
-        run: terraform init
-
-      - name: Terraform Plan
-        working-directory: terraform/environments/dev
-        env:
-          TF_VAR_account_id: ${{ secrets.TF_VAR_account_id }}
-          TF_VAR_alert_email: ${{ secrets.TF_VAR_alert_email }}
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        working-directory: terraform/environments/dev
-        run: terraform apply -auto-approve tfplan
-
-      - name: Get API endpoint
-        id: get-endpoint
-        working-directory: terraform/environments/dev
+      # Cognito が有効な場合（USER_POOL_ID / CLIENT_ID が設定されている場合）、
+      # テストユーザーの JWT を取得して以降のリクエストに使用する。
+      # dev 環境では Cognito が無効のため、このステップは実際には実行されない。
+      - name: Get Cognito JWT (if auth is enabled)
+        id: get-token
         run: |
-          echo "api_endpoint=$(terraform output -raw api_endpoint)" >> $GITHUB_OUTPUT
+          # Terraform output から Cognito の設定を取得する
+          cd terraform/environments/dev
+          terraform init -backend=false > /dev/null 2>&1 || true
 
-    outputs:
-      api_endpoint: ${{ steps.get-endpoint.outputs.api_endpoint }}
+          USER_POOL_ID=$(aws ssm get-parameter \
+            --name "/sap/dev/cognito/user_pool_id" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+          CLIENT_ID=$(aws ssm get-parameter \
+            --name "/sap/dev/cognito/client_id" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$USER_POOL_ID" ] && [ -n "$CLIENT_ID" ]; then
+            echo ">> Cognito JWT を取得します..."
+
+            # テストユーザーの認証情報は SSM Parameter Store から取得する
+            # （GitHub Secrets に保存しない）
+            TEST_USER=$(aws ssm get-parameter \
+              --name "/sap/dev/smoke-test/username" \
+              --query 'Parameter.Value' --output text)
+            TEST_PASS=$(aws ssm get-parameter \
+              --name "/sap/dev/smoke-test/password" \
+              --with-decryption \
+              --query 'Parameter.Value' --output text)
+
+            TOKEN=$(aws cognito-idp initiate-auth \
+              --auth-flow USER_PASSWORD_AUTH \
+              --auth-parameters "USERNAME=${TEST_USER},PASSWORD=${TEST_PASS}" \
+              --client-id "${CLIENT_ID}" \
+              --query 'AuthenticationResult.IdToken' \
+              --output text)
+
+            echo "token=${TOKEN}" >> $GITHUB_OUTPUT
+            echo ">> JWT 取得完了"
+          else
+            echo ">> Cognito が無効または未設定です。認証なしでテストします。"
+            echo "token=" >> $GITHUB_OUTPUT
+          fi
+
+      # 各エンドポイントに curl でリクエストを送信して 2xx を確認する。
+      # 失敗した場合は exit code 1 で終了し、後続の SNS アラートステップが実行される。
+      - name: Run smoke tests
+        id: smoke
+        env:
+          API_ENDPOINT: ${{ needs.terraform-apply.outputs.api_endpoint }}
+          TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
+          set -e
+
+          FAIL=0
+          RESULTS=""
+
+          # Authorization ヘッダーの設定（Cognito JWT がある場合のみ）
+          AUTH_ARGS=""
+          [ -n "$TOKEN" ] && AUTH_ARGS="-H 'Authorization: Bearer ${TOKEN}'"
+
+          echo ">> スモークテスト開始: ${API_ENDPOINT}"
+          echo ""
+
+          # ------------------------------------------------------------------
+          # POST /items（アイテム作成）
+          # ------------------------------------------------------------------
+          echo ">> [1/5] POST /items"
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "${API_ENDPOINT}/items" \
+            -H "Content-Type: application/json" \
+            ${AUTH_ARGS} \
+            -d '{"name":"smoke-test","description":"CI smoke test item","user_id":"ci-smoke-tester"}' \
+            --max-time 15)
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+
+          if [[ "$STATUS" -ge 200 ]] && [[ "$STATUS" -lt 300 ]]; then
+            echo "  PASS: POST /items → ${STATUS}"
+            ITEM_ID=$(echo "$BODY" | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('item_id',''))" \
+              2>/dev/null || echo "")
+          else
+            echo "  FAIL: POST /items → ${STATUS}"
+            echo "  Body: ${BODY}"
+            FAIL=1
+            ITEM_ID=""
+          fi
+
+          # ------------------------------------------------------------------
+          # GET /items（一覧取得）
+          # ------------------------------------------------------------------
+          echo ">> [2/5] GET /items"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${API_ENDPOINT}/items" \
+            ${AUTH_ARGS} \
+            --max-time 15)
+          if [[ "$STATUS" -ge 200 ]] && [[ "$STATUS" -lt 300 ]]; then
+            echo "  PASS: GET /items → ${STATUS}"
+          else
+            echo "  FAIL: GET /items → ${STATUS}"
+            FAIL=1
+          fi
+
+          if [ -n "$ITEM_ID" ]; then
+            # ------------------------------------------------------------------
+            # GET /items/{id}（単一取得）
+            # ------------------------------------------------------------------
+            echo ">> [3/5] GET /items/${ITEM_ID}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "${API_ENDPOINT}/items/${ITEM_ID}" \
+              ${AUTH_ARGS} \
+              --max-time 15)
+            if [[ "$STATUS" -ge 200 ]] && [[ "$STATUS" -lt 300 ]]; then
+              echo "  PASS: GET /items/${ITEM_ID} → ${STATUS}"
+            else
+              echo "  FAIL: GET /items/${ITEM_ID} → ${STATUS}"
+              FAIL=1
+            fi
+
+            # ------------------------------------------------------------------
+            # PUT /items/{id}（更新）
+            # ------------------------------------------------------------------
+            echo ">> [4/5] PUT /items/${ITEM_ID}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X PUT "${API_ENDPOINT}/items/${ITEM_ID}" \
+              -H "Content-Type: application/json" \
+              ${AUTH_ARGS} \
+              -d '{"name":"smoke-test-updated","description":"Updated by CI"}' \
+              --max-time 15)
+            if [[ "$STATUS" -ge 200 ]] && [[ "$STATUS" -lt 300 ]]; then
+              echo "  PASS: PUT /items/${ITEM_ID} → ${STATUS}"
+            else
+              echo "  FAIL: PUT /items/${ITEM_ID} → ${STATUS}"
+              FAIL=1
+            fi
+
+            # ------------------------------------------------------------------
+            # DELETE /items/{id}（削除）- テストデータのクリーンアップも兼ねる
+            # ------------------------------------------------------------------
+            echo ">> [5/5] DELETE /items/${ITEM_ID}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X DELETE "${API_ENDPOINT}/items/${ITEM_ID}" \
+              ${AUTH_ARGS} \
+              --max-time 15)
+            if [[ "$STATUS" -ge 200 ]] && [[ "$STATUS" -lt 300 ]]; then
+              echo "  PASS: DELETE /items/${ITEM_ID} → ${STATUS}"
+            else
+              echo "  FAIL: DELETE /items/${ITEM_ID} → ${STATUS}"
+              FAIL=1
+            fi
+          else
+            echo ">> [3-5/5] SKIP: POST /items に失敗したため item_id が取得できませんでした"
+            FAIL=1
+          fi
+
+          echo ""
+          if [ $FAIL -eq 0 ]; then
+            echo ">> 全テスト PASS"
+          else
+            echo ">> テスト失敗あり"
+            exit 1
+          fi
+
+      # スモークテスト失敗時に SNS で即時アラートを送信する。
+      # OIDC 認証済みのため追加のシークレットなしで SNS を呼び出せる。
+      - name: Send SNS alert on smoke test failure
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          SNS_TOPIC="arn:aws:sns:${AWS_DEFAULT_REGION}:${{ secrets.AWS_ACCOUNT_ID }}:sap-dev-alerts"
+          COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+
+          aws sns publish \
+            --topic-arn "${SNS_TOPIC}" \
+            --subject "[ALERT] sap-dev スモークテスト失敗" \
+            --message "$(cat <<EOF
+          スモークテストが失敗しました。
+
+          環境: sap-dev
+          コミット: ${{ github.sha }}
+          URL: ${COMMIT_URL}
+          実行者: ${{ github.actor }}
+          時刻: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          Actions タブでログを確認してください:
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )" \
+            --no-cli-pager || echo "::warning::SNS アラートの送信に失敗しました"
 
   # ============================================================
-  # スモークテスト
+  # 4. デプロイ結果通知
   # ============================================================
-  smoke-test:
-    name: Smoke Test
+  # 成功・失敗に関わらず常に実行する（if: always()）。
+  # 全ジョブの結果を集約して SNS Email で通知する。
+  # Slack 通知を使用する場合は aws sns publish を
+  # curl -X POST ${SLACK_WEBHOOK_URL} に変更すること。
+  notify:
+    name: Notify Deployment Result
     runs-on: ubuntu-latest
-    needs: deploy-infrastructure
+    needs: [terraform-apply, deploy-lambda, smoke-test]
+    if: always()
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          python-version: "3.12"
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sap-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install test dependencies
-        run: pip install pytest requests
-
-      - name: Run smoke test
-        env:
-          API_ENDPOINT: ${{ needs.deploy-infrastructure.outputs.api_endpoint }}
-          TEST_USER_ID: smoke-test-user
+      # 全ジョブの結果を集約してデプロイ全体の成否を判定する
+      - name: Determine overall deployment status
+        id: status
         run: |
-          pytest tests/integration/ -v --timeout=30
+          APPLY_RESULT="${{ needs.terraform-apply.result }}"
+          LAMBDA_RESULT="${{ needs.deploy-lambda.result }}"
+          SMOKE_RESULT="${{ needs.smoke-test.result }}"
 
-      - name: Notify on failure
-        if: failure()
+          echo "terraform-apply : ${APPLY_RESULT}"
+          echo "deploy-lambda   : ${LAMBDA_RESULT}"
+          echo "smoke-test      : ${SMOKE_RESULT}"
+
+          if [[ "$APPLY_RESULT" == "success" && \
+                "$LAMBDA_RESULT" == "success" && \
+                "$SMOKE_RESULT" == "success" ]]; then
+            echo "overall=success" >> $GITHUB_OUTPUT
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "label=デプロイ成功" >> $GITHUB_OUTPUT
+          else
+            echo "overall=failure" >> $GITHUB_OUTPUT
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+            echo "label=デプロイ失敗" >> $GITHUB_OUTPUT
+          fi
+
+      # SNS Email でデプロイ結果を通知する。
+      # OIDC 認証済みのため追加のシークレットなしで SNS を呼び出せる。
+      # Slack Webhook を使用する場合は SNS トピックのサブスクリプションに
+      # Lambda 関数経由で Slack に転送するフィルターを追加すること。
+      - name: Send deployment notification via SNS
         run: |
-          echo "スモークテスト失敗: ${{ needs.deploy-infrastructure.outputs.api_endpoint }}"
-          # 必要に応じて Slack 通知などを追加する
+          STATUS="${{ steps.status.outputs.overall }}"
+          EMOJI="${{ steps.status.outputs.emoji }}"
+          LABEL="${{ steps.status.outputs.label }}"
+          SNS_TOPIC="arn:aws:sns:${AWS_DEFAULT_REGION}:${{ secrets.AWS_ACCOUNT_ID }}:sap-dev-alerts"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          aws sns publish \
+            --topic-arn "${SNS_TOPIC}" \
+            --subject "${EMOJI} [sap-dev] ${LABEL}" \
+            --message "$(cat <<EOF
+          ${EMOJI} ${LABEL}
+
+          環境   : sap-dev (${ENVIRONMENT})
+          コミット: ${{ github.sha }}
+          実行者 : ${{ github.actor }}
+          時刻   : $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          ジョブ結果:
+            terraform-apply : ${{ needs.terraform-apply.result }}
+            deploy-lambda   : ${{ needs.deploy-lambda.result }}
+            smoke-test      : ${{ needs.smoke-test.result }}
+
+          詳細: ${RUN_URL}
+          EOF
+          )" \
+            --no-cli-pager || echo "::warning::通知の送信に失敗しました（デプロイ自体には影響しません）"
+
+      # GitHub Step Summary にもデプロイ結果を記録する
+      - name: Write deployment summary
+        if: always()
+        run: |
+          EMOJI="${{ steps.status.outputs.emoji }}"
+          LABEL="${{ steps.status.outputs.label }}"
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ${EMOJI} デプロイ結果: ${LABEL}
+
+          | ジョブ | 結果 |
+          |--------|------|
+          | terraform-apply | ${{ needs.terraform-apply.result }} |
+          | deploy-lambda   | ${{ needs.deploy-lambda.result }} |
+          | smoke-test      | ${{ needs.smoke-test.result }} |
+
+          **コミット**: ${{ github.sha }}
+          **実行者**: ${{ github.actor }}
+          **時刻**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          EOF

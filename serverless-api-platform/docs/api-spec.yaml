@@ -1,0 +1,499 @@
+openapi: 3.0.3
+info:
+  title: serverless-api-platform API
+  description: |
+    API Gateway × Lambda × DynamoDB によるサーバーレス REST API。
+
+    ## 認証
+    すべてのエンドポイントは Cognito JWT (ID Token) による Bearer 認証が必要です。
+    API Gateway の Cognito Authorizer がトークン検証を行うため、
+    Lambda 関数は検証済みのクレームを `requestContext.authorizer.claims` で受け取ります。
+
+    ## ページネーション
+    `GET /items` はカーソルベースのページネーションを採用しています。
+    レスポンスの `pagination.next_cursor` を次リクエストの `cursor` パラメータに渡すことで
+    次ページを取得できます。
+  version: "1.0.0"
+  contact:
+    name: platform-team
+
+servers:
+  - url: https://{api_id}.execute-api.ap-northeast-1.amazonaws.com/dev
+    description: dev 環境
+    variables:
+      api_id:
+        default: xxxxxxxxxx
+        description: API Gateway ID（terraform output api_endpoint で確認）
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: items
+    description: アイテムの CRUD 操作
+
+paths:
+  /items:
+    get:
+      tags: [items]
+      summary: アイテム一覧取得
+      description: |
+        認証ユーザーが所有するアイテムを作成日時の降順で返します。
+        カーソルベースのページネーションに対応しています。
+      operationId: listItems
+      parameters:
+        - name: limit
+          in: query
+          description: 取得件数（1-100、デフォルト 20）。範囲外は自動クランプ
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          description: ページネーションカーソル（前レスポンスの pagination.next_cursor）
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedItemsResponse"
+              example:
+                success: true
+                data:
+                  - item_id: "550e8400-e29b-41d4-a716-446655440000"
+                    user_id: "cognito-sub-xxxx"
+                    name: "サンプルアイテム"
+                    status: "ACTIVE"
+                    created_at: "2024-01-15T12:00:00+00:00"
+                    updated_at: "2024-01-15T12:00:00+00:00"
+                pagination:
+                  next_cursor: "eyJQSyI6ICJJVEVNIzU1MGU4..."
+                  has_more: true
+                  count: 20
+                meta:
+                  request_id: "abc123"
+                  timestamp: "2024-01-15T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags: [items]
+      summary: アイテム作成
+      description: |
+        新しいアイテムを作成します。
+        `expires_days` を指定すると、その日数後の UNIX タイムスタンプが `expires_at` に設定されます。
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemCreate"
+            example:
+              name: "新しいアイテム"
+              description: "アイテムの説明（省略可）"
+              expires_days: 30
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemResponse"
+              example:
+                success: true
+                data:
+                  item_id: "550e8400-e29b-41d4-a716-446655440000"
+                  user_id: "cognito-sub-xxxx"
+                  name: "新しいアイテム"
+                  description: "アイテムの説明（省略可）"
+                  status: "ACTIVE"
+                  created_at: "2024-01-15T12:00:00+00:00"
+                  updated_at: "2024-01-15T12:00:00+00:00"
+                  expires_at: 1708000000
+                meta:
+                  request_id: "def456"
+                  timestamp: "2024-01-15T12:00:00Z"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /items/{item_id}:
+    parameters:
+      - name: item_id
+        in: path
+        required: true
+        description: アイテム ID（UUID）
+        schema:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+    get:
+      tags: [items]
+      summary: アイテム取得
+      description: |
+        指定した item_id のアイテムを取得します。
+        論理削除済みアイテム（status=ARCHIVED）も 200 OK で返します（404 ではありません）。
+        他ユーザーのアイテムへのアクセスは 403 Forbidden を返します。
+      operationId: getItem
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags: [items]
+      summary: アイテム更新
+      description: |
+        アイテムを部分更新します（PATCH 的挙動）。
+        `name`・`description`・`status` のうち少なくとも 1 フィールドが必須です。
+        `status` を `ARCHIVED` に変更すると自動的に `expires_at`（30日後 TTL）が設定されます。
+      operationId: updateItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemUpdate"
+            examples:
+              name_only:
+                summary: 名前だけ更新
+                value:
+                  name: "更新後の名前"
+              archive:
+                summary: 論理削除（ARCHIVED に変更）
+                value:
+                  status: "ARCHIVED"
+              multiple:
+                summary: 複数フィールドを同時更新
+                value:
+                  name: "新しい名前"
+                  description: "新しい説明"
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags: [items]
+      summary: アイテム論理削除
+      description: |
+        アイテムを論理削除します（物理削除ではありません）。
+        内部的には `status=ARCHIVED` + `expires_at`（30日後）を設定する UpdateItem 操作です。
+        DynamoDB TTL により 30 日後に自動的に物理削除されます。
+        削除後も `GET /items/{id}` で status=ARCHIVED のアイテムとして取得できます。
+      operationId: deleteItem
+      responses:
+        "204":
+          description: 削除成功（ボディなし）
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Amazon Cognito の ID Token（`AuthenticationResult.IdToken`）を使用します。
+        トークンは以下のコマンドで取得できます:
+
+        ```bash
+        aws cognito-idp initiate-auth \
+          --auth-flow USER_PASSWORD_AUTH \
+          --auth-parameters USERNAME=user@example.com,PASSWORD=pass \
+          --client-id <CLIENT_ID> \
+          --query 'AuthenticationResult.IdToken' \
+          --output text
+        ```
+
+  schemas:
+    ItemCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: アイテム名（前後の空白は自動除去）
+          example: "サンプルアイテム"
+        description:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: アイテムの説明（省略可）
+          example: "詳細な説明文"
+        expires_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          nullable: true
+          description: 有効期限（日数）。指定すると expires_at に UNIX タイムスタンプが設定される
+          example: 30
+
+    ItemUpdate:
+      type: object
+      description: 少なくとも 1 フィールドが必須（すべて省略不可）
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: アイテム名
+          example: "更新後の名前"
+        description:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: アイテムの説明
+          example: "更新後の説明"
+        status:
+          type: string
+          enum: [ACTIVE, ARCHIVED]
+          description: |
+            ステータス。ARCHIVED に変更すると expires_at（30日後）が自動設定される
+          example: "ARCHIVED"
+
+    ItemData:
+      type: object
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          description: アイテム ID（UUID）
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        user_id:
+          type: string
+          description: 所有者の Cognito sub
+          example: "cognito-sub-xxxx"
+        name:
+          type: string
+          example: "サンプルアイテム"
+        description:
+          type: string
+          nullable: true
+          example: "アイテムの説明"
+        status:
+          type: string
+          enum: [ACTIVE, ARCHIVED]
+          example: "ACTIVE"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T12:00:00+00:00"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T12:30:00+00:00"
+        expires_at:
+          type: integer
+          nullable: true
+          description: UNIX タイムスタンプ（TTL）
+          example: 1708000000
+
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type: string
+          description: リクエスト追跡 ID（CloudWatch Logs との紐付けに使用）
+          example: "abc123def456"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-01-15T12:00:00Z"
+
+    Pagination:
+      type: object
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: 次ページ取得用のカーソル（Base64 エンコード済み）。最終ページの場合は null
+          example: "eyJQSyI6ICJJVEVNIzU1MGU4..."
+        has_more:
+          type: boolean
+          description: 次ページが存在するかどうか
+          example: true
+        count:
+          type: integer
+          description: 現在ページの件数
+          example: 20
+
+    ItemResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/ItemData"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    PaginatedItemsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ItemData"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: エラーコード
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - ITEM_NOT_FOUND
+                - ITEM_ALREADY_EXISTS
+                - INTERNAL_SERVER_ERROR
+              example: "ITEM_NOT_FOUND"
+            message:
+              type: string
+              description: エラーメッセージ（日本語）
+              example: "指定されたアイテムが見つかりません"
+            request_id:
+              type: string
+              example: "abc123def456"
+
+  responses:
+    ValidationError:
+      description: バリデーションエラー（400）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "VALIDATION_ERROR"
+              message: "name は必須です"
+              request_id: "abc123"
+
+    Unauthorized:
+      description: 認証エラー（401）— JWT トークンなし・無効
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "UNAUTHORIZED"
+              message: "認証が必要です"
+              request_id: "abc123"
+
+    Forbidden:
+      description: 権限エラー（403）— 他ユーザーのアイテムへのアクセス
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "FORBIDDEN"
+              message: "このアイテムへのアクセス権限がありません"
+              request_id: "abc123"
+
+    NotFound:
+      description: アイテムが存在しない（404）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "ITEM_NOT_FOUND"
+              message: "指定されたアイテムが見つかりません"
+              request_id: "abc123"
+
+    Conflict:
+      description: アイテムの重複（409）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "ITEM_ALREADY_EXISTS"
+              message: "アイテムがすでに存在します"
+              request_id: "abc123"
+
+    InternalServerError:
+      description: 内部サーバーエラー（500）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: "INTERNAL_SERVER_ERROR"
+              message: "予期しないエラーが発生しました"
+              request_id: "abc123"

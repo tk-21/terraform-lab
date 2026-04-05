@@ -21,3 +21,9 @@ variable "enable_dax" {
   type        = bool
   default     = false
 }
+
+variable "tags" {
+  description = "全リソースに付与するタグ。environments/ の common_tags を渡す。"
+  type        = map(string)
+  default     = {}
+}
