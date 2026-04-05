@@ -1,0 +1,255 @@
+# =============================================================================
+# Terraform CI/CD パイプライン
+#
+# 認証方式: OIDC（アクセスキー不使用）
+#   GitHub Actions から AWS に OIDC で認証し、IAM ロールを assume する。
+#   事前に environments/dev/github-actions.tf を apply してロールを作成し、
+#   GitHub Secrets に TF_ROLE_ARN を登録すること。
+#
+# トリガー:
+#   - PR → terraform plan（結果を PR コメントに投稿）
+#   - main へのマージ → terraform plan + apply
+#
+# 必要な GitHub Secrets:
+#   TF_ROLE_ARN           - GitHub Actions 用 IAM ロール ARN
+#   CHATWORK_API_TOKEN    - Chatwork API トークン（任意）
+#   CHATWORK_ROOM_ID      - Chatwork 通知先ルーム ID（任意）
+#
+# 必要な GitHub Variables（任意）:
+#   TF_WORKING_DIR        - Terraform ディレクトリ（デフォルト: environments/dev）
+# =============================================================================
+
+name: Terraform
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform.yml"
+
+# OIDC トークン取得 + PR へのコメント書き込みに必要な最小権限
+permissions:
+  id-token: write      # OIDC トークン発行
+  contents: read       # リポジトリ読み取り
+  pull-requests: write # PR へのコメント投稿
+
+env:
+  TF_VERSION:     "1.9.0"
+  AWS_REGION:     "ap-northeast-1"
+  TF_WORKING_DIR: "environments/dev"
+
+# =============================================================================
+# Job 1: plan
+# すべてのトリガーで実行する。PR の場合は結果をコメントに投稿する。
+# =============================================================================
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # OIDC で AWS 認証（アクセスキー不使用）
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+          role-session-name: github-actions-terraform-plan
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # -backend-config は環境変数 TF_CLI_ARGS_init でも指定可能
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      # フォーマットチェック（-check: 差分があれば終了コード 3）
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true   # フォーマット違反は warning 扱い（apply はブロックしない）
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate -no-color
+
+      # -detailed-exitcode:
+      #   0 = 変更なし、1 = エラー、2 = 変更あり（適用可能なプランあり）
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_chatwork_api_token: ${{ secrets.CHATWORK_API_TOKEN }}
+          TF_VAR_chatwork_room_id:   ${{ secrets.CHATWORK_ROOM_ID }}
+        run: |
+          set +e
+          terraform plan -no-color -detailed-exitcode -input=false -out=tfplan \
+            2>&1 | tee plan_output.txt
+          exitcode=${PIPESTATUS[0]}
+          echo "exitcode=${exitcode}" >> "$GITHUB_OUTPUT"
+          exit 0   # plan の exitcode は後続ステップで判断するため 0 で終了
+
+      # PR の場合のみ plan 結果をコメントに投稿
+      - name: Post Plan Result to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync(
+              '${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8'
+            );
+
+            // GitHub コメントの最大サイズに収まるよう切り捨て
+            const maxLen = 60000;
+            const truncated = planOutput.length > maxLen
+              ? planOutput.substring(0, maxLen) + '\n\n...(出力が長いため省略されました)'
+              : planOutput;
+
+            const exitcode  = '${{ steps.plan.outputs.exitcode }}';
+            const fmtResult = '${{ steps.fmt.outcome }}';
+            const fmtBadge  = fmtResult === 'success' ? '✅ OK' : '⚠️ 差分あり';
+
+            const statusEmoji = exitcode === '0' ? '✅ 変更なし'
+              : exitcode === '2' ? '📋 変更あり'
+              : '❌ エラー';
+
+            const body = `## Terraform Plan \`${{ github.sha }}\`
+
+            | ステップ | 結果 |
+            |---------|------|
+            | 🔧 Init     | ${{ steps.init.outcome }} |
+            | 🎨 Format   | ${fmtBadge} |
+            | ✔️ Validate | ${{ steps.validate.outcome }} |
+            | 📐 Plan     | ${statusEmoji} |
+
+            <details>
+            <summary>Plan 出力（クリックで展開）</summary>
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+
+            </details>
+
+            > **exitcode**: \`${exitcode}\`（0=変更なし, 2=変更あり, 1=エラー）
+            > **ブランチ**: \`${{ github.head_ref }}\`
+            > **コミット**: \`${{ github.event.pull_request.head.sha }}\``;
+
+            // 既存のコメントを更新または新規作成
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('Terraform Plan')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: botComment.id,
+                body:       body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body:         body,
+              });
+            }
+
+      # plan がエラー（exitcode=1）の場合は CI を失敗させる
+      - name: Fail if Plan Errored
+        if: steps.plan.outputs.exitcode == '1'
+        run: |
+          echo "::error::terraform plan がエラーで終了しました (exitcode=1)"
+          exit 1
+
+      # plan の成果物を apply ジョブに引き渡す
+      - name: Upload Terraform Plan
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name:            tfplan
+          path:            ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days:  1   # apply 直後に不要になるため短期保存
+
+  # =============================================================================
+  # Job 2: apply
+  # main ブランチへの push 時のみ実行する。plan job が成功した後に動く。
+  # =============================================================================
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.plan.outputs.plan_exitcode != '1'
+
+    # GitHub Environments を使った承認ゲート（オプション）
+    # 設定方法: リポジトリ Settings → Environments → "production" を作成し
+    #           Required reviewers に承認者を追加する
+    # environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:     ${{ secrets.TF_ROLE_ARN }}
+          aws-region:         ${{ env.AWS_REGION }}
+          role-session-name:  github-actions-terraform-apply
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      # plan artifact をダウンロードして apply に使用する
+      # plan と apply が同一プランを対象にすることで差分を排除する
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_chatwork_api_token: ${{ secrets.CHATWORK_API_TOKEN }}
+          TF_VAR_chatwork_room_id:   ${{ secrets.CHATWORK_ROOM_ID }}
+        run: terraform apply -auto-approve -input=false tfplan

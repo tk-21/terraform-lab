@@ -1,0 +1,174 @@
+{
+  "Comment": "【ドキュメント参照用】実際の定義は main.tf の jsonencode() で生成されます。Lambda ARN と DynamoDB テーブル名は Terraform 変数で注入されます。",
+  "StartAt": "UpdateStatusRunning",
+  "States": {
+    "UpdateStatusRunning": {
+      "Type": "Task",
+      "Comment": "セッションステータスを pending → running に更新",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "REVIEW_TABLE_NAME",
+        "Key": {
+          "session_id": { "S.$": "$.session_id" }
+        },
+        "UpdateExpression": "SET #st = :status",
+        "ExpressionAttributeNames": { "#st": "status" },
+        "ExpressionAttributeValues": { ":status": { "S": "running" } }
+      },
+      "ResultPath": null,
+      "Next": "ParallelReview"
+    },
+
+    "ParallelReview": {
+      "Type": "Parallel",
+      "Comment": "4 エージェントが並列でレビューを実行。全ブランチ完了後に次のステートへ進む。",
+      "Branches": [
+        {
+          "StartAt": "SecurityReview",
+          "States": {
+            "SecurityReview": {
+              "Type": "Task",
+              "Comment": "IAM・暗号化・VPC エンドポイント・パブリック露出をレビュー",
+              "Resource": "SECURITY_REVIEWER_LAMBDA_ARN",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "CostReview",
+          "States": {
+            "CostReview": {
+              "Type": "Task",
+              "Comment": "リソーススペック・NAT Gateway・Savings Plans・不要リソースをレビュー",
+              "Resource": "COST_REVIEWER_LAMBDA_ARN",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "ReliabilityReview",
+          "States": {
+            "ReliabilityReview": {
+              "Type": "Task",
+              "Comment": "Single AZ・バックアップ・フェイルオーバー・RPO/RTO をレビュー",
+              "Resource": "RELIABILITY_REVIEWER_LAMBDA_ARN",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "OperationsReview",
+          "States": {
+            "OperationsReview": {
+              "Type": "Task",
+              "Comment": "タグ戦略・監視設計・ログ出力・デプロイ戦略をレビュー",
+              "Resource": "OPERATIONS_REVIEWER_LAMBDA_ARN",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.agent_results",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ReviewFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "SupervisorReview"
+    },
+
+    "SupervisorReview": {
+      "Type": "Task",
+      "Comment": "4 エージェントの結果を統合・トレードオフ明示・優先アクション絞り込み",
+      "Resource": "SUPERVISOR_LAMBDA_ARN",
+      "Parameters": {
+        "session_id.$":     "$.session_id",
+        "input_type.$":     "$.input_type",
+        "review_content.$": "$.review_content",
+        "agent_results.$":  "$.agent_results"
+      },
+      "ResultPath": "$.supervisor_result",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ReviewFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "GenerateReport"
+    },
+
+    "GenerateReport": {
+      "Type": "Task",
+      "Comment": "HTML レポート生成 → S3 保存 → 署名付き URL 取得（7 日間有効）",
+      "Resource": "REPORT_GENERATOR_LAMBDA_ARN",
+      "Parameters": {
+        "session_id.$":        "$.session_id",
+        "input_type.$":        "$.input_type",
+        "s3_key.$":            "$.s3_key",
+        "agent_results.$":     "$.agent_results",
+        "supervisor_result.$": "$.supervisor_result"
+      },
+      "ResultPath": "$.report_result",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ReviewFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "SendNotification"
+    },
+
+    "SendNotification": {
+      "Type": "Task",
+      "Comment": "Chatwork にレビュー完了通知（失敗してもワークフローは続行）",
+      "Resource": "CHATWORK_NOTIFIER_LAMBDA_ARN",
+      "Parameters": {
+        "session_id.$":        "$.session_id",
+        "input_type.$":        "$.input_type",
+        "supervisor_result.$": "$.supervisor_result",
+        "report_url.$":        "$.report_result.report_url",
+        "report_s3_key.$":     "$.report_result.report_s3_key"
+      },
+      "ResultPath": "$.notification_result",
+      "Next": "UpdateStatusCompleted"
+    },
+
+    "UpdateStatusCompleted": {
+      "Type": "Task",
+      "Comment": "全レビュー完了後にステータスを completed に更新",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "REVIEW_TABLE_NAME",
+        "Key": {
+          "session_id": { "S.$": "$.session_id" }
+        },
+        "UpdateExpression": "SET #st = :status",
+        "ExpressionAttributeNames": { "#st": "status" },
+        "ExpressionAttributeValues": { ":status": { "S": "completed" } }
+      },
+      "ResultPath": null,
+      "End": true
+    },
+
+    "ReviewFailed": {
+      "Type": "Task",
+      "Comment": "エラー発生時にステータスを failed に更新して終了",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "REVIEW_TABLE_NAME",
+        "Key": {
+          "session_id": { "S.$": "$.session_id" }
+        },
+        "UpdateExpression": "SET #st = :status",
+        "ExpressionAttributeNames": { "#st": "status" },
+        "ExpressionAttributeValues": { ":status": { "S": "failed" } }
+      },
+      "ResultPath": null,
+      "End": true
+    }
+  }
+}
