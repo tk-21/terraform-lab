@@ -1,12 +1,21 @@
 # .github/workflows/ci.yml
 #
-# CI パイプライン — PR 時に実行される。
-# lint → test → terraform plan の順に実行し、品質を担保する。
+# CI パイプライン — PR（pull_request）トリガーで実行される。
+#
+# ジョブの依存関係:
+#   lint-python ─┐
+#   test-unit   ─┤  (並列実行)
+#   lint-terraform ─→ terraform-plan
+#
+# 「余計な depends_on を入れない」設計方針:
+#   - Python lint/test は Terraform plan とは独立しているため相互依存しない
+#   - terraform-plan は lint-terraform の完了のみを待つ
+#   - コードレビュアーは Python テスト結果と Terraform plan を同時に確認できる
 #
 # 前提: GitHub の Secrets に以下を設定すること。
-#   AWS_ROLE_ARN: github-oidc.tf で出力された GitHub Actions ロールの ARN
-#   TF_VAR_account_id: AWSアカウントID
-#   TF_VAR_alert_email: アラーム通知先メールアドレス
+#   AWS_ACCOUNT_ID: AWSアカウントID（12桁）
+#   TF_VAR_alert_email: CloudWatch アラーム通知先メールアドレス
+#   CODECOV_TOKEN: Codecov のアップロードトークン（オプション）
 
 name: CI
 
@@ -19,65 +28,108 @@ on:
       - "src/**"
       - "tests/**"
       - ".github/workflows/**"
+      - "Makefile"
 
 permissions:
-  id-token: write   # OIDC トークン取得に必要
+  id-token: write    # OIDC トークン取得に必要（terraform-plan ジョブ）
   contents: read
-  pull-requests: write  # plan コメント投稿に必要
+  pull-requests: write  # PR コメント投稿に必要
 
 jobs:
   # ============================================================
-  # Python lint & test
+  # Python Lint（ruff / black / mypy）
   # ============================================================
-  python-test:
-    name: Python Lint & Test
+  # Python コードの静的解析を行う。他のジョブと並列実行する。
+  # ruff: 高速な linter（PEP 8, import 順序等）
+  # black: コードフォーマットチェック（--check で変更を提案しない）
+  # mypy: 静的型チェック（--ignore-missing-imports でスタブ不要な外部ライブラリを無視）
+  lint-python:
+    name: Python Lint
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install lint tools
+        run: |
+          pip install --upgrade pip
+          pip install ruff black mypy \
+            "aws-lambda-powertools[tracer]" \
+            boto3 pydantic
+
+      - name: ruff check
+        run: ruff check src/ tests/
+
+      - name: black format check
+        # black --check は変更を加えず差分のみ表示する。
+        # ruff format と役割は重複するが、black の挙動を明示的に検証するために両方実行する。
+        run: black --check src/ tests/
+
+      - name: mypy type check
+        # --ignore-missing-imports: boto3 / Powertools 等スタブなしのライブラリを無視する
+        run: mypy src/ --ignore-missing-imports
+
+  # ============================================================
+  # Python Unit Test（pytest + Codecov）
+  # ============================================================
+  # ユニットテストを実行しカバレッジを計測する。lint とは独立して並列実行する。
+  # --cov-fail-under=80: カバレッジ 80% 未満でジョブを失敗させる。
+  test-unit:
+    name: Unit Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install test dependencies
         run: |
           pip install --upgrade pip
           pip install \
             pytest \
             pytest-cov \
-            ruff \
             boto3 \
-            moto[dynamodb,s3] \
+            "moto[dynamodb,s3]" \
             pydantic \
             "aws-lambda-powertools[tracer]"
 
-      - name: Lint with ruff
-        run: |
-          ruff check src/ tests/
-          ruff format --check src/ tests/
-
       - name: Run unit tests
+        # PYTHONPATH に src/ を追加して shared モジュールの import を解決する
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           pytest tests/unit/ \
             -v \
             --cov=src \
             --cov-report=term-missing \
-            --cov-report=xml \
+            --cov-report=xml:coverage.xml \
             --cov-fail-under=80
 
-      - name: Upload coverage report
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         if: always()
         with:
           file: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false  # Codecov が落ちても CI を失敗させない
 
   # ============================================================
-  # Terraform lint
+  # Terraform Lint（fmt / tflint / checkov）
   # ============================================================
-  terraform-lint:
+  # Terraform コードの品質チェックを行う。
+  # checkov の結果は --soft-fail で終了コード 0 を返しつつ PR にコメントする。
+  lint-terraform:
     name: Terraform Lint
     runs-on: ubuntu-latest
 
@@ -89,39 +141,131 @@ jobs:
         with:
           terraform_version: "~1.7"
 
+      # terraform fmt: HCL の標準フォーマットチェック
+      # -check: 変更を加えずにフォーマット違反を検出する
+      # -recursive: terraform/ 配下を再帰的にチェックする
       - name: Terraform Format Check
         run: terraform fmt -check -recursive terraform/
 
       - name: Setup TFLint
         uses: terraform-linters/setup-tflint@v4
 
-      - name: TFLint
+      # tflint: Terraform の設計上の問題を検出する
+      # (未使用変数、非推奨パラメータ、AWS プロバイダの型不正等)
+      - name: Run TFLint
         run: |
           cd terraform/environments/dev
           tflint --init
-          tflint
+          tflint --recursive
+
+      # checkov: IaC セキュリティスキャン
+      # --soft-fail: セキュリティ問題があってもジョブを失敗させない（結果をコメントで共有）
+      # --compact: 出力を簡潔にする
+      - name: Run Checkov
+        id: checkov
+        run: |
+          pip install -q checkov
+          set +e
+          checkov \
+            -d terraform/ \
+            --framework terraform \
+            --soft-fail \
+            --compact \
+            --output cli \
+            2>&1 | tee checkov_output.txt
+          CHECKOV_EXIT=$?
+          echo "exit_code=${CHECKOV_EXIT}" >> $GITHUB_OUTPUT
+          set -e
+
+      # checkov の結果を PR コメントとして投稿する。
+      # 同一 PR への複数回実行時はコメントを更新して重複を防ぐ。
+      - name: Post Checkov results to PR
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('checkov_output.txt', 'utf8');
+            const exitCode = '${{ steps.checkov.outputs.exit_code }}';
+            const status = exitCode === '0' ? '✅ 問題なし' : '⚠️ 確認が必要な項目あり';
+
+            // 出力が長い場合は切り捨てる（GitHub コメントの上限対策）
+            const maxLength = 50000;
+            const truncated = output.length > maxLength
+              ? output.substring(0, maxLength) + '\n...(省略)'
+              : output;
+
+            const body = [
+              '<!-- checkov-results -->',
+              `## Checkov セキュリティスキャン結果: ${status}`,
+              '',
+              '<details>',
+              '<summary>スキャン結果の詳細を表示</summary>',
+              '',
+              '```',
+              truncated,
+              '```',
+              '</details>',
+              '',
+              `> soft-fail モードで実行。問題がある場合も CI は失敗しません。`,
+            ].join('\n');
+
+            // 既存コメントを検索して更新する（重複投稿を防ぐ）
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.data.find(c =>
+              c.body.includes('<!-- checkov-results -->')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
   # ============================================================
-  # Terraform Plan
+  # Terraform Plan（dev 環境）
   # ============================================================
+  # lint-terraform 完了後に実行する。
+  # OIDC 認証のみ使用（アクセスキーは GitHub Secrets に保存しない）。
+  # plan 結果（追加/変更/削除リソース数）を PR コメントに投稿し、
+  # plan ファイルを artifacts にアップロードしてコードレビュアーが確認できるようにする。
   terraform-plan:
     name: Terraform Plan (dev)
     runs-on: ubuntu-latest
-    needs: [python-test, terraform-lint]
+    needs: [lint-terraform]
 
     steps:
       - uses: actions/checkout@v4
 
+      # OIDC 認証: アクセスキーを GitHub Secrets に保存せず、
+      # IAM ロールの一時的な認証情報を取得する。
+      # ロール ARN は AWS_ACCOUNT_ID から構築し、アクセスキーは不要。
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sap-dev-github-actions-role
           aws-region: ap-northeast-1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.7"
+          terraform_wrapper: false  # outputs を正確に取得するため wrapper を無効化
 
       - name: Terraform Init
         working-directory: terraform/environments/dev
@@ -131,29 +275,109 @@ jobs:
         id: plan
         working-directory: terraform/environments/dev
         env:
-          TF_VAR_account_id: ${{ secrets.TF_VAR_account_id }}
+          TF_VAR_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
           TF_VAR_alert_email: ${{ secrets.TF_VAR_alert_email }}
         run: |
           terraform plan \
             -out=tfplan \
             -no-color \
             2>&1 | tee plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
-      - name: Comment plan on PR
+      # plan 結果から追加/変更/削除リソース数を抽出して PR コメントに投稿する。
+      # 既存コメントがある場合は更新する（重複投稿を防ぐ）。
+      - name: Post Terraform plan to PR
         uses: actions/github-script@v7
         if: always()
         with:
           script: |
             const fs = require('fs');
-            const planOutput = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
+            const planOutput = fs.readFileSync(
+              'terraform/environments/dev/plan_output.txt', 'utf8'
+            );
+            const planExitCode = '${{ steps.plan.outputs.exit_code }}';
+
+            // plan の概要行（"Plan: X to add, Y to change, Z to destroy."）を抽出する
+            const summaryMatch = planOutput.match(
+              /Plan: (\d+) to add, (\d+) to change, (\d+) to destroy/
+            );
+            const noChangesMatch = /No changes\. Your infrastructure matches the configuration/.test(planOutput);
+
+            let summary = '';
+            if (noChangesMatch) {
+              summary = '✅ **変更なし** — インフラは設定と一致しています';
+            } else if (summaryMatch) {
+              const [, add, change, destroy] = summaryMatch;
+              const lines = [];
+              if (Number(add)     > 0) lines.push(`➕ **追加**: ${add} リソース`);
+              if (Number(change)  > 0) lines.push(`🔄 **変更**: ${change} リソース`);
+              if (Number(destroy) > 0) lines.push(`🗑️ **削除**: ${destroy} リソース`);
+              summary = lines.join('  \n');
+            } else if (planExitCode !== '0') {
+              summary = '❌ **Plan 失敗** — 下記の詳細を確認してください';
+            } else {
+              summary = '⚠️ Plan 出力の解析に失敗しました';
+            }
+
+            // 出力が長い場合は折りたたみセクションに入れて切り詰める
             const maxLength = 60000;
             const truncated = planOutput.length > maxLength
-              ? planOutput.substring(0, maxLength) + '\n...(省略)'
+              ? planOutput.substring(0, maxLength) + '\n...(省略。artifacts からフルログを確認してください)'
               : planOutput;
 
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const body = [
+              '<!-- terraform-plan -->',
+              '## Terraform Plan (dev)',
+              '',
+              summary,
+              '',
+              '<details>',
+              '<summary>Plan の詳細を表示</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '</details>',
+              '',
+              `> 最終更新: ${new Date().toISOString()}`,
+            ].join('\n');
+
+            // 既存コメントを検索して更新する
+            const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan (dev)\n\`\`\`\n${truncated}\n\`\`\``
+              issue_number: context.issue.number,
             });
+
+            const existing = comments.data.find(c =>
+              c.body.includes('<!-- terraform-plan -->')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # tfplan バイナリと plan テキストを artifacts に保存する。
+      # CD パイプラインでの参照とコードレビュー後の監査証跡として使用する。
+      # retention-days: PRレビューサイクルを考慮して7日間保持する。
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.exit_code == '0'
+        with:
+          name: tfplan-dev
+          path: |
+            terraform/environments/dev/tfplan
+            terraform/environments/dev/plan_output.txt
+          retention-days: 7

@@ -47,7 +47,7 @@
 
 ---
 
-## STEP 2: DynamoDB テーブル設計
+## ✅STEP 2: DynamoDB テーブル設計
 
 ```
 CLAUDE.md の Single Table Design を Terraform で実装してください。
@@ -89,7 +89,7 @@ outputs.tf:
 
 ---
 
-## STEP 3: Cognito 認証基盤
+## ✅STEP 3: Cognito 認証基盤
 
 ```
 API の認証基盤として AWS Cognito User Pool を Terraform で実装してください。
@@ -125,7 +125,7 @@ outputs.tf:
 
 ---
 
-## STEP 4: Lambda 共通モジュール
+## ✅STEP 4: Lambda 共通モジュール
 
 ```
 全 Lambda 関数で再利用する Terraform モジュールを作成してください。
@@ -171,7 +171,7 @@ outputs.tf:
 
 ---
 
-## STEP 5: CRUD Lambda 実装（Python）
+## ✅STEP 5: CRUD Lambda 実装（Python）
 
 ```
 5つの CRUD Lambda 関数を Python で実装してください。
@@ -245,7 +245,7 @@ delete_item（DELETE /items/{id}）:
 
 ---
 
-## STEP 6: API Gateway（REST API + Cognito オーソライザー）
+## ✅STEP 6: API Gateway（REST API + Cognito オーソライザー）
 
 ```
 API Gateway REST API と Cognito 統合を Terraform で実装してください。
@@ -301,7 +301,7 @@ outputs.tf:
 
 ---
 
-## STEP 7: DynamoDB Streams → stream-processor Lambda（監査ログ）
+## ✅STEP 7: DynamoDB Streams → stream-processor Lambda（監査ログ）
 
 ```
 DynamoDB Streams をトリガーに変更履歴を S3 に保存する監査ログ Lambda を実装してください。
@@ -348,7 +348,7 @@ DynamoDB Streams をトリガーに変更履歴を S3 に保存する監査ロ�
 
 ---
 
-## STEP 8: CI/CD パイプライン（GitHub Actions）
+## ✅STEP 8: CI/CD パイプライン（GitHub Actions）
 
 ```
 本番レベルの CI/CD パイプラインを GitHub Actions で実装してください。
@@ -420,7 +420,7 @@ deploy: build
 
 ---
 
-## STEP 9: テスト実装（Unit + Integration）
+## ✅STEP 9: テスト実装（Unit + Integration）
 
 ```
 本番品質のテストを実装してください。

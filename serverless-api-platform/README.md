@@ -1,117 +1,189 @@
 # serverless-api-platform
 
-API Gateway × Lambda × DynamoDB によるプロダクションレベルのサーバーレス REST API 基盤。
-
-認証・バリデーション・エラーハンドリング・CI/CD まで一気通貫で実装した、転職・案件獲得向けポートフォリオプロジェクト。
+[![CI](https://github.com/your-org/serverless-api-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/serverless-api-platform/actions/workflows/ci.yml)
+[![CD](https://github.com/your-org/serverless-api-platform/actions/workflows/cd.yml/badge.svg)](https://github.com/your-org/serverless-api-platform/actions/workflows/cd.yml)
+[![codecov](https://codecov.io/gh/your-org/serverless-api-platform/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/serverless-api-platform)
+[![Terraform](https://img.shields.io/badge/Terraform-%3E%3D1.7-7B42BC)](https://www.terraform.io/)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## これを作り終えると何ができるようになるか
+## このプロジェクトについて
 
-### 動くものとして
+### 何をするプロジェクトか
 
-**認証付きの REST API が AWS 上に立ち上がる。**
+**アイテムを管理する REST API** を、AWS のサーバーレス構成でゼロから構築するプロジェクト。
 
-Cognito で発行した JWT トークンを Authorization ヘッダーに付けるだけで、以下の操作が HTTPS 経由でできる。
+ユーザーはログイン後、アイテムの作成・取得・更新・削除ができる。アイテムを「ARCHIVED」にすると 30 日後に自動削除される。すべての変更操作は S3 に監査ログとして記録される。
 
-```bash
-# アイテムを作成する
-curl -X POST https://api.example.com/items \
-  -H "Authorization: Bearer <JWT>" \
-  -d '{"name": "買い物リスト", "description": "週末用"}'
-
-# 自分のアイテム一覧を取得する（ページネーション対応）
-curl https://api.example.com/items \
-  -H "Authorization: Bearer <JWT>"
-
-# 特定のアイテムを更新する
-curl -X PUT https://api.example.com/items/{id} \
-  -H "Authorization: Bearer <JWT>" \
-  -d '{"status": "ARCHIVED"}'
-
-# 削除する
-curl -X DELETE https://api.example.com/items/{id} \
-  -H "Authorization: Bearer <JWT>"
+```
+POST   /items          # アイテムを作成する
+GET    /items          # 自分のアイテム一覧を取得する（ページネーション付き）
+GET    /items/{id}     # アイテムを1件取得する
+PUT    /items/{id}     # アイテムを更新する
+DELETE /items/{id}     # アイテムを論理削除する（ARCHIVED → 30日後に自動削除）
 ```
 
-裏側では以下がすべて自動で動く:
+### なぜ作ったか
 
-- **認証**: Cognito が JWT を検証。Lambda には検証済みのユーザー ID だけが渡ってくる
-- **認可**: 自分が作ったアイテムしか更新・削除できない（他人のデータは 403）
-- **保護**: WAF がレートリミットと IP ブロックで不正アクセスを弾く
-- **監査ログ**: DynamoDB の全変更が S3 に自動保存される（誰が・いつ・何を変えたか）
-- **自動削除**: ARCHIVED にしたアイテムは 30 日後に DynamoDB から消える（TTL）
-- **可観測性**: CloudWatch ダッシュボードでエラー率・スロットリング・レイテンシが一目でわかる
+「バックエンド API をプロダクション品質で設計・構築・運用できる」ことを証明するポートフォリオ。
 
----
+単なる CRUD サンプルではなく、**実際の現場で求められる要素を一通り網羅**している。
 
-### 技術的に証明できること
-
-**「AWS でサーバーレス API を一から設計・構築・運用できる」を具体的なコードで示せる。**
-
-| 証明できること | 具体的な実装 |
+| 要素 | 実装内容 |
 |---|---|
-| IaC で再現可能な環境を作れる | Terraform モジュール構成。`make apply` 1発で全リソースが揃う |
-| 最小権限の IAM 設計ができる | Lambda ごとに専用ロール。`*` リソース指定ゼロ |
-| DynamoDB を正しく使える | Single Table Design・GSI での Query（Scan 禁止）・ページネーション |
-| セキュアな API 設計ができる | Cognito JWT 検証・WAF・HTTPS 強制・所有者チェック |
-| 可観測性を作れる | 構造化ログ・X-Ray トレース・CloudWatch アラーム・ダッシュボード |
-| CI/CD を組める | GitHub Actions + OIDC（IAM キーなし）。PR で plan、merge で apply |
-| テストを書ける | moto で DynamoDB をモック。ユニットテスト + E2E テスト |
-| コストを意識した設計ができる | arm64 Lambda・PAY_PER_REQUEST・dev/prod の機能分離 |
+| 認証・認可 | Cognito JWT 認証 + アイテムのオーナーシップ確認 |
+| 入力バリデーション | API Gateway JSON スキーマ + Pydantic v2 による二重チェック |
+| エラーハンドリング | カスタム例外クラス + 統一レスポンスフォーマット |
+| 可観測性 | Lambda Powertools による構造化ログ・X-Ray トレース・CloudWatch メトリクス |
+| 監査ログ | DynamoDB Streams → Lambda → S3 によるすべての変更記録 |
+| IaC | Terraform モジュール分割（dev/prod 環境を変数で切り替え） |
+| CI/CD | GitHub Actions OIDC によるキーレスデプロイ（AWS アクセスキー不要） |
+| テスト | moto モックによるユニットテスト（カバレッジ 80%+）+ E2E インテグレーションテスト |
 
 ---
 
-### 転職・案件獲得での使い方
+## システムアーキテクチャ
 
-このプロジェクト単体で以下の会話ができる:
+```mermaid
+graph TB
+    subgraph Client["クライアント"]
+        C[ブラウザ / モバイル / curl]
+    end
 
-- **「サーバーレスアーキテクチャの経験はありますか？」**
-  → GitHub の URL を出して「これを設計・実装しました」と言える
+    subgraph Auth["認証基盤"]
+        CUP[Cognito User Pool]
+        CA[Cognito Authorizer]
+    end
 
-- **「DynamoDB の設計経験は？」**
-  → Single Table Design・GSI の使い分け・Scan を使わない理由を説明できる
+    subgraph API["API 層"]
+        APIGW[API Gateway REST API]
+        WAF[WAF WebACL<br/>レートリミット・IP ブロック]
+    end
 
-- **「セキュリティ設計はどう考えますか？」**
-  → Cognito + API Gateway 委譲・最小権限 IAM・WAF・監査ログの構成を説明できる
+    subgraph Compute["コンピュート層 / Lambda arm64"]
+        LI[list-items<br/>GET /items]
+        GI[get-item<br/>GET /items/:id]
+        CI[create-item<br/>POST /items]
+        UI[update-item<br/>PUT /items/:id]
+        DI[delete-item<br/>DELETE /items/:id]
+        SP[stream-processor<br/>DynamoDB Streams]
+    end
 
-- **「CI/CD の経験は？」**
-  → OIDC による keyless な GitHub Actions パイプラインを見せられる
+    subgraph Data["データ層"]
+        DDB[DynamoDB<br/>Single Table Design]
+        S3A[S3<br/>監査ログ]
+        S3D[S3<br/>Lambda デプロイ]
+    end
 
-- **「Terraform を書けますか？」**
-  → モジュール分割・`for_each` ループ・`locals` による命名管理のコードを見せられる
+    subgraph Observability["可観測性"]
+        CW[CloudWatch Logs<br/>Metrics / Alarms]
+        XRAY[X-Ray Tracing]
+    end
+
+    C -->|HTTPS + Bearer JWT| WAF
+    WAF --> APIGW
+    C -->|認証・JWT 取得| CUP
+    APIGW -->|JWT 検証| CA
+    CA --> APIGW
+    APIGW --> LI & GI & CI & UI & DI
+    LI & GI & CI & UI & DI --> DDB
+    DDB -->|Streams| SP
+    SP --> S3A
+    S3D -->|デプロイ| LI & GI & CI & UI & DI & SP
+    LI & GI & CI & UI & DI --> CW
+    LI & GI & CI & UI & DI --> XRAY
+```
+
+> WAF は prod 環境のみ。dev 環境はコスト削減のため無効。
 
 ---
 
-## アーキテクチャ概要
+## DynamoDB Single Table Design
 
+すべてのアイテムを 1 テーブルに格納する DynamoDB ネイティブな設計を採用。
+GSI を使ってフルスキャン（Scan API）ゼロを実現している。
+
+```mermaid
+erDiagram
+    ITEMS {
+        string partition_key PK "ITEM-item_id"
+        string sort_key "ITEM-item_id"
+        string item_id "UUID v4"
+        string user_id "Cognito sub"
+        string name "1-100文字"
+        string description "最大1000文字"
+        string status "ACTIVE or ARCHIVED"
+        string created_at "ISO8601 UTC"
+        string updated_at "ISO8601 UTC"
+        number expires_at "UNIX TTL ARCHIVED+30日"
+    }
+
+    GSI_USER_INDEX {
+        string user_id PK "Hash Key"
+        string created_at "Range Key"
+    }
+
+    GSI_STATUS_INDEX {
+        string status PK "Hash Key"
+        string created_at "Range Key"
+    }
+
+    ITEMS ||--o{ GSI_USER_INDEX : "ユーザー別一覧 降順"
+    ITEMS ||--o{ GSI_STATUS_INDEX : "ステータス別一覧 管理用"
 ```
-[クライアント]
-      ↓ HTTPS
-[API Gateway（REST API）]
-  - WAF（レートリミット・IP ブロック）     ← prod のみ
-  - Cognito オーソライザー（JWT 検証）     ← prod のみ（dev は無効）
-  - リクエストバリデーション（JSON スキーマ）
-      ↓
-[Lambda 関数群 / arm64 + Python 3.12]
-  - list-items    GET    /items
-  - get-item      GET    /items/{id}
-  - create-item   POST   /items
-  - update-item   PUT    /items/{id}
-  - delete-item   DELETE /items/{id}
-      ↓
-[DynamoDB — Single Table Design]
-  - GSI-1: user-index（ユーザー別一覧）
-  - GSI-2: status-index（ステータス別一覧）
-  - TTL: expires_at（ARCHIVED から 30 日後に自動削除）
-  - DynamoDB Accelerator（DAX）← prod のみ
-      ↓ Streams
-[Lambda: stream-processor]
-  - 変更イベントを S3 に監査ログとして保存
-      ↓
-[S3: audit-logs]
-  - STANDARD_IA（30 日後）→ Glacier（90 日後）→ 削除（7 年後）
+
+- **GSI_USER_INDEX**: `GET /items` で使用。`user_id` でフィルタリングし `created_at` の降順で返す
+- **GSI_STATUS_INDEX**: 管理用途。`status=ACTIVE` のアイテムを日付順に取得
+- **TTL**: `status=ARCHIVED` に変更した時点で `expires_at = 現在時刻 + 30日` をセット。DynamoDB が自動削除
+
+---
+
+## CI/CD フロー
+
+```mermaid
+graph LR
+    subgraph PR["Pull Request"]
+        LP[lint-python<br/>ruff / black / mypy]
+        TU[test-unit<br/>pytest + moto<br/>coverage 80%+]
+        LT[lint-terraform<br/>fmt / tflint / checkov]
+        TP[terraform-plan<br/>差分を PR にコメント]
+    end
+
+    subgraph Main["main ブランチ push"]
+        TA[terraform-apply<br/>tfplan artifact 使用]
+        DL[deploy-lambda<br/>matrix: 6関数<br/>S3 + update-function-code]
+        ST[smoke-test<br/>5 エンドポイント検証]
+        NT[notify<br/>SNS メール通知]
+    end
+
+    LP --> TU
+    LT --> TP
+    TP -->|tfplan artifact| TA
+    TA --> DL
+    DL --> ST
+    ST --> NT
+    TU -->|Codecov| COV[codecov.io]
 ```
+
+**認証**: GitHub Actions の OIDC トークンで AWS に AssumeRole。AWS アクセスキーを Secrets に保存しない。
+
+---
+
+## 技術スタック
+
+| カテゴリ | 技術 | バージョン | 採用理由 |
+|---|---|---|---|
+| コンピュート | AWS Lambda | Python 3.12 / arm64 | arm64 で x86 比 ~20% コスト削減。Cold start も高速 |
+| バリデーション | Pydantic v2 | >= 2.0 | Rust 実装で高速。`model_validator` で複雑なビジネスルールを型安全に表現 |
+| 可観測性 | AWS Lambda Powertools | >= 2.0 | 構造化ログ・X-Ray トレース・メトリクスを 3 デコレータで完結 |
+| 認証 | Amazon Cognito | - | JWT 検証を API Gateway Authorizer に委譲し、Lambda ロジックをシンプルに保つ |
+| DB | Amazon DynamoDB | - | Single Table Design で PAY_PER_REQUEST。GSI によりフルスキャンゼロを実現 |
+| IaC | Terraform | ~> 1.7 | 宣言的で可読性が高く、モジュール分割によりコード再利用が容易 |
+| CI/CD | GitHub Actions + OIDC | - | AWS アクセスキー不要のキーレス認証。Secrets に長期クレデンシャルを保存しない |
+| テスト | moto v4 | >= 4.0 | AWS サービスをローカルでモック。実 AWS 通信ゼロで高速なユニットテスト |
+| セキュリティ | checkov | - | IaC の設定ミス・セキュリティリスクを PR 段階で検出 |
 
 ---
 
@@ -119,368 +191,399 @@ curl -X DELETE https://api.example.com/items/{id} \
 
 ```
 serverless-api-platform/
-├── Makefile                        # make init / plan / apply / test / deploy
-├── scripts/
-│   └── bootstrap.sh                # Terraform バックエンド（S3 + DynamoDB）作成
+├── .github/workflows/
+│   ├── ci.yml              # PR: lint・test・terraform plan
+│   └── cd.yml              # main: apply → deploy → smoke test
 ├── terraform/
 │   ├── environments/
-│   │   ├── dev/                    # dev 環境（WAF・Cognito・DAX なし）
-│   │   │   ├── backend.tf
-│   │   │   ├── providers.tf
-│   │   │   ├── variables.tf
-│   │   │   ├── main.tf
-│   │   │   ├── outputs.tf
-│   │   │   └── github-oidc.tf      # GitHub Actions OIDC ロール
-│   │   └── prod/                   # prod 環境（全機能有効）
+│   │   ├── dev/            # dev 環境 (WAF なし・DAX なし・Cognito 無効)
+│   │   └── prod/           # prod 環境 (WAF・DAX・Cognito 有効)
 │   └── modules/
-│       ├── lambda-function/        # Lambda 共通モジュール
-│       ├── api-gateway/            # REST API・ステージ・WAF
-│       ├── dynamodb/               # テーブル・GSI・Streams・DAX
-│       ├── iam/                    # 実行ロール（最小権限）
-│       ├── monitoring/             # CloudWatch アラーム・ダッシュボード
-│       └── storage/                # S3 監査ログバケット
+│       ├── lambda-function/ # Lambda 共通モジュール
+│       ├── api-gateway/     # REST API・ステージ・WAF
+│       ├── cognito/         # User Pool・App Client
+│       ├── dynamodb/        # テーブル・GSI・Streams・DAX
+│       ├── iam/             # 実行ロール（最小権限）
+│       ├── storage/         # S3 (監査ログ・デプロイ)
+│       └── monitoring/      # CloudWatch・アラーム・ダッシュボード
 ├── src/
-│   ├── shared/                     # 共有ライブラリ
-│   │   ├── models.py               # Pydantic データモデル
-│   │   ├── repository.py           # DynamoDB アクセス層
-│   │   ├── exceptions.py           # カスタム例外クラス
-│   │   └── response.py             # API レスポンス共通フォーマット
-│   ├── list_items/
-│   ├── get_item/
-│   ├── create_item/
-│   ├── update_item/
-│   ├── delete_item/
-│   └── stream_processor/
+│   ├── list_items/          # GET /items
+│   ├── get_item/            # GET /items/{id}
+│   ├── create_item/         # POST /items
+│   ├── update_item/         # PUT /items/{id}
+│   ├── delete_item/         # DELETE /items/{id}
+│   ├── stream_processor/    # DynamoDB Streams → S3 監査ログ
+│   └── shared/
+│       ├── models.py        # Pydantic データモデル
+│       ├── repository.py    # DynamoDB アクセス層
+│       ├── exceptions.py    # カスタム例外クラス
+│       └── response.py      # APIレスポンス共通フォーマット
 ├── tests/
-│   ├── unit/                       # moto モック使用
-│   └── integration/                # デプロイ済み API に対する E2E テスト
-└── .github/
-    └── workflows/
-        ├── ci.yml                  # PR: lint → test → terraform plan
-        └── cd.yml                  # main: apply → smoke test
+│   ├── unit/                # moto モック・カバレッジ 80%+
+│   └── integration/         # 実 AWS (dev 環境) E2E テスト
+└── docs/
+    ├── architecture.md      # アーキテクチャ詳細・フロー図
+    ├── api-spec.yaml        # OpenAPI 3.0 仕様書
+    ├── adr/
+    │   ├── 001-single-table-design.md    # DynamoDB 設計の意思決定
+    │   ├── 002-cognito-vs-custom-auth.md # 認証方式の意思決定
+    │   └── 003-rest-vs-http-api.md       # API Gateway v1 vs v2 の意思決定
+    └── runbook.md           # 障害対応手順書
 ```
 
 ---
 
-## 技術スタック
+## セットアップ手順
 
-| カテゴリ | 使用技術 |
-|---|---|
-| IaC | Terraform ~> 1.7、AWS Provider ~> 5.50 |
-| コンピュート | Lambda（arm64 / Python 3.12）|
-| API | API Gateway REST API (v1) |
-| データベース | DynamoDB（Single Table Design、PAY_PER_REQUEST）|
-| キャッシュ | DAX（prod のみ）|
-| 認証 | Cognito User Pool + API Gateway オーソライザー |
-| セキュリティ | WAF v2（レートリミット・IP 制限）|
-| ロギング | AWS Lambda Powertools（構造化 JSON ログ）|
-| トレーシング | X-Ray + Powertools Tracer |
-| メトリクス | CloudWatch + Powertools Metrics |
-| CI/CD | GitHub Actions（OIDC 認証）|
-| テスト | pytest + moto（DynamoDB モック）|
+### 全体の流れ
 
----
-
-## 構築進行状況
-
-### 凡例
-- ✅ 完了
-- 🚧 作業中 / 一部完了
-- ⬜ 未着手
+```
+[1] ツールのインストール・AWS認証設定
+    ↓
+[2] リポジトリのクローン
+    ↓
+[3] Terraform バックエンドの作成  ← 初回のみ
+    ↓
+[4] インフラのデプロイ（terraform apply）
+    ↓
+[5] Lambda コードのデプロイ（make deploy）
+    ↓
+[6] 動作確認（curl）
+```
 
 ---
 
-### Phase 1: プロジェクト基盤 ✅
+### STEP 1: 前提ツールの確認
 
-| タスク | 状態 | 備考 |
-|---|---|---|
-| ディレクトリ構成・プロジェクト骨格 | ✅ | CLAUDE.md に従った構成 |
-| `.gitignore` | ✅ | Terraform / Python / Lambda zip |
-| `Makefile` | ✅ | 8 ターゲット（bootstrap / init / plan / apply / destroy / fmt / lint / test / deploy）|
-| `scripts/bootstrap.sh` | ✅ | S3（KMS・バージョニング・HTTPS 強制）+ DynamoDB 作成 |
-| `terraform/environments/dev/backend.tf` | ✅ | S3 リモートステート + DynamoDB ロック |
-| `terraform/environments/dev/providers.tf` | ✅ | `default_tags` で全リソースに共通タグ付与 |
-| `terraform/environments/dev/variables.tf` | ✅ | environment / project / account_id / alert_email / allowed_ips |
-| `terraform/environments/dev/github-oidc.tf` | ✅ | OIDC プロバイダ + IAM ロール（main ブランチ限定）|
-| `terraform/environments/prod/` | ✅ | dev と同構成・変数のみ差異 |
-
----
-
-### Phase 2: Terraform モジュール ✅
-
-| モジュール | 状態 | 備考 |
-|---|---|---|
-| `modules/dynamodb` | ✅ | Single Table Design・GSI×2・Streams・TTL・PITR・DAX（prod のみ）|
-| `modules/iam` | ✅ | 関数ごとの最小権限ロール（`*` リソース指定なし）|
-| `modules/storage` | ✅ | 監査ログ S3（ライフサイクル・暗号化・パブリックアクセスブロック）|
-| `modules/lambda-function` | ✅ | arm64・X-Ray・JSON ログ・イベントソースマッピング |
-| `modules/api-gateway` | ✅ | REST API・ステージ・Cognito オーソライザー（オプション）|
-| `modules/monitoring` | ✅ | SNS アラーム（Errors / Throttles / 5xx）・CloudWatch ダッシュボード |
-| `environments/dev/main.tf` | ✅ | 全モジュールを結合 |
-| `modules/cognito` | ⬜ | User Pool・App Client（未作成） |
-
----
-
-### Phase 3: Lambda ソースコード ✅
-
-| 関数 | 状態 | 備考 |
-|---|---|---|
-| `src/shared/models.py` | ✅ | Pydantic v2・CreateItemRequest / UpdateItemRequest / Item |
-| `src/shared/repository.py` | ✅ | CRUD・GSI Query（Scan 禁止）・ページネーション |
-| `src/shared/exceptions.py` | ✅ | ItemNotFoundError / ForbiddenError / ValidationError など |
-| `src/shared/response.py` | ✅ | success / paginated / error の共通フォーマット |
-| `src/list_items/handler.py` | ✅ | GSI-1 (user-index) Query・カーソルページネーション |
-| `src/get_item/handler.py` | ✅ | GetItem・所有者チェック |
-| `src/create_item/handler.py` | ✅ | PutItem・条件式で重複防止 |
-| `src/update_item/handler.py` | ✅ | UpdateItem・部分更新・所有者チェック |
-| `src/delete_item/handler.py` | ✅ | DeleteItem・所有者チェック |
-| `src/stream_processor/handler.py` | ✅ | ReportBatchItemFailures・S3 監査ログ保存 |
-
-全 Lambda に [AWS Lambda Powertools](https://docs.powertools.aws.dev/lambda/python/latest/) を適用済み:
-- `@logger.inject_lambda_context` — 構造化 JSON ログ + correlation_id
-- `@tracer.capture_lambda_handler` — X-Ray トレーシング
-- `@metrics.log_metrics` — コールドスタートメトリクス自動計測
-
----
-
-### Phase 4: テスト ✅
-
-| テスト | 状態 | 備考 |
-|---|---|---|
-| `tests/unit/test_create_item.py` | ✅ | 正常系・バリデーションエラー・認証エラー |
-| `tests/unit/test_list_items.py` | ✅ | 一覧取得・空リスト・limit パラメータ |
-| `tests/unit/test_update_item.py` | ✅ | 更新・404・403・空ボディ |
-| `tests/unit/test_repository.py` | ✅ | CRUD・GSI クエリ・所有者分離 |
-| `tests/integration/test_api_e2e.py` | ✅ | CRUD フロー全体（`API_ENDPOINT` 未設定時はスキップ）|
-| `tests/unit/test_delete_item.py` | ⬜ | 未作成 |
-
----
-
-### Phase 5: CI/CD ✅
-
-| ファイル | 状態 | 備考 |
-|---|---|---|
-| `.github/workflows/ci.yml` | ✅ | PR: ruff lint → pytest（カバレッジ 80% 以上）→ terraform plan → PR コメント |
-| `.github/workflows/cd.yml` | ✅ | main push: terraform apply → smoke test |
-| GitHub Secrets 設定 | ⬜ | `AWS_ROLE_ARN` / `TF_VAR_account_id` / `TF_VAR_alert_email` の登録が必要 |
-
----
-
-### Phase 6: 残作業 ⬜
-
-| タスク | 優先度 | 備考 |
-|---|---|---|
-| `modules/cognito` の作成 | 高 | User Pool・App Client・`dev/main.tf` への組み込み |
-| `modules/api-gateway` に WAF 実装を追加 | 高 | WAF v2 WebACL・レートリミット・IP 許可リスト |
-| `tests/unit/test_delete_item.py` の追加 | 中 | |
-| `docs/architecture.md` | 中 | Mermaid アーキテクチャ図 |
-| `docs/api-spec.yaml` | 中 | OpenAPI 3.0 仕様書 |
-| `docs/adr/` | 低 | ADR-001〜003（設計上の意思決定の記録）|
-| `docs/runbook.md` | 低 | 障害対応手順書 |
-| カスタムドメイン（Route53 + ACM）| 低 | prod のみ |
-| GitHub Secrets の登録 | 高 | CI/CD の実行に必要 |
-| `terraform/environments/dev/backend.tf` の `<account_id>` を実際の値に更新 | 高 | 初回 `make init` 前に必須 |
-| `github-oidc.tf` の `github_org` を実際の org 名に更新 | 高 | OIDC 設定 |
-
----
-
-## クイックスタート
-
-### 前提条件
-
-- Terraform >= 1.7
-- AWS CLI v2（`aws configure` 設定済み）
-- Python 3.12
-- `make` コマンド
-
-### 1. リポジトリのクローン
+以下がインストールされていることを確認する。
 
 ```bash
-git clone https://github.com/<your-org>/serverless-api-platform.git
+terraform --version   # >= 1.7
+aws --version         # AWS CLI v2
+python3 --version     # >= 3.12
+zip --version         # Lambda zip ビルドに使用
+jq --version          # レスポンス整形に使用（任意）
+```
+
+続いて AWS の認証情報とリージョンを設定する。
+
+```bash
+export AWS_PROFILE=your-profile    # 使用する AWS CLI プロファイル名
+export AWS_REGION=ap-northeast-1   # デプロイ先リージョン
+
+# 正しく設定されているか確認
+aws sts get-caller-identity
+```
+
+---
+
+### STEP 2: リポジトリのクローン
+
+```bash
+git clone https://github.com/your-org/serverless-api-platform.git
 cd serverless-api-platform
 ```
 
-### 2. 初期設定
+---
 
-```bash
-# backend.tf の <account_id> を実際のアカウント ID に置き換える
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-sed -i "s/<account_id>/${ACCOUNT_ID}/g" \
-  terraform/environments/dev/backend.tf \
-  terraform/environments/prod/backend.tf
+### STEP 3: Terraform バックエンドの作成（初回のみ）
 
-# github-oidc.tf の github_org / github_repo を編集する
-vi terraform/environments/dev/github-oidc.tf
-```
-
-### 3. Terraform バックエンドの作成（初回のみ）
+Terraform の tfstate ファイルを保存する S3 バケットと、同時編集を防ぐ DynamoDB テーブルを作成する。
 
 ```bash
 make bootstrap
 ```
 
-### 4. デプロイ
+作成されるリソース:
+- S3: `sap-tfstate-<account_id>`（KMS 暗号化・バージョニング有効）
+- DynamoDB: `sap-tfstate-lock`
+
+**実行後**: `terraform/environments/dev/backend.tf` の `<ACCOUNT_ID>` を実際のアカウント ID に書き換える。
+
+```hcl
+# terraform/environments/dev/backend.tf
+terraform {
+  backend "s3" {
+    bucket = "sap-tfstate-123456789012"  # ← 実際のアカウント ID に変更
+    ...
+  }
+}
+```
+
+---
+
+### STEP 4: インフラのデプロイ
 
 ```bash
+# 初期化（初回・モジュール追加時に実行）
 make init ENV=dev
+
+# 変更内容の確認（必ず apply 前に実行）
 make plan ENV=dev
+
+# リソースの作成
 make apply ENV=dev
 ```
 
-### 5. API エンドポイントの確認
+`apply` が完了すると API Gateway の URL など出力される。
 
 ```bash
-cd terraform/environments/dev
-terraform output api_endpoint
-# => https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/dev
+# 出力値を確認する
+cd terraform/environments/dev && terraform output
 ```
 
-### 6. 動作確認（dev 環境は Cognito 認証なし）
+---
+
+### STEP 5: Lambda コードのデプロイ
+
+`terraform apply` はインフラ（Lambda 関数の定義）を作成するが、コードは別途デプロイが必要。
 
 ```bash
-API=$(cd terraform/environments/dev && terraform output -raw api_endpoint)
+# アカウント ID を指定して 6 関数を一括デプロイ
+make deploy ENV=dev ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+```
 
-# アイテム作成
-curl -X POST "${API}/items?user_id=test-user" \
+内部では `src/` の各関数を zip 化して S3 にアップロードし、`update-function-code` で反映する。
+
+---
+
+### STEP 6: 動作確認
+
+まずエンドポイントを変数にセットする。
+
+```bash
+export API_ENDPOINT=$(cd terraform/environments/dev && terraform output -raw api_endpoint)
+echo $API_ENDPOINT  # https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/dev
+```
+
+**dev 環境は Cognito 認証が無効**のため、`?user_id=` パラメータでユーザーを指定するだけで動作確認できる。
+
+```bash
+# アイテムを作成
+curl -s -X POST "$API_ENDPOINT/items?user_id=testuser" \
   -H "Content-Type: application/json" \
-  -d '{"name": "テストアイテム", "description": "説明"}'
+  -d '{"name": "テストアイテム", "description": "動作確認用"}' | jq .
 
-# 一覧取得
-curl "${API}/items?user_id=test-user"
+# 作成したアイテムの item_id を控える
+ITEM_ID="<上のレスポンスの item_id>"
+
+# 一覧を取得
+curl -s "$API_ENDPOINT/items?user_id=testuser" | jq .
+
+# 1件取得
+curl -s "$API_ENDPOINT/items/$ITEM_ID?user_id=testuser" | jq .
+
+# 更新
+curl -s -X PUT "$API_ENDPOINT/items/$ITEM_ID?user_id=testuser" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "更新後の名前"}' | jq .
+
+# 削除（204 No Content が返る）
+curl -s -X DELETE "$API_ENDPOINT/items/$ITEM_ID?user_id=testuser" \
+  -o /dev/null -w "HTTP %{http_code}\n"
 ```
 
-### 7. ユニットテストの実行
+---
+
+### Cognito 認証を試す場合（prod 環境 または dev でも試したい場合）
+
+prod 環境では Cognito が有効になるため、JWT トークンが必要。
 
 ```bash
-make test
+# 1. テストユーザーを作成
+USER_POOL_ID=$(cd terraform/environments/dev && terraform output -raw cognito_user_pool_id)
+CLIENT_ID=$(cd terraform/environments/dev && terraform output -raw cognito_client_id)
+
+aws cognito-idp admin-create-user \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "testuser@example.com" \
+  --message-action SUPPRESS
+
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "testuser@example.com" \
+  --password "MyPassword123!" \
+  --permanent
+
+# 2. JWT トークンを取得
+TOKEN=$(aws cognito-idp initiate-auth \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters USERNAME=testuser@example.com,PASSWORD=MyPassword123! \
+  --client-id "$CLIENT_ID" \
+  --query 'AuthenticationResult.IdToken' \
+  --output text)
+
+echo $TOKEN  # eyJra... のような長い文字列が出れば成功
+
+# 3. Authorization ヘッダーを付けてリクエスト
+curl -s "$API_ENDPOINT/items" \
+  -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
 ---
 
-## 環境差異（dev vs prod）
+## API 使用例（curl）
 
-| 機能 | dev | prod |
-|---|---|---|
-| Cognito 認証 | 無効（`?user_id=` パラメータで代替）| 有効 |
-| WAF | 無効 | 有効（レートリミット・IP 制限）|
-| DAX | 無効 | 有効（DynamoDB インメモリキャッシュ）|
-| PITR | 無効 | 有効（ポイントインタイムリカバリ）|
-| ログ保持期間 | 14 日 | 90 日 |
-| 月額コスト目安 | ~$1 | ~$20〜 |
+### アイテムの作成 `POST /items`
 
----
-
-## API 仕様
-
-### エンドポイント
-
-| メソッド | パス | 説明 |
-|---|---|---|
-| GET | `/items` | アイテム一覧（ページネーション対応）|
-| GET | `/items/{id}` | アイテム取得 |
-| POST | `/items` | アイテム作成 |
-| PUT | `/items/{id}` | アイテム更新（部分更新）|
-| DELETE | `/items/{id}` | アイテム削除 |
-
-### レスポンスフォーマット
+```bash
+curl -s -X POST "$API_ENDPOINT/items" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "サンプルアイテム", "description": "説明文（任意）", "expires_days": 30}' | jq .
+```
 
 ```json
-// 成功
 {
   "success": true,
-  "data": { "item_id": "...", "name": "...", "status": "ACTIVE", ... },
-  "meta": { "request_id": "...", "timestamp": "2024-01-15T12:00:00Z" }
+  "data": {
+    "item_id": "550e8400-e29b-41d4-a716-446655440000",
+    "user_id": "cognito-sub-xxxx",
+    "name": "サンプルアイテム",
+    "description": "説明文（任意）",
+    "status": "ACTIVE",
+    "created_at": "2024-01-15T12:00:00+00:00",
+    "updated_at": "2024-01-15T12:00:00+00:00",
+    "expires_at": 1708000000
+  },
+  "meta": { "request_id": "abc123", "timestamp": "2024-01-15T12:00:00Z" }
 }
+```
 
-// エラー
+### アイテム一覧の取得 `GET /items`
+
+```bash
+# limit・cursor によるページネーション
+curl -s "$API_ENDPOINT/items?limit=10" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 次ページ（レスポンスの next_cursor を cursor に渡す）
+curl -s "$API_ENDPOINT/items?limit=10&cursor=eyJQSyI6..." \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+```json
+{
+  "success": true,
+  "data": [{ "item_id": "...", "name": "...", "status": "ACTIVE", "created_at": "..." }],
+  "pagination": { "next_cursor": "eyJQSyI6...", "has_more": true, "count": 10 },
+  "meta": { "request_id": "def456", "timestamp": "2024-01-15T12:00:01Z" }
+}
+```
+
+### アイテムの取得・更新・削除
+
+```bash
+ITEM_ID="550e8400-e29b-41d4-a716-446655440000"
+
+# 取得
+curl -s "$API_ENDPOINT/items/$ITEM_ID" -H "Authorization: Bearer $TOKEN" | jq .
+
+# 更新
+curl -s -X PUT "$API_ENDPOINT/items/$ITEM_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "更新後の名前", "status": "ARCHIVED"}' | jq .
+
+# 削除（204 No Content）
+curl -s -X DELETE "$API_ENDPOINT/items/$ITEM_ID" \
+  -H "Authorization: Bearer $TOKEN" -o /dev/null -w "%{http_code}\n"
+# → 204
+```
+
+### エラーレスポンス例
+
+```bash
+# 認証なし → 401
+curl -s "$API_ENDPOINT/items"
+```
+
+```json
 {
   "success": false,
-  "error": { "code": "ITEM_NOT_FOUND", "message": "...", "request_id": "..." }
-}
-
-// 一覧（ページネーション）
-{
-  "success": true,
-  "data": [ ... ],
-  "pagination": { "next_cursor": "base64==", "has_more": true, "count": 20 }
+  "error": { "code": "UNAUTHORIZED", "message": "認証が必要です", "request_id": "ghi789" }
 }
 ```
 
-### エラーコード
+---
 
-| コード | HTTP | 説明 |
+## テスト
+
+### ユニットテスト（moto モック・外部 AWS 通信なし）
+
+```bash
+make test-unit
+# pytest tests/unit/ --cov=src --cov-fail-under=80
+```
+
+### インテグレーションテスト（実 dev 環境を使用）
+
+```bash
+export API_ENDPOINT=$(cd terraform/environments/dev && terraform output -raw api_endpoint)
+export COGNITO_USER_POOL_ID=$(cd terraform/environments/dev && terraform output -raw cognito_user_pool_id)
+export COGNITO_CLIENT_ID=$(cd terraform/environments/dev && terraform output -raw cognito_client_id)
+
+make test-integration
+```
+
+---
+
+## コスト試算（dev 環境・月額）
+
+| サービス | 前提 | 月額概算 |
 |---|---|---|
-| `ITEM_NOT_FOUND` | 404 | 指定した ID のアイテムが存在しない |
-| `VALIDATION_ERROR` | 400 | リクエストボディのバリデーションエラー |
-| `UNAUTHORIZED` | 401 | 認証情報が不正または未指定 |
-| `FORBIDDEN` | 403 | 他ユーザーのアイテムへのアクセス |
-| `INTERNAL_ERROR` | 500 | サーバー内部エラー |
+| Lambda | 100万リクエスト/月・平均100ms・arm64 | ~$0.00（無料枠内） |
+| API Gateway | 100万リクエスト/月 | ~$3.50 |
+| DynamoDB | PAY_PER_REQUEST・読み書き各100万/月 | ~$1.25 |
+| Cognito | MAU 50人以下 | $0（無料枠） |
+| S3 | 監査ログ・デプロイ資材 ~1GB | ~$0.02 |
+| CloudWatch | ログ保存 5GB・メトリクス5個 | ~$0.50 |
+| **合計** | | **~$5 / 月** |
+
+> WAF・DAX・カスタムドメインは prod 環境のみ。dev は最小コスト構成。
 
 ---
 
-## DynamoDB テーブル設計
+## 環境比較
 
-**Single Table Design** を採用。複数エンティティを1テーブルに集約し、GSI で各アクセスパターンに対応する。
-
-```
-テーブル名: sap-<env>-items
-
-PK: ITEM#<item_id>
-SK: ITEM#<item_id>
-
-GSI-1 (user-index):  user_id → created_at（ユーザー別一覧、降順）
-GSI-2 (status-index): status → created_at（ステータス別一覧、管理用）
-
-TTL: expires_at（ARCHIVED から 30 日後に自動削除）
-Streams: NEW_AND_OLD_IMAGES（監査ログ用）
-```
-
-> **注意**: DynamoDB の `Scan` API は使用禁止。一覧取得は必ず GSI を使った `Query` で行う（フルスキャンによるコスト増大を防ぐため）。
+| 項目 | dev | prod |
+|---|---|---|
+| WAF | なし（コスト削減） | あり |
+| DAX | なし | あり |
+| DynamoDB PITR | なし | あり |
+| Cognito Authorizer | なし（開発効率優先） | あり |
+| CloudWatch ログ保持 | 14 日 | 90 日 |
+| Lambda 同時実行数上限 | 未設定 | 設定あり |
+| カスタムドメイン | なし | あり（Route53 + ACM） |
 
 ---
 
-## CI/CD パイプライン
+## 今後の拡張案
 
-```
-PR オープン
-  → ci.yml
-      ├── Python: ruff lint + pytest（カバレッジ 80% 以上）
-      ├── Terraform: fmt check + tflint
-      └── Terraform: plan → PR にコメント投稿
-
-main マージ
-  → cd.yml
-      ├── Terraform: apply（dev 環境）
-      └── 統合テスト（smoke test）
-```
-
-GitHub Actions は OIDC 認証で AWS にアクセスする（長期的な IAM アクセスキー不要）。
-認証ロールは `main` ブランチからのリクエストのみに制限されている。
+| 拡張 | 概要 | 難易度 |
+|---|---|---|
+| WAF + カスタムドメイン | Rate limiting + ACM + Route53 で本番 URL | ★★ |
+| DAX (DynamoDB Accelerator) | μs レイテンシ。prod 環境への追加は変数1つ | ★★ |
+| GraphQL (AppSync) | REST → GraphQL への移行・型安全なスキーマ | ★★★ |
+| OpenSearch | 全文検索。DynamoDB Streams → Lambda → OpenSearch | ★★★ |
+| SQS + 非同期処理 | 重い処理をキューイング。Lambda x SQS トリガー | ★★ |
+| Multi-Region | Route53 フェイルオーバー + DynamoDB Global Tables | ★★★ |
 
 ---
 
-## コスト管理
+## ドキュメント
 
-| リソース | 月額目安（dev）|
+| ドキュメント | 内容 |
 |---|---|
-| Lambda（arm64）| ~$0（無料枠内）|
-| API Gateway | ~$0（無料枠内）|
-| DynamoDB（PAY_PER_REQUEST）| ~$0（無料枠内）|
-| S3（監査ログ）| ~$0.01 |
-| CloudWatch Logs | ~$0.50 |
-| **合計** | **~$1 以下** |
-
-- arm64 アーキテクチャで x86_64 より約 20% コスト削減
-- dev 環境では DAX・WAF を無効化してコストを最小化
+| [docs/architecture.md](docs/architecture.md) | アーキテクチャ詳細・リクエストフロー・セキュリティ設計 |
+| [docs/api-spec.yaml](docs/api-spec.yaml) | OpenAPI 3.0 仕様書（全エンドポイント・スキーマ・認証） |
+| [docs/adr/001-single-table-design.md](docs/adr/001-single-table-design.md) | DynamoDB Single Table Design 採用理由とアクセスパターン |
+| [docs/adr/002-cognito-vs-custom-auth.md](docs/adr/002-cognito-vs-custom-auth.md) | Cognito vs カスタム JWT 認証の意思決定 |
+| [docs/adr/003-rest-vs-http-api.md](docs/adr/003-rest-vs-http-api.md) | REST API (v1) vs HTTP API (v2) の意思決定 |
+| [docs/runbook.md](docs/runbook.md) | 障害対応手順書（5xx 急増・DynamoDB 過負荷・Lambda スロットル） |
 
 ---
 
-## 設計上の意思決定（ADR）
+## License
 
-| # | タイトル | 決定 |
-|---|---|---|
-| 001 | Single Table Design vs Multi Table | Single Table を採用（アクセスパターンが明確なため）|
-| 002 | Cognito vs カスタム認証 | Cognito を採用（Lambda 側でのトークン検証を排除）|
-| 003 | REST API vs HTTP API | REST API (v1) を採用（リクエストバリデーション機能が必要なため）|
-
-詳細は `docs/adr/` を参照（未作成）。
+MIT License — see [LICENSE](LICENSE)

@@ -105,6 +105,7 @@ resource "aws_iam_role_policy" "dynamodb" {
 }
 
 # S3 への書き込み権限（stream-processor のみ）
+# 監査ログバケット以外への書き込みを禁止するため、リソースを明示的に指定する（ワイルドカード禁止）。
 resource "aws_iam_role_policy" "s3_audit" {
   name = "${var.prefix}-stream-processor-s3-policy"
   role = aws_iam_role.lambda["stream-processor"].id
@@ -118,6 +119,30 @@ resource "aws_iam_role_policy" "s3_audit" {
           "s3:PutObject",
         ]
         Resource = "${var.audit_bucket_arn}/*"
+      }
+    ]
+  })
+}
+
+# KMS 暗号化権限（stream-processor のみ）
+# 監査ログ用 S3 バケットは SSE-KMS で暗号化されている。
+# S3 の PutObject 時、S3 は Lambda の実行ロールで kms:GenerateDataKey を呼び出す。
+# この権限がないと PutObject は AccessDenied で失敗する。
+# kms:Decrypt は不要（PutObject のみ行うため）。
+resource "aws_iam_role_policy" "kms_audit" {
+  name = "${var.prefix}-stream-processor-kms-policy"
+  role = aws_iam_role.lambda["stream-processor"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+        ]
+        # 監査ログバケット専用の KMS キーのみに限定する（ワイルドカード禁止）
+        Resource = var.audit_kms_key_arn
       }
     ]
   })

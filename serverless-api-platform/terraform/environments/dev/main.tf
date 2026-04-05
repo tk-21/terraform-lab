@@ -55,6 +55,8 @@ module "iam" {
 
   dynamodb_table_arn = module.dynamodb.table_arn
   audit_bucket_arn   = module.storage.audit_bucket_arn
+  # KMS キー ARN: stream-processor が S3 PutObject する際に GenerateDataKey が必要
+  audit_kms_key_arn = module.storage.audit_kms_key_arn
 }
 
 # ============================================================
@@ -74,16 +76,17 @@ module "storage" {
 module "lambda_list_items" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-list-items"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  timeout       = local.lambda_timeout
-  source_dir    = "${path.root}/../../../src/list_items"
+  function_name          = "${local.prefix}-list-items"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  timeout                = local.lambda_timeout
+  source_dir             = "${path.root}/../../../src/list_items"
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME = module.dynamodb.table_name
-    ENVIRONMENT         = var.environment
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-list-items"
   }
 
@@ -93,16 +96,17 @@ module "lambda_list_items" {
 module "lambda_get_item" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-get-item"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  timeout       = local.lambda_timeout
-  source_dir    = "${path.root}/../../../src/get_item"
+  function_name          = "${local.prefix}-get-item"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  timeout                = local.lambda_timeout
+  source_dir             = "${path.root}/../../../src/get_item"
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME = module.dynamodb.table_name
-    ENVIRONMENT         = var.environment
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-get-item"
   }
 
@@ -112,16 +116,17 @@ module "lambda_get_item" {
 module "lambda_create_item" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-create-item"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  timeout       = local.lambda_timeout
-  source_dir    = "${path.root}/../../../src/create_item"
+  function_name          = "${local.prefix}-create-item"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  timeout                = local.lambda_timeout
+  source_dir             = "${path.root}/../../../src/create_item"
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME = module.dynamodb.table_name
-    ENVIRONMENT         = var.environment
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-create-item"
   }
 
@@ -131,16 +136,17 @@ module "lambda_create_item" {
 module "lambda_update_item" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-update-item"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  timeout       = local.lambda_timeout
-  source_dir    = "${path.root}/../../../src/update_item"
+  function_name          = "${local.prefix}-update-item"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  timeout                = local.lambda_timeout
+  source_dir             = "${path.root}/../../../src/update_item"
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME = module.dynamodb.table_name
-    ENVIRONMENT         = var.environment
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-update-item"
   }
 
@@ -150,16 +156,17 @@ module "lambda_update_item" {
 module "lambda_delete_item" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-delete-item"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  timeout       = local.lambda_timeout
-  source_dir    = "${path.root}/../../../src/delete_item"
+  function_name          = "${local.prefix}-delete-item"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  timeout                = local.lambda_timeout
+  source_dir             = "${path.root}/../../../src/delete_item"
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME = module.dynamodb.table_name
-    ENVIRONMENT         = var.environment
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-delete-item"
   }
 
@@ -169,23 +176,27 @@ module "lambda_delete_item" {
 module "lambda_stream_processor" {
   source = "../../modules/lambda-function"
 
-  function_name = "${local.prefix}-stream-processor"
-  handler       = "handler.handler"
-  runtime       = local.lambda_runtime
-  architectures = local.lambda_architecture
-  # stream-processor は非同期処理のため API GW タイムアウト制約なし
-  timeout    = 60
-  source_dir = "${path.root}/../../../src/stream_processor"
+  function_name          = "${local.prefix}-stream-processor"
+  handler                = "handler.handler"
+  runtime                = local.lambda_runtime
+  architectures          = local.lambda_architecture
+  deployment_bucket_name = module.storage.lambda_deployment_bucket_name
+  source_dir             = "${path.root}/../../../src/stream_processor"
+
+  # stream-processor は非同期処理のため API GW タイムアウト制約なし。
+  # バッチサイズ 100 レコード × 処理時間を考慮して 60 秒に設定する。
+  timeout = 60
 
   environment_variables = {
-    AUDIT_BUCKET_NAME = module.storage.audit_bucket_name
-    ENVIRONMENT       = var.environment
+    AUDIT_BUCKET_NAME       = module.storage.audit_bucket_name
+    ENVIRONMENT             = var.environment
     POWERTOOLS_SERVICE_NAME = "${local.prefix}-stream-processor"
   }
 
   execution_role_arn = module.iam.lambda_role_arns["stream-processor"]
 
   # DynamoDB Streams からのイベントソースマッピング
+  # バッチサイズ・開始位置・bisect 設定は lambda-function モジュール内で管理する
   event_source_arn = module.dynamodb.stream_arn
 }
 

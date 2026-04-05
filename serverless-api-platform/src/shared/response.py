@@ -3,125 +3,122 @@
 # API レスポンスの共通フォーマット生成ユーティリティ。
 # CLAUDE.md で定義されたレスポンス形式に統一する。
 #
-# 成功: {"success": true, "data": {...}, "meta": {...}}
-# エラー: {"success": false, "error": {"code": "...", "message": "...", "request_id": "..."}}
-# ページネーション: {"success": true, "data": [...], "pagination": {...}}
+# 成功:     {"success": true, "data": {...}, "meta": {...}}
+# エラー:   {"success": false, "error": {"code": "...", "message": "...", "request_id": "..."}}
+# 一覧:     {"success": true, "data": [...], "pagination": {...}, "meta": {...}}
+#
+# APIGatewayRestResolver ルート関数からは ok() / err() / paged() を使用すること。
+# これらは Powertools Response オブジェクトを返すため、app.resolve() と組み合わせて動作する。
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools.event_handler import Response
 
-logger = Logger()
+# CORS ヘッダー（本番では Allow-Origin を特定ドメインに制限すること）
+_CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+}
 
 
-def success(data: Any, request_id: str, status_code: int = 200) -> dict:
+def ok(data: Any, request_id: str, status_code: int = 200) -> Response:
     """
-    成功レスポンスを生成する。
+    成功レスポンスを Powertools Response オブジェクトで返す。
+    APIGatewayRestResolver ルート関数からこの関数を使用する。
 
     Args:
-        data: レスポンスボディのデータ。dict または list を受け取る。
-        request_id: API Gateway のリクエスト ID。トレーサビリティのため含める。
-        status_code: HTTP ステータスコード。デフォルト 200。
+        data: レスポンスデータ（dict または list）
+        request_id: API Gateway リクエスト ID
+        status_code: HTTP ステータスコード（デフォルト 200）
     """
-    return {
-        "statusCode": status_code,
-        "headers": _cors_headers(),
-        "body": json.dumps(
-            {
-                "success": True,
-                "data": data,
-                "meta": {
-                    "request_id": request_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
+    body = json.dumps(
+        {
+            "success": True,
+            "data": data,
+            "meta": {
+                "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-            ensure_ascii=False,
-            default=str,  # datetime など JSON 非対応型を文字列に変換
-        ),
-    }
+        },
+        ensure_ascii=False,
+        default=str,  # datetime や Decimal など JSON 非対応型を文字列に変換
+    )
+    return Response(
+        status_code=status_code,
+        content_type="application/json",
+        body=body,
+        headers=_CORS_HEADERS,
+    )
 
 
-def paginated(
+def err(code: str, message: str, request_id: str, status_code: int = 500) -> Response:
+    """
+    エラーレスポンスを Powertools Response オブジェクトで返す。
+
+    Args:
+        code: エラーコード（例: "ITEM_NOT_FOUND", "VALIDATION_ERROR"）
+        message: ユーザー向けエラーメッセージ
+        request_id: API Gateway リクエスト ID
+        status_code: HTTP ステータスコード
+    """
+    body = json.dumps(
+        {
+            "success": False,
+            "error": {
+                "code": code,
+                "message": message,
+                "request_id": request_id,
+            },
+        },
+        ensure_ascii=False,
+    )
+    return Response(
+        status_code=status_code,
+        content_type="application/json",
+        body=body,
+        headers=_CORS_HEADERS,
+    )
+
+
+def paged(
     data: list,
     request_id: str,
-    next_cursor: str | None = None,
-    count: int | None = None,
-) -> dict:
+    next_cursor: Optional[str] = None,
+    count: Optional[int] = None,
+) -> Response:
     """
-    ページネーション付きレスポンスを生成する。
+    ページネーション付き一覧レスポンスを Powertools Response オブジェクトで返す。
 
     Args:
-        data: アイテムのリスト。
-        request_id: リクエスト ID。
-        next_cursor: 次ページの DynamoDB ExclusiveStartKey を Base64 エンコードした値。
-                     None の場合は最終ページ。
-        count: 返却したアイテム数。
+        data: アイテムのリスト
+        request_id: API Gateway リクエスト ID
+        next_cursor: 次ページカーソル（DynamoDB ExclusiveStartKey を Base64 エンコードした値）
+        count: 返却件数（省略時は len(data)）
     """
-    return {
-        "statusCode": 200,
-        "headers": _cors_headers(),
-        "body": json.dumps(
-            {
-                "success": True,
-                "data": data,
-                "pagination": {
-                    "next_cursor": next_cursor,
-                    "has_more": next_cursor is not None,
-                    "count": count if count is not None else len(data),
-                },
-                "meta": {
-                    "request_id": request_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
+    body = json.dumps(
+        {
+            "success": True,
+            "data": data,
+            "pagination": {
+                "next_cursor": next_cursor,
+                "has_more": next_cursor is not None,
+                "count": count if count is not None else len(data),
             },
-            ensure_ascii=False,
-            default=str,
-        ),
-    }
-
-
-def error(
-    code: str,
-    message: str,
-    request_id: str,
-    status_code: int = 500,
-) -> dict:
-    """
-    エラーレスポンスを生成する。
-
-    Args:
-        code: エラーコード。例: "ITEM_NOT_FOUND", "VALIDATION_ERROR"
-        message: ユーザー向けエラーメッセージ。
-        request_id: リクエスト ID。
-        status_code: HTTP ステータスコード。
-    """
-    return {
-        "statusCode": status_code,
-        "headers": _cors_headers(),
-        "body": json.dumps(
-            {
-                "success": False,
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request_id,
-                },
+            "meta": {
+                "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-            ensure_ascii=False,
-        ),
-    }
-
-
-def _cors_headers() -> dict:
-    """
-    CORS ヘッダーを返す。
-    本番環境では Allow-Origin を特定のドメインに制限すること。
-    """
-    return {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    }
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    return Response(
+        status_code=200,
+        content_type="application/json",
+        body=body,
+        headers=_CORS_HEADERS,
+    )

@@ -47,8 +47,20 @@ resource "aws_iam_role" "github_actions" {
   name = "${var.project}-${var.environment}-github-actions-role"
 
   # 信頼ポリシー：GitHub OIDC プロバイダからのみ AssumeRole を許可
-  # sub クレームで org/repo/branch を限定し、
-  # 意図しないリポジトリ・ブランチからの実行を防ぐ
+  #
+  # sub クレームの形式:
+  #   PR (pull_request イベント):  "repo:org/repo:pull_request"
+  #   Push (main ブランチ):        "repo:org/repo:ref:refs/heads/main"
+  #
+  # CI (ci.yml) は PR 上で terraform-plan を実行するため pull_request イベントも許可する必要がある。
+  # CD (cd.yml) は main への push 時のみ実行されるため main ブランチに限定される。
+  #
+  # StringLike を使用して同一ロールで両方のイベントを受け入れる:
+  #   "repo:org/repo:*" → このリポジトリの任意のイベント（PR・push・tag）を許可
+  #
+  # より厳格な制御が必要な場合:
+  #   - CI 用と CD 用でロールを分離する（read-only vs write）
+  #   - CD ロールは StringEquals で main ブランチのみに限定する
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -61,11 +73,13 @@ resource "aws_iam_role" "github_actions" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            # audience の検証
+            # audience の検証（固定値）
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            # main ブランチへの push のみ許可
-            # PR のみの場合は "pull_request" を追加する
-            "token.actions.githubusercontent.com:sub" = "repo:${local.github_org}/${local.github_repo}:ref:refs/heads/${local.github_branch}"
+          }
+          StringLike = {
+            # このリポジトリからの任意のイベント（PR・push）を許可する。
+            # 他リポジトリからの権限昇格を防ぐため org/repo を明示的に指定する。
+            "token.actions.githubusercontent.com:sub" = "repo:${local.github_org}/${local.github_repo}:*"
           }
         }
       }

@@ -24,3 +24,8 @@ variable "audit_bucket_arn" {
   description = "監査ログ用 S3 バケットの ARN。stream-processor の IAM ポリシーで使用する。"
   type        = string
 }
+
+variable "audit_kms_key_arn" {
+  description = "監査ログ用 S3 バケットの KMS キー ARN。stream-processor が PutObject する際に S3 が kms:GenerateDataKey を呼び出すため GenerateDataKey 権限が必要。"
+  type        = string
+}
