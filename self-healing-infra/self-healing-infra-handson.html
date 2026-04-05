@@ -1,0 +1,1362 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自己修復インフラ ハンズオン</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e17;
+    --surface: #0f1520;
+    --card: #141b2d;
+    --border: #1e2d4a;
+    --accent: #00d4ff;
+    --accent2: #ff6b35;
+    --accent3: #39ff14;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --warn: #fbbf24;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Grid BG */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  header {
+    padding: 60px 0 48px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+
+  .tag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 3px 10px;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-size: clamp(28px, 5vw, 48px);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -1px;
+    margin-bottom: 16px;
+  }
+
+  h1 span { color: var(--accent); }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 620px;
+  }
+
+  /* Progress nav */
+  .progress-nav {
+    display: flex;
+    gap: 0;
+    margin-bottom: 48px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .nav-item {
+    flex: 1;
+    padding: 12px 8px;
+    text-align: center;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    color: var(--muted);
+    border-right: 1px solid var(--border);
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .nav-item:last-child { border-right: none; }
+
+  .nav-item.active {
+    background: rgba(0,212,255,0.08);
+    color: var(--accent);
+  }
+
+  .nav-item.done {
+    color: var(--accent3);
+  }
+
+  .nav-item.done::after {
+    content: '✓';
+    display: block;
+    font-size: 10px;
+  }
+
+  .nav-item:hover:not(.active) {
+    background: rgba(255,255,255,0.03);
+    color: var(--text);
+  }
+
+  /* Sections */
+  .section {
+    display: none;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .section.active { display: block; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Cards */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 28px;
+    margin-bottom: 24px;
+  }
+
+  .card-title {
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    letter-spacing: -0.5px;
+  }
+
+  h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+
+  p {
+    color: #94a3b8;
+    line-height: 1.7;
+    font-size: 14px;
+    margin-bottom: 12px;
+  }
+
+  /* Code blocks */
+  .code-block {
+    background: #060a10;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 20px 24px;
+    margin: 16px 0;
+    position: relative;
+    overflow-x: auto;
+  }
+
+  .code-block pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: #e2e8f0;
+    white-space: pre;
+  }
+
+  .code-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+
+  .copy-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--border);
+    border: none;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+  }
+
+  .copy-btn:hover { background: var(--accent); color: var(--bg); }
+
+  /* Syntax colors */
+  .kw { color: #ff79c6; }
+  .str { color: #f1fa8c; }
+  .cm { color: #6272a4; font-style: italic; }
+  .fn { color: #8be9fd; }
+  .var { color: #ffb86c; }
+  .num { color: #bd93f9; }
+  .op { color: #ff6b35; }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: #060a10;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 32px 24px;
+    margin: 20px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    color: #94a3b8;
+    overflow-x: auto;
+  }
+
+  .arch-diagram .node { color: var(--accent); }
+  .arch-diagram .arrow { color: var(--accent2); }
+  .arch-diagram .label { color: var(--accent3); }
+
+  /* Alert boxes */
+  .alert {
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    font-size: 13px;
+    display: flex;
+    gap: 10px;
+    line-height: 1.6;
+  }
+
+  .alert-info {
+    background: rgba(0,212,255,0.06);
+    border: 1px solid rgba(0,212,255,0.2);
+    color: #a0d8ef;
+  }
+
+  .alert-warn {
+    background: rgba(251,191,36,0.06);
+    border: 1px solid rgba(251,191,36,0.2);
+    color: #fde68a;
+  }
+
+  .alert-success {
+    background: rgba(57,255,20,0.06);
+    border: 1px solid rgba(57,255,20,0.2);
+    color: #a3f5a0;
+  }
+
+  /* Step list */
+  .step-list {
+    list-style: none;
+    counter-reset: steps;
+  }
+
+  .step-list li {
+    counter-increment: steps;
+    padding: 14px 0 14px 48px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    font-size: 14px;
+    color: #94a3b8;
+    line-height: 1.6;
+  }
+
+  .step-list li:last-child { border-bottom: none; }
+
+  .step-list li::before {
+    content: counter(steps, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    width: 36px;
+    text-align: right;
+  }
+
+  /* Checklist */
+  .checklist { list-style: none; }
+
+  .checklist li {
+    padding: 8px 0;
+    font-size: 14px;
+    color: #94a3b8;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    transition: color 0.2s;
+  }
+
+  .checklist li .check {
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    flex-shrink: 0;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    transition: all 0.2s;
+  }
+
+  .checklist li.checked { color: var(--accent3); }
+  .checklist li.checked .check {
+    background: var(--accent3);
+    border-color: var(--accent3);
+    color: #000;
+  }
+
+  /* Nav buttons */
+  .nav-btns {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+
+  .btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 12px 24px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+
+  .btn-primary:hover { background: #00b8d9; border-color: #00b8d9; color: var(--bg); }
+
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Flow diagram */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow-x: auto;
+    padding: 20px 0;
+    flex-wrap: nowrap;
+  }
+
+  .flow-node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    text-align: center;
+    flex-shrink: 0;
+    min-width: 100px;
+  }
+
+  .flow-node .icon { font-size: 22px; margin-bottom: 6px; }
+  .flow-node .name { font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--accent); }
+  .flow-node .desc { font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+  .flow-arrow {
+    color: var(--accent2);
+    font-size: 18px;
+    flex-shrink: 0;
+    padding: 0 8px;
+  }
+
+  /* Two col */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+
+  @media (max-width: 600px) {
+    .two-col { grid-template-columns: 1fr; }
+    .flow { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); }
+  }
+
+  .mini-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+  }
+
+  .mini-card h4 {
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent2);
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+  }
+
+  .mini-card p { font-size: 12px; margin: 0; }
+
+  /* Section title */
+  .section-header {
+    margin-bottom: 32px;
+  }
+
+  .section-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    letter-spacing: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="tag">HANDS-ON LAB</div>
+    <h1>自己修復する<br><span>ネットワーク構成</span></h1>
+    <p class="subtitle">Ansible + AWS Lambda + Config Rules を組み合わせた、設定ドリフトの自動検知・修復ループを実装する。インフラが「自律的に正しい状態を保つ」仕組みを体で理解する。</p>
+  </header>
+
+  <div class="progress-nav" id="progressNav">
+    <div class="nav-item active" onclick="goTo(0)">00 概要</div>
+    <div class="nav-item" onclick="goTo(1)">01 準備</div>
+    <div class="nav-item" onclick="goTo(2)">02 Ansible</div>
+    <div class="nav-item" onclick="goTo(3)">03 Config</div>
+    <div class="nav-item" onclick="goTo(4)">04 Lambda</div>
+    <div class="nav-item" onclick="goTo(5)">05 統合</div>
+    <div class="nav-item" onclick="goTo(6)">06 検証</div>
+  </div>
+
+  <!-- SECTION 0: OVERVIEW -->
+  <div class="section active" id="sec0">
+    <div class="section-header">
+      <div class="section-num">SECTION 00</div>
+      <h2>アーキテクチャ全体像</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">自己修復ループの流れ</div>
+      <div class="flow">
+        <div class="flow-node">
+          <div class="icon">🔒</div>
+          <div class="name">SG</div>
+          <div class="desc">監視対象リソース</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node">
+          <div class="icon">🔍</div>
+          <div class="name">AWS Config</div>
+          <div class="desc">変更を常時監視</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node">
+          <div class="icon">📋</div>
+          <div class="name">Config Rule</div>
+          <div class="desc">ルール違反を検知</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node">
+          <div class="icon">🌉</div>
+          <div class="name">EventBridge</div>
+          <div class="desc">Lambda を起動</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node">
+          <div class="icon">⚡</div>
+          <div class="name">Lambda</div>
+          <div class="desc">boto3 で SG を直接修復</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node">
+          <div class="icon">💬</div>
+          <div class="name">Chatwork</div>
+          <div class="desc">修復完了通知</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="mini-card">
+        <h4>学べること</h4>
+        <p>設定ドリフトの概念・AWS Config の仕組み・Lambda による自動修復・Ansible の冪等性・完全自動修復ループの設計</p>
+      </div>
+      <div class="mini-card">
+        <h4>使う技術スタック</h4>
+        <p>AWS Config / EventBridge / Lambda (Python / boto3) / Terraform / Ansible (ローカル手動確認用) / Chatwork API</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">想定シナリオ</div>
+      <p>本番のセキュリティグループに <strong style="color:var(--accent2)">0.0.0.0/0 → port 22 (SSH)</strong> の穴が開けられてしまった場合、<strong>10秒以内</strong>に自動検知して Lambda が boto3 で正しいルールに修復し、Chatwork に通知する仕組みを作る。</p>
+      <div class="alert alert-info">
+        <span>ℹ</span>
+        <span><strong>Ansible の役割について:</strong> このハンズオンでは自動修復の本体は Lambda。Ansible はローカルPC から手動確認・強制再適用するときに使う。EC2 は登場しない。</span>
+      </div>
+      <div class="alert alert-warn">
+        <span>⚠</span>
+        <span>今回は学習目的のため全て <strong>ap-northeast-1（東京）</strong> で構築。本番は別途マルチリージョン対応を検討すること。</span>
+      </div>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" disabled>← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(1)">NEXT: 準備 →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 1: SETUP -->
+  <div class="section" id="sec1">
+    <div class="section-header">
+      <div class="section-num">SECTION 01</div>
+      <h2>環境準備</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">前提条件チェック</div>
+      <ul class="checklist" id="prereq">
+        <li onclick="toggleCheck(this)"><span class="check"></span> AWS アカウント（IAM 管理者権限）</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> AWS CLI v2 設定済み（aws configure）</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Python 3.10+ インストール済み</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Ansible 2.15+ インストール済み</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Terraform 1.6+ インストール済み</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Chatwork API Token 取得済み（管理画面 → API Token）</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Chatwork 通知先 Room ID 確認済み</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">ディレクトリ構成</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># プロジェクト構成</span>
+self-healing-infra/
+├── terraform/
+│   ├── main.tf          <span class="cm"># VPC, SG, IAM（EC2 は含まない）</span>
+│   ├── config.tf        <span class="cm"># AWS Config Rules + EventBridge</span>
+│   └── lambda.tf        <span class="cm"># Lambda 関数デプロイ</span>
+├── ansible/
+│   ├── ansible.cfg      <span class="cm"># Ansible 設定（connection: local 前提）</span>
+│   └── playbooks/
+│       └── fix_sg.yml   <span class="cm"># SG 修復 Playbook（ローカルPC から手動実行）</span>
+├── lambda/
+│   └── handler.py       <span class="cm"># 自動修復 Lambda（boto3 で SG を直接操作）</span>
+└── README.md</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">初期セットアップ</div>
+      <div class="code-label">terminal</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># ディレクトリ作成</span>
+<span class="fn">mkdir</span> -p self-healing-infra/{terraform,ansible/playbooks,lambda}
+<span class="fn">cd</span> self-healing-infra
+
+<span class="cm"># Python仮想環境</span>
+<span class="fn">python3</span> -m venv .venv
+<span class="fn">source</span> .venv/bin/activate
+
+<span class="cm"># Ansible + boto3 インストール</span>
+<span class="fn">pip</span> install ansible boto3 botocore requests
+<span class="fn">ansible-galaxy</span> collection install amazon.aws
+
+<span class="cm"># 環境変数設定</span>
+<span class="kw">export</span> <span class="var">AWS_DEFAULT_REGION</span>=ap-northeast-1
+<span class="kw">export</span> <span class="var">CHATWORK_API_TOKEN</span>=<span class="str">"your_api_token_here"</span>
+<span class="kw">export</span> <span class="var">CHATWORK_ROOM_ID</span>=<span class="str">"your_room_id_here"</span></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">terraform/main.tf</div>
+      <p>VPC・監視対象 SG・IAM ロールを定義する。<strong>EC2 はこの構成に登場しない</strong>ため含まない。</p>
+      <div class="code-label">terraform/main.tf</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="kw">terraform</span> {
+  <span class="kw">required_providers</span> {
+    <span class="kw">aws</span> = {
+      <span class="kw">source</span>  = <span class="str">"hashicorp/aws"</span>
+      <span class="kw">version</span> = <span class="str">"~> 5.0"</span>
+    }
+  }
+}
+
+<span class="kw">provider</span> <span class="str">"aws"</span> {
+  <span class="kw">region</span> = <span class="str">"ap-northeast-1"</span>
+}
+
+<span class="kw">data</span> <span class="str">"aws_caller_identity"</span> <span class="str">"current"</span> {}
+
+<span class="cm"># VPC</span>
+<span class="kw">resource</span> <span class="str">"aws_vpc"</span> <span class="str">"main"</span> {
+  <span class="kw">cidr_block</span>           = <span class="str">"10.0.0.0/16"</span>
+  <span class="kw">enable_dns_hostnames</span> = <span class="kw">true</span>
+  <span class="kw">tags</span> = { <span class="var">Name</span> = <span class="str">"self-healing-vpc"</span> }
+}
+
+<span class="cm"># プライベートサブネット</span>
+<span class="kw">resource</span> <span class="str">"aws_subnet"</span> <span class="str">"private"</span> {
+  <span class="kw">vpc_id</span>            = aws_vpc.main.id
+  <span class="kw">cidr_block</span>        = <span class="str">"10.0.1.0/24"</span>
+  <span class="kw">availability_zone</span> = <span class="str">"ap-northeast-1a"</span>
+  <span class="kw">tags</span> = { <span class="var">Name</span> = <span class="str">"private-subnet"</span> }
+}
+
+<span class="cm"># 監視対象の本番 SG（ドリフト検知・修復の対象）</span>
+<span class="kw">resource</span> <span class="str">"aws_security_group"</span> <span class="str">"production"</span> {
+  <span class="kw">name</span>   = <span class="str">"production-sg"</span>
+  <span class="kw">vpc_id</span> = aws_vpc.main.id
+
+  <span class="kw">ingress</span> {
+    <span class="kw">from_port</span>   = <span class="num">22</span>
+    <span class="kw">to_port</span>     = <span class="num">22</span>
+    <span class="kw">protocol</span>    = <span class="str">"tcp"</span>
+    <span class="kw">cidr_blocks</span> = [<span class="str">"10.0.0.0/8"</span>]  <span class="cm"># 内部のみ（あるべき状態）</span>
+  }
+
+  <span class="kw">egress</span> {
+    <span class="kw">from_port</span>   = <span class="num">0</span>; <span class="kw">to_port</span> = <span class="num">0</span>; <span class="kw">protocol</span> = <span class="str">"-1"</span>
+    <span class="kw">cidr_blocks</span> = [<span class="str">"0.0.0.0/0"</span>]
+  }
+
+  <span class="kw">tags</span> = { <span class="var">Name</span> = <span class="str">"production-sg"</span>, <span class="var">Environment</span> = <span class="str">"production"</span> }
+}
+
+<span class="cm"># IAM ロール（Lambda 用）</span>
+<span class="kw">resource</span> <span class="str">"aws_iam_role"</span> <span class="str">"lambda_role"</span> {
+  <span class="kw">name</span> = <span class="str">"sg-remediation-lambda-role"</span>
+  <span class="kw">assume_role_policy</span> = <span class="fn">jsonencode</span>({
+    <span class="var">Version</span> = <span class="str">"2012-10-17"</span>
+    <span class="var">Statement</span> = [{
+      <span class="var">Effect</span>    = <span class="str">"Allow"</span>
+      <span class="var">Principal</span> = { <span class="var">Service</span> = <span class="str">"lambda.amazonaws.com"</span> }
+      <span class="var">Action</span>    = <span class="str">"sts:AssumeRole"</span>
+    }]
+  })
+}
+
+<span class="kw">resource</span> <span class="str">"aws_iam_role_policy_attachment"</span> <span class="str">"lambda_basic"</span> {
+  <span class="kw">role</span>       = aws_iam_role.lambda_role.name
+  <span class="kw">policy_arn</span> = <span class="str">"arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"</span>
+}
+
+<span class="kw">resource</span> <span class="str">"aws_iam_role_policy"</span> <span class="str">"lambda_ec2"</span> {
+  <span class="kw">name</span> = <span class="str">"lambda-ec2-policy"</span>
+  <span class="kw">role</span> = aws_iam_role.lambda_role.id
+  <span class="kw">policy</span> = <span class="fn">jsonencode</span>({
+    <span class="var">Version</span> = <span class="str">"2012-10-17"</span>
+    <span class="var">Statement</span> = [{
+      <span class="var">Effect</span>   = <span class="str">"Allow"</span>
+      <span class="var">Action</span>   = [
+        <span class="str">"ec2:DescribeSecurityGroups"</span>,
+        <span class="str">"ec2:AuthorizeSecurityGroupIngress"</span>,
+        <span class="str">"ec2:RevokeSecurityGroupIngress"</span>
+      ]
+      <span class="var">Resource</span> = <span class="str">"*"</span>
+    }]
+  })
+}
+
+<span class="cm"># IAM ロール（AWS Config 用）</span>
+<span class="kw">resource</span> <span class="str">"aws_iam_role"</span> <span class="str">"config_role"</span> {
+  <span class="kw">name</span> = <span class="str">"aws-config-role"</span>
+  <span class="kw">assume_role_policy</span> = <span class="fn">jsonencode</span>({
+    <span class="var">Version</span> = <span class="str">"2012-10-17"</span>
+    <span class="var">Statement</span> = [{
+      <span class="var">Effect</span>    = <span class="str">"Allow"</span>
+      <span class="var">Principal</span> = { <span class="var">Service</span> = <span class="str">"config.amazonaws.com"</span> }
+      <span class="var">Action</span>    = <span class="str">"sts:AssumeRole"</span>
+    }]
+  })
+}
+
+<span class="kw">resource</span> <span class="str">"aws_iam_role_policy_attachment"</span> <span class="str">"config_policy"</span> {
+  <span class="kw">role</span>       = aws_iam_role.config_role.name
+  <span class="kw">policy_arn</span> = <span class="str">"arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"</span>
+}
+
+<span class="cm"># EventBridge → Lambda の呼び出し許可</span>
+<span class="kw">resource</span> <span class="str">"aws_lambda_permission"</span> <span class="str">"allow_eventbridge"</span> {
+  <span class="kw">statement_id</span>  = <span class="str">"AllowEventBridgeInvoke"</span>
+  <span class="kw">action</span>        = <span class="str">"lambda:InvokeFunction"</span>
+  <span class="kw">function_name</span> = aws_lambda_function.remediation.function_name
+  <span class="kw">principal</span>     = <span class="str">"events.amazonaws.com"</span>
+  <span class="kw">source_arn</span>    = aws_cloudwatch_event_rule.config_violation.arn
+}
+
+<span class="cm"># outputs</span>
+<span class="kw">output</span> <span class="str">"production_sg_id"</span> {
+  <span class="kw">value</span> = aws_security_group.production.id
+}
+
+<span class="cm"># variables</span>
+<span class="kw">variable</span> <span class="str">"chatwork_api_token"</span> { <span class="kw">type</span> = <span class="kw">string</span>; <span class="kw">sensitive</span> = <span class="kw">true</span> }
+<span class="kw">variable</span> <span class="str">"chatwork_room_id"</span>   { <span class="kw">type</span> = <span class="kw">string</span> }</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">ansible/ansible.cfg</div>
+      <p><code>connection: local</code> を前提とした設定。SSH・SSM プロキシは不要。Ansible はローカルPC 上で boto3 を呼び出して直接 AWS API を操作する。</p>
+      <div class="code-label">ansible/ansible.cfg</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre>[defaults]
+remote_user         = ec2-user
+host_key_checking   = False
+retry_files_enabled = False
+stdout_callback     = yaml
+collections_path    = ~/.ansible/collections
+
+[inventory]
+enable_plugins = amazon.aws.aws_ec2</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">README.md</div>
+      <div class="code-label">README.md</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># 自己修復インフラ ハンズオン</span>
+
+AWS Config + Lambda + Ansible で SG の設定ドリフトを自動検知・修復するシステム。
+
+<span class="cm">## アーキテクチャ</span>
+SG → AWS Config → Config Rule → EventBridge → Lambda (boto3) → Chatwork
+Ansible: ローカルPC から手動確認・再適用（EC2 は使わない）
+
+<span class="cm">## 前提</span>
+- AWS CLI v2 設定済み（ap-northeast-1）
+- Python 3.10+、Ansible 2.15+、Terraform 1.6+
+- Chatwork API Token・Room ID 取得済み
+
+<span class="cm">## クイックスタート</span>
+<span class="fn">```bash</span>
+<span class="cm"># 1. 環境変数をセット</span>
+export AWS_DEFAULT_REGION=ap-northeast-1
+export CHATWORK_API_TOKEN="your_token"
+export CHATWORK_ROOM_ID="your_room_id"
+
+<span class="cm"># 2. インフラをデプロイ</span>
+cd terraform
+terraform init && terraform apply \
+  -var="chatwork_api_token=$CHATWORK_API_TOKEN" \
+  -var="chatwork_room_id=$CHATWORK_ROOM_ID"
+
+<span class="cm"># 3. 自己修復テスト（意図的に SG に穴を開ける）</span>
+SG_ID=$(terraform output -raw production_sg_id)
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
+<span class="cm"># → Chatwork に修復完了通知が届くことを確認</span>
+<span class="fn">```</span>
+
+<span class="cm">## クリーンアップ</span>
+<span class="fn">```bash</span>
+terraform destroy \
+  -var="chatwork_api_token=$CHATWORK_API_TOKEN" \
+  -var="chatwork_room_id=$CHATWORK_ROOM_ID"
+<span class="fn">```</span>
+
+<span class="cm">## ファイル構成</span>
+| パス | 役割 |
+|------|------|
+| terraform/main.tf    | VPC・EC2・SG・IAM |
+| terraform/config.tf  | AWS Config Rules + EventBridge |
+| terraform/lambda.tf  | Lambda デプロイ |
+| ansible/ansible.cfg  | Ansible 接続設定（SSM Proxy） |
+| ansible/inventory/   | Dynamic Inventory（AWS EC2） |
+| ansible/playbooks/   | SG 修復 Playbook |
+| lambda/handler.py    | 修復トリガー Lambda |</pre>
+      </div>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(0)">← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(2)">NEXT: Ansible →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 2: ANSIBLE -->
+  <div class="section" id="sec2">
+    <div class="section-header">
+      <div class="section-num">SECTION 02</div>
+      <h2>Ansible Playbook 作成</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Ansible はどこで動くのか</div>
+      <p>Ansible には大きく2つの実行モードがある。このハンズオンは <strong style="color:var(--accent)">モード B（connection: local）</strong> を使う。</p>
+      <div class="two-col">
+        <div class="mini-card">
+          <h4>モード A — SSH して操作（一般的な使い方）</h4>
+          <p>ローカルPC → SSH → 対象サーバー（nginx 設定変更など）<br><code>hosts: webservers / connection: ssh</code></p>
+        </div>
+        <div class="mini-card">
+          <h4>モード B — SSH せず自分自身で実行（今回）</h4>
+          <p>ローカルPC → boto3 → AWS API（SG を直接操作）<br><code>hosts: localhost / connection: local</code></p>
+        </div>
+      </div>
+      <div class="alert alert-info">
+        <span>ℹ</span>
+        <span><strong>EC2 は登場しない。</strong> Ansible はローカルPC 上で動き、SSH も SSM も使わず直接 AWS API を叩く。自動修復の本体は Lambda。Ansible はローカルから手動確認・強制再適用するときに使う。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">SG 修復 Playbook</div>
+      <p>「あるべき状態」を宣言的に記述する。ローカルPC から手動実行して状態を確認・強制適用する。</p>
+      <div class="code-label">ansible/playbooks/fix_sg.yml</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm">---</span>
+- <span class="kw">name</span>: <span class="str">Enforce Security Group Compliance</span>
+  <span class="kw">hosts</span>: localhost       <span class="cm"># ローカルPC 自身で実行</span>
+  <span class="kw">connection</span>: local      <span class="cm"># SSH しない。boto3 で AWS API を直接呼ぶ</span>
+  <span class="kw">gather_facts</span>: <span class="kw">false</span>
+
+  <span class="kw">vars</span>:
+    <span class="var">sg_id</span>: <span class="str">"{{ sg_id }}"</span>         <span class="cm"># 実行時に -e "sg_id=sg-xxx" で渡す</span>
+    <span class="var">allowed_ssh_cidrs</span>:
+      - <span class="str">"10.0.0.0/8"</span>          <span class="cm"># 許可する CIDR（あるべき状態）</span>
+
+  <span class="kw">tasks</span>:
+    - <span class="kw">name</span>: <span class="str">Get current SG rules</span>
+      <span class="fn">amazon.aws.ec2_security_group_info</span>:
+        <span class="kw">group_ids</span>: [<span class="str">"{{ sg_id }}"</span>]
+        <span class="kw">region</span>: ap-northeast-1
+      <span class="kw">register</span>: sg_info
+
+    - <span class="kw">name</span>: <span class="str">Revoke ALL inbound rules (reset)</span>
+      <span class="fn">amazon.aws.ec2_security_group</span>:
+        <span class="kw">group_id</span>: <span class="str">"{{ sg_id }}"</span>
+        <span class="kw">purge_rules</span>: <span class="kw">true</span>   <span class="cm"># 現状に関わらず全ルールをリセット</span>
+        <span class="kw">rules</span>: []
+        <span class="kw">region</span>: ap-northeast-1
+      <span class="kw">when</span>: sg_info.security_groups | length > 0
+
+    - <span class="kw">name</span>: <span class="str">Apply compliant rules only</span>
+      <span class="fn">amazon.aws.ec2_security_group</span>:
+        <span class="kw">group_id</span>: <span class="str">"{{ sg_id }}"</span>
+        <span class="kw">rules</span>:
+          - <span class="kw">proto</span>: tcp
+            <span class="kw">from_port</span>: <span class="num">22</span>
+            <span class="kw">to_port</span>: <span class="num">22</span>
+            <span class="kw">cidr_ip</span>: <span class="str">"{{ item }}"</span>
+        <span class="kw">region</span>: ap-northeast-1
+      <span class="kw">loop</span>: <span class="str">"{{ allowed_ssh_cidrs }}"</span>
+
+    - <span class="kw">name</span>: <span class="str">Notify Chatwork - Remediation Complete</span>
+      <span class="fn">uri</span>:
+        <span class="kw">url</span>: <span class="str">"https://api.chatwork.com/v2/rooms/{{ lookup('env', 'CHATWORK_ROOM_ID') }}/messages"</span>
+        <span class="kw">method</span>: POST
+        <span class="kw">headers</span>:
+          <span class="var">X-ChatWorkToken</span>: <span class="str">"{{ lookup('env', 'CHATWORK_API_TOKEN') }}"</span>
+          <span class="var">Content-Type</span>: <span class="str">"application/x-www-form-urlencoded"</span>
+        <span class="kw">body</span>: <span class="str">"body=%E2%9C%85%20%5B%E8%87%AA%E5%B7%B1%E4%BF%AE%E5%BE%A9%E5%AE%8C%E4%BA%86%5D%0ASG%20%60{{ sg_id }}%60%20%E3%81%AE%E4%B8%8D%E6%AD%A3%E3%83%AB%E3%83%BC%E3%83%AB%E3%82%92%E8%87%AA%E5%8B%95%E5%89%8A%E9%99%A4%0A%E4%BF%AE%E5%BE%A9%3A%200.0.0.0%2F0%20%E2%86%92%20port%2022%20%E5%89%8A%E9%99%A4%E3%80%81%E5%86%85%E9%83%A8CIDR%E3%81%AE%E3%81%BF%E8%A8%B1%E5%8F%AF"</span>
+        <span class="kw">status_code</span>: <span class="num">200</span></pre>
+      </div>
+    </div>
+
+    <div class="alert alert-info">
+      <span>ℹ</span>
+      <span><strong>ポイント:</strong> <code>purge_rules: true</code> がミソ。現在の状態に関係なく「あるべき状態」を強制上書きする。これが冪等性（Idempotency）の本質。Lambda の修復ロジックも同じ考え方で実装する。</span>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Playbook の手動実行（ローカルPC から）</div>
+      <div class="code-label">terminal</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre>SG_ID=$(cd terraform && terraform output -raw production_sg_id)
+
+<span class="cm"># dry-run（実際には変更しない）</span>
+<span class="fn">ansible-playbook</span> ansible/playbooks/fix_sg.yml \
+  -e <span class="str">"sg_id=$SG_ID"</span> \
+  --check
+
+<span class="cm"># 実際に適用（強制的に正しい状態に上書き）</span>
+<span class="fn">ansible-playbook</span> ansible/playbooks/fix_sg.yml \
+  -e <span class="str">"sg_id=$SG_ID"</span></pre>
+      </div>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(1)">← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(3)">NEXT: Config →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 3: CONFIG -->
+  <div class="section" id="sec3">
+    <div class="section-header">
+      <div class="section-num">SECTION 03</div>
+      <h2>AWS Config Rules 設定</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Terraform で Config を構築</div>
+      <div class="code-label">terraform/config.tf</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># AWS Config Recorder の有効化</span>
+<span class="kw">resource</span> <span class="str">"aws_config_configuration_recorder"</span> <span class="str">"main"</span> {
+  <span class="kw">name</span>     = <span class="str">"security-recorder"</span>
+  <span class="kw">role_arn</span> = aws_iam_role.config_role.arn
+
+  <span class="kw">recording_group</span> {
+    <span class="kw">all_supported</span>                 = <span class="kw">false</span>
+    <span class="kw">resource_types</span>                = [<span class="str">"AWS::EC2::SecurityGroup"</span>]
+  }
+}
+
+<span class="cm"># S3バケット（Config履歴保存）</span>
+<span class="kw">resource</span> <span class="str">"aws_s3_bucket"</span> <span class="str">"config_bucket"</span> {
+  <span class="kw">bucket</span> = <span class="str">"config-remediation-${data.aws_caller_identity.current.account_id}"</span>
+  <span class="kw">force_destroy</span> = <span class="kw">true</span>
+}
+
+<span class="cm"># マネージドルール: SSH を 0.0.0.0/0 に開放したら違反</span>
+<span class="kw">resource</span> <span class="str">"aws_config_config_rule"</span> <span class="str">"no_unrestricted_ssh"</span> {
+  <span class="kw">name</span> = <span class="str">"no-unrestricted-ssh"</span>
+
+  <span class="kw">source</span> {
+    <span class="kw">owner</span>             = <span class="str">"AWS"</span>
+    <span class="kw">source_identifier</span> = <span class="str">"INCOMING_SSH_DISABLED"</span>
+  }
+
+  <span class="kw">depends_on</span> = [aws_config_configuration_recorder.main]
+}
+
+<span class="cm"># EventBridge: 違反検知時にLambdaを起動</span>
+<span class="kw">resource</span> <span class="str">"aws_cloudwatch_event_rule"</span> <span class="str">"config_violation"</span> {
+  <span class="kw">name</span>        = <span class="str">"config-sg-violation"</span>
+  <span class="kw">description</span> = <span class="str">"Trigger on Config Rule NON_COMPLIANT"</span>
+
+  <span class="kw">event_pattern</span> = <span class="fn">jsonencode</span>({
+    <span class="var">source</span>      = [<span class="str">"aws.config"</span>]
+    <span class="var">detail-type</span> = [<span class="str">"Config Rules Compliance Change"</span>]
+    <span class="kw">detail</span> = {
+      <span class="var">configRuleName</span>    = [<span class="str">"no-unrestricted-ssh"</span>]
+      <span class="var">newEvaluationResult</span> = {
+        <span class="var">complianceType</span> = [<span class="str">"NON_COMPLIANT"</span>]
+      }
+    }
+  })
+}
+
+<span class="kw">resource</span> <span class="str">"aws_cloudwatch_event_target"</span> <span class="str">"lambda"</span> {
+  <span class="kw">rule</span>      = aws_cloudwatch_event_rule.config_violation.name
+  <span class="kw">target_id</span> = <span class="str">"RemediationLambda"</span>
+  <span class="kw">arn</span>       = aws_lambda_function.remediation.arn
+}</pre>
+      </div>
+    </div>
+
+    <div class="alert alert-success">
+      <span>✓</span>
+      <span><strong>INCOMING_SSH_DISABLED</strong> は AWS マネージドルール。カスタムルールを書かなくても SSH 開放を即座に検知できる。他にも <code>RESTRICTED_INCOMING_TRAFFIC</code> など多数存在する。</span>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(2)">← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(4)">NEXT: Lambda →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 4: LAMBDA -->
+  <div class="section" id="sec4">
+    <div class="section-header">
+      <div class="section-num">SECTION 04</div>
+      <h2>Lambda 修復トリガー</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Lambda ハンドラー</div>
+      <p>Config のイベントを受け取り、<strong>boto3 で SG を直接修復する</strong>。EC2 も SSM も使わない。Ansible と同じ「全リセット → 正しいルール適用」の考え方をそのまま Python で実装する。</p>
+      <div class="code-label">lambda/handler.py</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="kw">import</span> boto3
+<span class="kw">import</span> json
+<span class="kw">import</span> os
+<span class="kw">import</span> urllib.request
+<span class="kw">import</span> urllib.parse
+<span class="kw">import</span> logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2 = boto3.client(<span class="str">'ec2'</span>, region_name=<span class="str">'ap-northeast-1'</span>)
+
+<span class="cm"># あるべき状態（Ansible の allowed_ssh_cidrs と合わせる）</span>
+ALLOWED_SSH_CIDRS = [<span class="str">"10.0.0.0/8"</span>]
+
+<span class="kw">def</span> <span class="fn">lambda_handler</span>(event, context):
+    <span class="cm">"""AWS Config の NON_COMPLIANT イベントを受け取り SG を修復する"""</span>
+    logger.info(<span class="fn">f</span><span class="str">"Event: {json.dumps(event)}"</span>)
+
+    detail      = event.get(<span class="str">'detail'</span>, {})
+    resource_id = detail.get(<span class="str">'resourceId'</span>)  <span class="cm"># 例: sg-xxxxxxxxxxxxxxxxx</span>
+    rule_name   = detail.get(<span class="str">'configRuleName'</span>)
+
+    <span class="kw">if not</span> resource_id:
+        logger.error(<span class="str">"No resourceId in event"</span>)
+        <span class="kw">return</span> {<span class="str">'statusCode'</span>: <span class="num">400</span>}
+
+    logger.info(<span class="fn">f</span><span class="str">"NON_COMPLIANT: {rule_name} → {resource_id}"</span>)
+    <span class="fn">remediate_sg</span>(resource_id)
+    <span class="fn">notify_chatwork</span>(resource_id)
+
+    <span class="kw">return</span> {<span class="str">'statusCode'</span>: <span class="num">200</span>, <span class="str">'body'</span>: json.dumps({<span class="str">'remediated_sg'</span>: resource_id})}
+
+
+<span class="kw">def</span> <span class="fn">remediate_sg</span>(sg_id: str):
+    <span class="cm">"""全リセット → 正しいルール適用（Ansible の purge_rules: true と同じ考え方）"""</span>
+    resp = ec2.describe_security_groups(GroupIds=[sg_id])
+    current_rules = resp[<span class="str">'SecurityGroups'</span>][<span class="num">0</span>][<span class="str">'IpPermissions'</span>]
+
+    <span class="cm"># 全インバウンドルールを削除（リセット）</span>
+    <span class="kw">if</span> current_rules:
+        ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=current_rules)
+        logger.info(<span class="fn">f</span><span class="str">"Revoked all inbound rules from {sg_id}"</span>)
+
+    <span class="cm"># あるべき状態のルールを適用</span>
+    ec2.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[{
+            <span class="str">'IpProtocol'</span>: <span class="str">'tcp'</span>,
+            <span class="str">'FromPort'</span>: <span class="num">22</span>,
+            <span class="str">'ToPort'</span>: <span class="num">22</span>,
+            <span class="str">'IpRanges'</span>: [{<span class="str">'CidrIp'</span>: cidr, <span class="str">'Description'</span>: <span class="str">'Internal only'</span>}
+                         <span class="kw">for</span> cidr <span class="kw">in</span> ALLOWED_SSH_CIDRS]
+        }]
+    )
+    logger.info(<span class="fn">f</span><span class="str">"Applied compliant rules to {sg_id}"</span>)
+
+
+<span class="kw">def</span> <span class="fn">notify_chatwork</span>(sg_id: str):
+    <span class="cm">"""Chatwork に修復完了を通知する"""</span>
+    token   = os.environ[<span class="str">'CHATWORK_API_TOKEN'</span>]
+    room_id = os.environ[<span class="str">'CHATWORK_ROOM_ID'</span>]
+    message = (
+        <span class="fn">f</span><span class="str">"✅ [自己修復完了]\n"</span>
+        <span class="fn">f</span><span class="str">"SG {sg_id} の不正ルールを自動削除しました\n"</span>
+        <span class="fn">f</span><span class="str">"修復内容: 0.0.0.0/0 → port 22 を削除、内部 CIDR のみ許可"</span>
+    )
+    data = urllib.parse.urlencode({<span class="str">'body'</span>: message}).encode()
+    req  = urllib.request.Request(
+        <span class="fn">f</span><span class="str">"https://api.chatwork.com/v2/rooms/{room_id}/messages"</span>,
+        data=data,
+        headers={<span class="str">'X-ChatWorkToken'</span>: token},
+        method=<span class="str">'POST'</span>
+    )
+    <span class="kw">with</span> urllib.request.urlopen(req) <span class="kw">as</span> res:
+        logger.info(<span class="fn">f</span><span class="str">"Chatwork notified: {res.status}"</span>)</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Lambda デプロイ (Terraform)</div>
+      <div class="code-label">terraform/lambda.tf</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="kw">data</span> <span class="str">"archive_file"</span> <span class="str">"lambda_zip"</span> {
+  <span class="kw">type</span>        = <span class="str">"zip"</span>
+  <span class="kw">source_dir</span>  = <span class="str">"${path.module}/../lambda"</span>
+  <span class="kw">output_path</span> = <span class="str">"${path.module}/lambda.zip"</span>
+}
+
+<span class="kw">resource</span> <span class="str">"aws_lambda_function"</span> <span class="str">"remediation"</span> {
+  <span class="kw">filename</span>      = <span class="str">"lambda.zip"</span>
+  <span class="kw">function_name</span> = <span class="str">"sg-auto-remediation"</span>
+  <span class="kw">role</span>          = aws_iam_role.lambda_role.arn
+  <span class="kw">handler</span>       = <span class="str">"handler.lambda_handler"</span>
+  <span class="kw">runtime</span>       = <span class="str">"python3.12"</span>
+  <span class="kw">timeout</span>       = <span class="num">30</span>
+
+  <span class="kw">environment</span> {
+    <span class="kw">variables</span> = {
+      <span class="var">CHATWORK_API_TOKEN</span> = <span class="kw">var</span>.chatwork_api_token
+      <span class="var">CHATWORK_ROOM_ID</span>   = <span class="kw">var</span>.chatwork_room_id
+    }
+  }
+
+  <span class="kw">source_code_hash</span> = data.archive_file.lambda_zip.output_base64sha256
+}</pre>
+      </div>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(3)">← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(5)">NEXT: 統合 →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 5: INTEGRATION -->
+  <div class="section" id="sec5">
+    <div class="section-header">
+      <div class="section-num">SECTION 05</div>
+      <h2>全体をデプロイ</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Terraform 実行順序</div>
+      <ol class="step-list">
+        <li><strong>terraform init</strong> — プロバイダーとモジュールの初期化</li>
+        <li><strong>terraform plan</strong> — 変更内容を事前確認（必ず実行）</li>
+        <li><strong>terraform apply</strong> — インフラ構築（約3〜5分）</li>
+        <li>Chatwork API Token と Room ID が Lambda 環境変数に設定済みか確認</li>
+        <li>AWS Config Recorder が記録中か確認</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <div class="card-title">デプロイコマンド</div>
+      <div class="code-label">terminal</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># Terraform 実行</span>
+<span class="fn">cd</span> terraform
+<span class="fn">terraform</span> init
+<span class="fn">terraform</span> plan -var=<span class="str">"chatwork_api_token=$CHATWORK_API_TOKEN"</span> -var=<span class="str">"chatwork_room_id=$CHATWORK_ROOM_ID"</span>
+<span class="fn">terraform</span> apply -var=<span class="str">"chatwork_api_token=$CHATWORK_API_TOKEN"</span> -var=<span class="str">"chatwork_room_id=$CHATWORK_ROOM_ID"</span> -auto-approve
+
+<span class="cm"># SG の ID を控えておく</span>
+<span class="fn">terraform</span> output production_sg_id
+<span class="cm"># → sg-xxxxxxxxxxxxxxxxx</span>
+
+<span class="cm"># Config Recorder が記録中か確認</span>
+aws configservice describe-configuration-recorder-status \
+  --query <span class="str">"ConfigurationRecordersStatus[0].recording"</span>
+<span class="cm"># → true</span>
+
+<span class="cm"># Ansible の dry-run でローカルから動作確認</span>
+SG_ID=$(terraform output -raw production_sg_id)
+<span class="fn">cd</span> ..
+<span class="fn">ansible-playbook</span> ansible/playbooks/fix_sg.yml \
+  -e <span class="str">"sg_id=$SG_ID"</span> \
+  --check  <span class="cm"># dry-run</span></pre>
+      </div>
+    </div>
+
+    <div class="alert alert-warn">
+      <span>⚠</span>
+      <span><strong>コスト注意:</strong> AWS Config は記録されたリソース数 × 時間で課金。このハンズオン後は <code>terraform destroy</code> を忘れずに。推定コスト: $1〜3/日（ap-northeast-1）</span>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(4)">← PREV</button>
+      <button class="btn btn-primary" onclick="goTo(6)">NEXT: 検証 →</button>
+    </div>
+  </div>
+
+  <!-- SECTION 6: VERIFY -->
+  <div class="section" id="sec6">
+    <div class="section-header">
+      <div class="section-num">SECTION 06</div>
+      <h2>自己修復を体験する</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-title">意図的に「悪い設定」を入れる</div>
+      <p>セキュリティグループに 0.0.0.0/0 → SSH の穴を開けて、自動修復されるか確認する。</p>
+      <div class="code-label">terminal — 意図的な違反作成</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># SG ID を取得（terraform output から）</span>
+SG_ID=$(cd terraform && terraform output -raw production_sg_id)
+
+<span class="cm"># 🚨 意図的に穴を開ける（0.0.0.0/0 → SSH）</span>
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp \
+  --port 22 \
+  --cidr 0.0.0.0/0
+
+<span class="fn">echo</span> <span class="str">"Breach created on $SG_ID — watching for auto-remediation..."</span>
+
+<span class="cm"># リアルタイムで Lambda のログを監視</span>
+aws logs tail /aws/lambda/sg-auto-remediation \
+  --follow \
+  --format short</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">期待される修復フロー（約10秒）</div>
+      <ol class="step-list">
+        <li><strong>[0s]</strong> SG 変更 → AWS Config が即座に検知</li>
+        <li><strong>[2s]</strong> <code>INCOMING_SSH_DISABLED</code> ルールが <code>NON_COMPLIANT</code> に変化</li>
+        <li><strong>[3s]</strong> EventBridge が Lambda を起動</li>
+        <li><strong>[8s]</strong> Lambda が boto3 で SG の全ルールをリセット → 正しいルールを適用</li>
+        <li><strong>[10s]</strong> Chatwork に修復完了通知が届く 🎉</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <div class="card-title">修復確認コマンド</div>
+      <div class="code-label">terminal — 修復結果を確認</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">COPY</button>
+        <pre><span class="cm"># SG のルールを確認（0.0.0.0/0 が消えているはず）</span>
+aws ec2 describe-security-groups \
+  --group-ids $SG_ID \
+  --query "SecurityGroups[0].IpPermissions" \
+  --output table
+
+<span class="cm"># Config ルールの準拠状態を確認</span>
+aws configservice get-compliance-details-by-config-rule \
+  --config-rule-name no-unrestricted-ssh \
+  --query "EvaluationResults[0].ComplianceType"
+<span class="cm"># → "COMPLIANT"
+
+# Ansible でローカルから状態を手動確認（dry-run）</span>
+<span class="fn">ansible-playbook</span> ansible/playbooks/fix_sg.yml \
+  -e <span class="str">"sg_id=$SG_ID"</span> \
+  --check
+
+<span class="cm"># 必要なら Ansible で強制再適用</span>
+<span class="fn">ansible-playbook</span> ansible/playbooks/fix_sg.yml \
+  -e <span class="str">"sg_id=$SG_ID"</span></pre>
+      </div>
+    </div>
+
+    <div class="alert alert-success">
+      <span>🎉</span>
+      <span><strong>おめでとうございます！</strong> インフラが自律的に正しい状態を保つ仕組みを実装できました。これが SRE の「Toil をなくす」思想の実践形です。</span>
+    </div>
+
+    <div class="card">
+      <div class="card-title">次のステップ（発展課題）</div>
+      <ul class="checklist" id="nextsteps">
+        <li onclick="toggleCheck(this)"><span class="check"></span> Lambda → SSM → EC2上のAnsible パターンに書き換える（複数サーバーへの複雑な修復に対応）</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> Terraform Cloud の Remote State + Sentinel Policy で IaC レベルの制御を追加</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> AWS Security Hub と統合して CSPM（クラウドセキュリティ態勢管理）へ昇華</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> 修復前後の差分をGitにコミット（GitOps for Infrastructure）</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> マルチアカウント（AWS Organizations）に横展開</li>
+        <li onclick="toggleCheck(this)"><span class="check"></span> 誤検知・修復失敗時の人間への escalation フローを設計</li>
+      </ul>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn" onclick="goTo(5)">← PREV</button>
+      <button class="btn" disabled style="opacity:0.3">COMPLETE ✓</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let currentSection = 0;
+  const total = 7;
+
+  function goTo(n) {
+    document.getElementById('sec' + currentSection).classList.remove('active');
+    document.querySelectorAll('.nav-item')[currentSection].classList.remove('active');
+    if (n > currentSection) {
+      document.querySelectorAll('.nav-item')[currentSection].classList.add('done');
+    }
+    currentSection = n;
+    document.getElementById('sec' + n).classList.add('active');
+    document.querySelectorAll('.nav-item')[n].classList.add('active');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function toggleCheck(el) {
+    el.classList.toggle('checked');
+    if (el.classList.contains('checked')) {
+      el.querySelector('.check').textContent = '✓';
+    } else {
+      el.querySelector('.check').textContent = '';
+    }
+  }
+
+  function copyCode(btn) {
+    const pre = btn.parentElement.querySelector('pre');
+    const text = pre.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'COPIED!';
+      btn.style.background = 'var(--accent3)';
+      btn.style.color = '#000';
+      setTimeout(() => {
+        btn.textContent = 'COPY';
+        btn.style.background = '';
+        btn.style.color = '';
+      }, 1500);
+    });
+  }
+</script>
+</body>
+</html>

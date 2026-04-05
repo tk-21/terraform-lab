@@ -1,0 +1,46 @@
+---
+- name: Enforce Security Group Compliance
+  hosts: localhost       # ローカルPC 自身で実行
+  connection: local      # SSH しない。boto3 で AWS API を直接呼ぶ
+  gather_facts: false
+
+  vars:
+    sg_id: "{{ sg_id }}"         # 実行時に -e "sg_id=sg-xxx" で渡す
+    allowed_ssh_cidrs:
+      - "10.0.0.0/8"          # 許可する CIDR（あるべき状態）
+
+  tasks:
+    - name: Get current SG rules
+      amazon.aws.ec2_security_group_info:
+        group_ids: ["{{ sg_id }}"]
+        region: ap-northeast-1
+      register: sg_info
+
+    - name: Revoke ALL inbound rules (reset)
+      amazon.aws.ec2_security_group:
+        group_id: "{{ sg_id }}"
+        purge_rules: true   # 現状に関わらず全ルールをリセット
+        rules: []
+        region: ap-northeast-1
+      when: sg_info.security_groups | length > 0
+
+    - name: Apply compliant rules only
+      amazon.aws.ec2_security_group:
+        group_id: "{{ sg_id }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ item }}"
+        region: ap-northeast-1
+      loop: "{{ allowed_ssh_cidrs }}"
+
+    - name: Notify Chatwork - Remediation Complete
+      uri:
+        url: "https://api.chatwork.com/v2/rooms/{{ lookup('env', 'CHATWORK_ROOM_ID') }}/messages"
+        method: POST
+        headers:
+          X-ChatWorkToken: "{{ lookup('env', 'CHATWORK_API_TOKEN') }}"
+          Content-Type: "application/x-www-form-urlencoded"
+        body: "body=%E2%9C%85%20%5B%E8%87%AA%E5%B7%B1%E4%BF%AE%E5%BE%A9%E5%AE%8C%E4%BA%86%5D%0ASG%20%60{{ sg_id }}%60%20%E3%81%AE%E4%B8%8D%E6%AD%A3%E3%83%AB%E3%83%BC%E3%83%AB%E3%82%92%E8%87%AA%E5%8B%95%E5%89%8A%E9%99%A4%0A%E4%BF%AE%E5%BE%A9%3A%200.0.0.0%2F0%20%E2%86%92%20port%2022%20%E5%89%8A%E9%99%A4%E3%80%81%E5%86%85%E9%83%A8CIDR%E3%81%AE%E3%81%BF%E8%A8%B1%E5%8F%AF"
+        status_code: 200
