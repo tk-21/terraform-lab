@@ -1,0 +1,46 @@
+# Terraform ステートファイル
+# ステートにはリソースIDや機密情報が含まれるためGit管理禁止
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# 実際の変数ファイル（機密情報を含む可能性があるためGit管理禁止）
+# terraform.tfvars.example はコミットしてよい
+terraform.tfvars
+
+# planファイル（中間成果物）
+*.tfplan
+tfplan
+
+# クラッシュログ
+crash.log
+crash.*.log
+
+# Override ファイル（ローカル上書き用）
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLIの設定ファイル（機密情報を含む可能性）
+.terraformrc
+terraform.rc
+
+# kubeconfig（AWSアカウント情報を含む）
+kubeconfig
+*.kubeconfig
+
+# macOS
+.DS_Store
+
+# エディタ設定
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ローカル開発用の一時ファイル
+.env
+.env.local
+*.bak

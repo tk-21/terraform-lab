@@ -1,0 +1,178 @@
+################################################################################
+# サンプルアプリケーション - Deployment
+#
+# セキュリティベストプラクティスを適用したデプロイメント定義。
+# 本番運用を想定した設定を網羅している。
+################################################################################
+
+---
+# ServiceAccount: IRSAロールをアノテーションで設定
+# Secretsへのアクセス権限はIRSAロール経由で付与し、
+# 環境変数やConfigMapにアクセスキーをハードコードしない
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sample-app
+  namespace: sample-app
+  annotations:
+    # TerraformのIRSAロールARNを設定する（terraform outputで確認）
+    eks.amazonaws.com/role-arn: "arn:aws:iam::REPLACE_ACCOUNT_ID:role/terraform-eks-production-platform-prod-irsa-app"
+  labels:
+    app: sample-app
+
+---
+# Namespace定義
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sample-app
+  labels:
+    app: sample-app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  namespace: sample-app
+  labels:
+    app: sample-app
+    version: "1.0.0"
+spec:
+  # replicas=2 にする理由:
+  # 1つだと障害時（ノード障害・Karpenter置換・デプロイ等）にダウンタイムが発生する。
+  # PodAntiAffinityと組み合わせることで確実に異なるノードに分散される。
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: sample-app
+
+  # RollingUpdateの設定
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable=0: 更新中も常に指定数のPodが稼働することを保証する
+      maxUnavailable: 0
+      # maxSurge=1: 更新中に一時的に1つ余分なPodを起動する
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        version: "1.0.0"
+
+    spec:
+      serviceAccountName: sample-app
+
+      # Pod間のセキュリティ設定
+      securityContext:
+        # root以外のユーザーで実行する理由:
+        # rootで実行するとコンテナエスケープ時にホストOSのrootアクセスが可能になる。
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # ファイルシステムをグループ所有者として設定
+        fsGroup: 1000
+        # seccompプロファイルを設定してシステムコールを制限する
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: sample-app
+          # 実際のECRイメージURIに置き換える
+          image: REPLACE_ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com/sample-app:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+
+          # コンテナレベルのセキュリティ設定
+          securityContext:
+            # readOnlyRootFilesystem: コンテナのrootfsを読み取り専用にする理由:
+            # マルウェアがファイルシステムに書き込むことを防ぐ。
+            # tmpや/var/cacheへの書き込みが必要な場合はemptyDirで対応する。
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            # capabilities dropで不要な権限を削除
+            capabilities:
+              drop:
+                - ALL
+
+          # リソース制限を設定する理由:
+          # limitがないとノイジーネイバー問題（1つのPodがリソースを独占）が発生する。
+          # requestsはKubernetesのスケジューリングに使用される。
+          # limitsはrequestsより若干大きく設定してバースト処理に対応する。
+          resources:
+            requests:
+              cpu: "100m"       # 0.1 vCPU
+              memory: "128Mi"
+            limits:
+              cpu: "500m"       # 0.5 vCPU
+              memory: "256Mi"
+
+          # ヘルスチェック設定
+          # livenessProbe: アプリがデッドロックした場合に再起動する
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+          # readinessProbe: 準備完了前にトラフィックを送らない
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # 書き込みが必要なディレクトリをemptyDirでマウント
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/app
+
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: PORT
+              value: "8080"
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+
+      # PodAntiAffinity: 同じアプリのPodを異なるノードに分散する理由:
+      # 同じノードに集中すると、そのノード障害で全Podが停止してしまう。
+      # requiredDuringScheduling を使って必ず別ノードに配置することを強制する。
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - sample-app
+              topologyKey: "kubernetes.io/hostname"
+
+      # Graceful shutdown: シグナル受信後にリクエスト処理を完了してから終了する
+      terminationGracePeriodSeconds: 60
+
+      # スポットインスタンスが中断された場合に備えてPodEvictionを許可する設定
+      # Karpenterはdrainを実施するため、tolerationを設定して
+      # システムのtaintが付与されたノードでも一時的に動作できるようにする
+      tolerations:
+        - key: "karpenter.sh/disruption"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 60

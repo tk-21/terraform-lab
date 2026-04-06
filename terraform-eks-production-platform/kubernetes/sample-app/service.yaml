@@ -1,0 +1,133 @@
+################################################################################
+# サンプルアプリケーション - Service と Ingress
+#
+# Service: ClusterIP（クラスター内部からのアクセスのみ）
+# Ingress: ALB経由のHTTPS終端（AWS Load Balancer Controller使用）
+################################################################################
+
+---
+# Service: ClusterIPタイプを使う理由:
+# 外部からの直接アクセスはIngressを経由させる設計にするため、
+# ServiceはClusterIPにして内部通信のみに限定する。
+# NodePortやLoadBalancerを使うと管理が複雑になる。
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: sample-app
+  labels:
+    app: sample-app
+spec:
+  type: ClusterIP
+  selector:
+    app: sample-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+
+---
+# Ingress: ALBを使ったHTTPS終端
+# AWS Load Balancer Controller がこのIngressを見てALBを自動作成する。
+# ALBにはアノテーションで細かく設定できる。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sample-app
+  namespace: sample-app
+  labels:
+    app: sample-app
+  annotations:
+    # IngressClassNameでLBCが管理するIngressを識別
+    # kubernetes.io/ingress.class は非推奨のため spec.ingressClassName を使用
+    alb.ingress.kubernetes.io/scheme: internet-facing
+
+    # ip ターゲットタイプを使う理由:
+    # instanceタイプよりネットワーク経路が短くレイテンシが低い。
+    # PodのIPに直接転送するためNodePortが不要になる。
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # HTTPSとHTTPの両方のリスナーを設定し、HTTPはHTTPSにリダイレクトする
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443},{"HTTP":80}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+    # ヘルスチェック設定（ALBがバックエンドの死活を確認する）
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+
+    # タイムアウト設定
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+
+    # セキュリティグループを設定する（ALBへのアクセス許可IPを制限）
+    # 本番では特定のCIDRやWAFを設定することを推奨
+    # alb.ingress.kubernetes.io/inbound-cidrs: "0.0.0.0/0"
+
+    # ACM証明書ARNを設定（HTTPSに必要）
+    # 実際のACM証明書ARNに置き換えること
+    # alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-northeast-1:ACCOUNT_ID:certificate/CERTIFICATE_ID"
+
+spec:
+  ingressClassName: alb
+  rules:
+    - host: sample-app.example.com  # 実際のドメインに変更する
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sample-app
+                port:
+                  number: 80
+
+---
+# PodDisruptionBudget: デプロイや障害時のPod数の下限を設定する
+# minAvailable=1 にする理由:
+# rolloutや中断イベント時でも最低1つのPodが常に稼働することを保証し
+# サービス断を防ぐ。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sample-app
+  namespace: sample-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sample-app
+
+---
+# HorizontalPodAutoscaler: CPU使用率に基づいてPodをスケールする
+# Karpenterがノードをスケールし、HPAがPodをスケールする二層構造
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sample-app
+  namespace: sample-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sample-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # CPU使用率70%でスケールアウトする理由:
+          # 100%に近づいてからスケールすると応答遅延が発生する。
+          # 70%でスケールアウトすることでバースト耐性を確保する。
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
