@@ -1,0 +1,114 @@
+################################################################################
+# ArgoCDアプリケーション定義
+#
+# ArgoCDはこのApplicationリソースを見てGitリポジトリと
+# Kubernetesクラスターの状態を同期する。
+# GitOpsの原則: Gitがすべての真実の情報源（Source of Truth）
+################################################################################
+
+---
+# ArgoCDプロジェクト: アクセス制御とリソース制限の単位
+# defaultプロジェクトではなく専用プロジェクトを作る理由:
+# プロジェクトごとにデプロイ先クラスター・Namespace・リソースタイプを制限できる。
+# 開発者がうっかり別環境にデプロイするミスを防げる。
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: production
+  namespace: argocd
+  # ArgoCDのAppProjectは削除保護が必要
+  # finalizers を設定しないとkubectl deleteで即座に削除できてしまう
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: 本番環境アプリケーションプロジェクト
+
+  # デプロイ元リポジトリを制限する
+  # これ以外のリポジトリからのデプロイを禁止する
+  sourceRepos:
+    - "https://github.com/YOUR_ORG/YOUR_REPO"
+    - "https://github.com/YOUR_ORG/helm-charts"
+
+  # デプロイ先の制限
+  destinations:
+    - namespace: sample-app
+      server: https://kubernetes.default.svc  # 同一クラスターへのデプロイ
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+
+  # 使用可能なクラスタースコープリソースタイプを制限
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Namespaceスコープのリソースホワイトリスト
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: ""
+      kind: Service
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+
+---
+# Applicationリソース: GitとKubernetesの同期設定
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app
+  namespace: argocd
+  labels:
+    app: sample-app
+    environment: prod
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: production
+
+  source:
+    # マニフェストのGitリポジトリ
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main  # ブランチ・タグ・コミットハッシュを指定
+    path: kubernetes/sample-app  # リポジトリ内のマニフェストパス
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sample-app
+
+  syncPolicy:
+    # 自動同期: Gitの変更を自動でクラスターに適用する
+    automated:
+      # prune=true: Gitから削除されたリソースをクラスターからも削除する
+      # これがないとGitとクラスターの状態が乖離する
+      prune: true
+      # selfHeal=true: 手動でkubectl editした変更を自動的にGitの状態に戻す
+      # GitOpsの原則を守るために重要
+      selfHeal: true
+      allowEmpty: false
+
+    syncOptions:
+      # CreateNamespace=true: Namespaceが存在しない場合は自動作成
+      - CreateNamespace=true
+      # PruneLast=true: 削除は最後に実行（依存リソースが先に作成されるようにする）
+      - PruneLast=true
+      # RespectIgnoreDifferences=true: ignoreDifferences設定を尊重する
+      - RespectIgnoreDifferences=true
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # 無視する差分設定
+  # HPAのreplicas等はコントローラーが変更するためドリフトとして扱わない
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas  # HPAが管理するレプリカ数の変更を無視

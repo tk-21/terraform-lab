@@ -1,0 +1,140 @@
+################################################################################
+# Karpenter NodePool + EC2NodeClass
+#
+# NodePool: どのようなNodeを起動するかの要件を定義する
+# EC2NodeClass: AWSリソース固有の設定（AMI・サブネット・SG等）を定義する
+################################################################################
+
+---
+# EC2NodeClass: AWSリソース固有の設定
+# EKSクラスターのサブネット・セキュリティグループをタグで検索する仕組みにする理由：
+# ハードコードすると環境ごとのコード変更が必要になる。
+# タグベースの検索にすることでTerraformで付与したタグから自動解決できる。
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # Bottlerocketを使用する理由：
+  # - Amazon Linuxより攻撃面が小さい（最小限のOSコンポーネント）
+  # - コンテナワークロード専用に最適化されている
+  # - SELinuxが有効でセキュリティが強化されている
+  # - 読み取り専用rootfsでOSレベルの改ざんを防ぐ
+  amiFamily: Bottlerocket
+
+  # プライベートサブネットのみを使用する理由：
+  # Karpenterが起動するノードはEKSノードと同じくプライベートサブネットに配置する。
+  # タグ "karpenter.sh/discovery" で自動検索（Terraformで付与済み）
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "terraform-eks-production-platform-prod-cluster"
+
+  # Karpenter専用セキュリティグループを検索する
+  # タグ "karpenter.sh/discovery" で自動検索（Terraformで付与済み）
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "terraform-eks-production-platform-prod-cluster"
+
+  # Karpenterノード用Instance Profile
+  # Terraformの出力値に合わせること: karpenter_node_instance_profile_name
+  instanceProfile: "terraform-eks-production-platform-prod-profile-karpenter-node"
+
+  # ルートボリューム設定
+  # gp3を使う理由: gp2より性能が高くコストも安い（同性能で約20%安価）
+  # 暗号化を有効にする理由: コンテナのファイルシステムを保護するため
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 50Gi
+        volumeType: gp3
+        encrypted: true
+    # Bottlerocketはデータボリュームが別デバイス
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 50Gi
+        volumeType: gp3
+        encrypted: true
+
+  # IMDSv2を強制する理由:
+  # IMDSv1はSSRF攻撃でPodからノードのIAM認証情報を盗める脆弱性がある。
+  # IMDSv2ではセッショントークンが必要になるため攻撃を防げる。
+  metadataOptions:
+    httpTokens: required
+    httpPutResponseHopLimit: 2  # Pod内からのアクセスに必要
+
+  tags:
+    Project: terraform-eks-production-platform
+    Environment: prod
+    ManagedBy: karpenter
+
+---
+# NodePool: Karpenterが起動するNodeの要件を定義する
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    metadata:
+      labels:
+        # Karpenterが管理するノードにラベルを付与して識別できるようにする
+        managed-by: karpenter
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+
+      requirements:
+        # インスタンスファミリーを複数指定する理由:
+        # スポットインスタンスは特定のタイプが枯渇することがある。
+        # 複数のファミリーを許可することで可用性を高める。
+        # c5: コンピュート最適化（CPU集約型ワークロード）
+        # m5: 汎用（バランス型ワークロード）
+        # r5: メモリ最適化（メモリ集約型ワークロード）
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["c5", "m5", "r5"]
+
+        # アーキテクチャをamd64に限定する理由:
+        # コンテナイメージはamd64ビルドのみを提供する想定。
+        # arm64（Graviton）は別NodePoolで管理する方が柔軟。
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+
+        # OSはLinuxのみ
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+
+        # スポットインスタンスを優先し、オンデマンドをフォールバックとする理由:
+        # スポットはオンデマンドより最大90%安価。
+        # Karpenterのスポット中断処理（SQS + EventBridge）により
+        # 中断2分前にPodを安全に退避できる。
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+
+      # Taint: システム用ノード（Managed Node Group）と
+      # Karpenterノードを分離するためのTaint設定
+      # アプリケーションPodにはこのTaintに対するTolerationが必要
+      taints: []  # 必要に応じてTaintを追加
+
+  # スケールダウン設定
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    # 30分間アイドルのノードを自動削除する理由:
+    # スポットインスタンスを使っていても、使用していないノードにコストが発生する。
+    # 30分は短すぎず長すぎないバランスの値。
+    consolidateAfter: 30m
+
+    # ノードのTTL設定（オプション）
+    # 長期間稼働したノードをローリングリプレイスすることでOS/AMIを最新に保つ
+    # expireAfter: 720h  # 30日後に強制置換
+
+  # NodePoolの上限設定
+  # 予算超過を防ぐためのガードレール
+  limits:
+    cpu: "100"          # 最大100 vCPU まで
+    memory: "400Gi"     # 最大400 GiB まで

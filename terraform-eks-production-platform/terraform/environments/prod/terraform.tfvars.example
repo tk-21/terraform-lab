@@ -1,0 +1,34 @@
+################################################################################
+# terraform.tfvars.example
+#
+# このファイルをコピーして terraform.tfvars を作成し、実際の値に書き換える。
+# terraform.tfvars 本体は .gitignore で除外されているためコミットしない。
+# このexampleファイルにはサンプル値のみ記載し、機密情報は絶対に記載しない。
+################################################################################
+
+# プロジェクト設定
+project_name = "terraform-eks-production-platform"
+environment  = "prod"
+aws_region   = "ap-northeast-1"
+
+# EKSクラスターのPublic Endpointへのアクセスを許可するCIDR。
+# セキュリティのため自分のIPアドレスのみ許可すること。
+# 0.0.0.0/0 は設定禁止（CLAUDE.md参照）。
+# `curl ifconfig.me` で自分のIPを確認できる。
+eks_public_access_cidrs = ["YOUR_IP_ADDRESS/32"]
+
+# EKSバージョン
+eks_cluster_version = "1.29"
+
+# Node Groupのインスタンスタイプ。
+# Karpenterと併用するため初期ノードは最小限に抑える。
+node_group_instance_types = ["t3.medium", "t3.large"]
+
+# Karpenterのバージョン
+karpenter_version = "0.35.0"
+
+# ArgoCDのHelmチャートバージョン
+argocd_version = "6.7.3"
+
+# Grafana管理者のSSOユーザーメールアドレス
+grafana_admin_user = "admin@example.com"

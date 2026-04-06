@@ -1,0 +1,132 @@
+################################################################################
+# Terraform Apply ワークフロー
+#
+# main ブランチへのマージ時に terraform apply を実行する。
+# apply完了後にChatworkに通知を送る。
+#
+# 安全設計：
+# - terraform plan の成功を前提とする（planワークフローがCIチェックとして機能）
+# - GitHub Environmentの承認ゲートを設定することを推奨
+################################################################################
+
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # terraform/ 配下の変更時のみ実行する（planワークフローと同じ条件）
+      - "terraform/**"
+
+# OIDCを使ったAWS認証のために必要な権限
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    # GitHub Environmentを使って手動承認ゲートを設定できる
+    # Settings > Environments > production > Required reviewers に設定することを推奨
+    environment: production
+
+    defaults:
+      run:
+        working-directory: terraform/environments/prod
+
+    steps:
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Terraform のセットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7.0"
+          # terraform output を後続ステップで使用するために設定
+          terraform_wrapper: false
+
+      - name: AWS 認証（OIDC）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-eks-platform
+          aws-region: ap-northeast-1
+          # applyはplanより時間がかかるため2時間に設定
+          role-session-name: GitHubActions-TerraformApply-${{ github.run_id }}
+          role-duration-seconds: 7200
+
+      - name: Terraform 初期化
+        run: |
+          terraform init \
+            -backend-config="bucket=terraform-eks-production-platform-prod-tfstate-${{ secrets.AWS_ACCOUNT_ID }}" \
+            -input=false
+
+      - name: Terraform Apply の実行
+        id: apply
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            -var="eks_public_access_cidrs=[\"${{ secrets.ALLOWED_CIDR }}\"]" \
+            -var="grafana_admin_user=${{ secrets.GRAFANA_ADMIN_USER }}" \
+            2>&1 | tee apply_output.txt
+
+      - name: Apply 結果の集約
+        id: result
+        if: always()
+        run: |
+          # Apply の結果をまとめて後続ステップで使用する
+          if [ "${{ steps.apply.outcome }}" == "success" ]; then
+            echo "status=✅ 成功" >> $GITHUB_OUTPUT
+            echo "color=008000" >> $GITHUB_OUTPUT
+          else
+            echo "status=❌ 失敗" >> $GITHUB_OUTPUT
+            echo "color=FF0000" >> $GITHUB_OUTPUT
+          fi
+
+          # Apply 出力の末尾100行を取得（最後の Apply 結果サマリーを含む部分）
+          tail -n 100 apply_output.txt > apply_summary.txt || true
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          cat apply_summary.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Chatwork 通知（Apply 結果）
+        if: always()
+        env:
+          # Chatwork APIトークンはGitHub Secretsに設定する
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          CHATWORK_ROOM_ID: ${{ secrets.CHATWORK_ROOM_ID }}
+        run: |
+          # Apply の結果に応じてメッセージを変える
+          if [ "${{ steps.apply.outcome }}" == "success" ]; then
+            ICON="[info]"
+            STATUS_TEXT="✅ 成功"
+          else
+            ICON="[alert]"
+            STATUS_TEXT="❌ 失敗"
+          fi
+
+          # Chatwork メッセージを構築
+          MESSAGE="${ICON}
+          [title]Terraform Apply 完了通知 - terraform-eks-production-platform[/title]
+
+          ■ 結果: ${STATUS_TEXT}
+          ■ ブランチ: ${{ github.ref_name }}
+          ■ コミット: ${{ github.sha }}
+          ■ 実行者: ${{ github.actor }}
+          ■ 実行時刻: $(date '+%Y-%m-%d %H:%M:%S JST' -d '+9 hours')
+          ■ ワークフロー: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          $(if [ "${{ steps.apply.outcome }}" != "success" ]; then echo "⚠️ Applyが失敗しました。インフラが不完全な状態になっている可能性があります。
+          すぐにワークフローのログを確認してください。"; fi)"
+
+          # Chatwork API に POST
+          curl -s -X POST \
+            "https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages" \
+            -H "X-ChatWorkToken: ${CHATWORK_API_TOKEN}" \
+            -d "body=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${MESSAGE}'''))")"
+
+      - name: Apply 失敗時にワークフローを失敗させる
+        if: steps.apply.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,164 @@
+################################################################################
+# Terraform Plan ワークフロー
+#
+# Pull Requestのオープン・更新時に terraform plan を実行し、
+# 変更内容をPRコメントに投稿する。
+#
+# 認証: OIDC（アクセスキー不使用）
+# アクセスキーをシークレットに保存するより安全な理由:
+# - シークレットは漏洩リスクがある（ログ出力・外部コード実行等）
+# - OIDCは一時的なトークンを使用するためリークしても短時間で無効化される
+################################################################################
+
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      # terraform/ 配下の変更時のみ実行する理由:
+      # ドキュメントやKubernetesマニフェストの変更でTerraform planを
+      # 実行する必要はないためコストと時間を節約する
+      - "terraform/**"
+
+# OIDCを使ったAWS認証のために必要な権限
+permissions:
+  id-token: write    # OIDCトークンの取得
+  contents: read     # リポジトリの読み取り
+  pull-requests: write  # PRコメントの投稿
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    environment: production  # GitHub Environmentの保護ルールを適用
+
+    defaults:
+      run:
+        working-directory: terraform/environments/prod
+
+    steps:
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Terraform のセットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7.0"
+
+      - name: AWS 認証（OIDC）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # IAMロールARN: GitHub ActionsがAWS操作に使用するロール
+          # OIDCプロバイダーとの信頼関係はTerraformで事前設定が必要
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-eks-platform
+          aws-region: ap-northeast-1
+          # セッション時間: planは短時間で完了するため1時間で十分
+          role-session-name: GitHubActions-TerraformPlan-${{ github.run_id }}
+
+      - name: Terraform 初期化
+        id: init
+        run: |
+          terraform init \
+            -backend-config="bucket=terraform-eks-production-platform-prod-tfstate-${{ secrets.AWS_ACCOUNT_ID }}" \
+            -input=false
+
+      - name: Terraform フォーマットチェック
+        id: fmt
+        run: terraform fmt -check -recursive
+        # フォーマットチェックが失敗してもcontinueして結果をPRに投稿する
+        continue-on-error: true
+
+      - name: Terraform 設定の検証
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan の実行
+        id: plan
+        # plan 失敗時もcontinueして結果をPRコメントに投稿する
+        continue-on-error: true
+        run: |
+          terraform plan \
+            -no-color \
+            -input=false \
+            -var="eks_public_access_cidrs=[\"${{ secrets.ALLOWED_CIDR }}\"]" \
+            -var="grafana_admin_user=${{ secrets.GRAFANA_ADMIN_USER }}" \
+            -out=tfplan \
+            2>&1 | tee plan_output.txt
+
+      - name: Plan 結果をPRコメントに投稿
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+
+            // plan の出力を読み込む（長い場合は先頭65000文字に切り詰める）
+            let planOutput = '';
+            try {
+              planOutput = fs.readFileSync('terraform/environments/prod/plan_output.txt', 'utf8');
+              if (planOutput.length > 65000) {
+                planOutput = planOutput.substring(0, 65000) + '\n\n... （長すぎるため省略）';
+              }
+            } catch (e) {
+              planOutput = 'plan出力の読み込みに失敗しました';
+            }
+
+            const fmtOutcome = '${{ steps.fmt.outcome }}';
+            const validateOutcome = '${{ steps.validate.outcome }}';
+            const planOutcome = '${{ steps.plan.outcome }}';
+
+            const comment = `## Terraform Plan 結果
+
+            | ステップ | 結果 |
+            |---|---|
+            | フォーマットチェック | ${fmtOutcome === 'success' ? '✅ 成功' : '❌ 失敗（`terraform fmt -recursive` を実行してください）'} |
+            | 設定の検証 | ${validateOutcome === 'success' ? '✅ 成功' : '❌ 失敗'} |
+            | Plan | ${planOutcome === 'success' ? '✅ 成功' : '❌ 失敗'} |
+
+            <details>
+            <summary>Plan 詳細（クリックで展開）</summary>
+
+            \`\`\`terraform
+            ${planOutput}
+            \`\`\`
+
+            </details>
+
+            > **注意**: このPRを main にマージすると \`terraform apply\` が自動実行されます。
+            > Plan の内容を慎重に確認してください。
+
+            *実行者: @${{ github.actor }} | コミット: ${{ github.sha }}*`;
+
+            // 既存のコメントを検索して更新するか、新しいコメントを作成する
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Terraform Plan 結果')
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: comment,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment,
+              });
+            }
+
+      - name: Plan 失敗時にワークフローを失敗させる
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
