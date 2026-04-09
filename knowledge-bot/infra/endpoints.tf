@@ -1,3 +1,4 @@
+# Private subnet 内のワークロードが AWS API に私設経路で到達できるようにする。
 resource "aws_security_group" "vpce" {
   name   = "${local.name}-vpce-sg"
   vpc_id = module.vpc.vpc_id
@@ -42,7 +43,7 @@ module "vpc_endpoints" {
       private_dns_enabled = true
     }
 
-    # 実運用でほぼ必要
+    # EKS 上のアプリ運用で実質必須になる周辺サービスの endpoint。
     ecr_api = { service = "ecr.api", private_dns_enabled = true }
     ecr_dkr = { service = "ecr.dkr", private_dns_enabled = true }
     logs    = { service = "logs", private_dns_enabled = true }

@@ -1,3 +1,4 @@
+# Bedrock KB が格納するベクトル・本文・メタデータの index 形式を定義する。
 variable "vector_dimension" {
   type    = number
   default = 1024
@@ -7,7 +8,7 @@ resource "opensearch_index" "kb" {
   name      = var.aoss_index_name
   index_knn = true
 
-  # OpenSearch provider は settings/body を持たず、mappings(JSON文字列)で渡す
+  # ベクトル検索に必要な field 定義を mappings JSON としてまとめて渡す。
   mappings = jsonencode({
     properties = {
       vector = {

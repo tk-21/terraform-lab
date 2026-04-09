@@ -1,7 +1,9 @@
 import re
 from typing import List, Dict
 
+
 def simple_retrieve(chunks: List[Dict], query: str, k: int = 4) -> List[Dict]:
+  # MVP向けの簡易検索。質問語を含むチャンクを数えて上位だけ返す。
   q = re.findall(r"\w+", query.lower())
   scored = []
   for c in chunks:

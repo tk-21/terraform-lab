@@ -1,3 +1,4 @@
+# AWS Load Balancer Controller を必要なときだけ Helm で導入する。
 resource "helm_release" "lbc" {
   count = var.enable_lbc ? 1 : 0
 

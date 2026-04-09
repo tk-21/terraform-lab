@@ -1,5 +1,6 @@
 name: knowledge-ingest
 
+# docs 変更時に S3 同期と Bedrock KB の再取り込みを自動化する。
 on:
   push:
     branches: ["main"]
@@ -14,6 +15,7 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     steps:
+      # リポジトリ内容を runner に展開する。
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
@@ -33,6 +35,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Sync docs to S3
+        # ローカル docs を knowledge バケットへ同期して、KB の取り込み元を更新する。
         working-directory: infra
         run: |
           terraform init -input=false
@@ -40,5 +43,6 @@ jobs:
           aws s3 sync ../docs "s3://$BUCKET/docs/" --delete
 
       - name: Start ingestion job
+        # 反映した docs を KB 側へ再インデックスさせる。
         run: |
           bash scripts/kb_ingest.sh

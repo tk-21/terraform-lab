@@ -1,3 +1,4 @@
+# アプリ Pod が IRSA 経由で Bedrock を呼べるように IAM 権限を定義する。
 data "aws_iam_policy_document" "app_bedrock" {
   statement {
     effect = "Allow"
@@ -29,6 +30,7 @@ module "irsa_app" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
   version = "~> 5.0"
 
+  # knowledgebot 名前空間の knowledgebot-sa だけがこのロールを使える。
   role_name = "${local.name}-app"
 
   oidc_providers = {

@@ -1,3 +1,4 @@
+# アプリが参照する非機密の環境変数をまとめて渡す。
 apiVersion: v1
 kind: ConfigMap
 metadata:

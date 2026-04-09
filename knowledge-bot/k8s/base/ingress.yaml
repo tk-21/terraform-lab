@@ -1,3 +1,4 @@
+# 内部 ALB から Service へ HTTP を流す入口設定。
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -8,8 +9,7 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
 
-    # 必要に応じて ALB の OIDC 認証を有効化する場合の例
-    # 現在は internal ALB のみを使用し、この設定は無効
+    # 必要になれば ALB 側で OIDC 認証を追加できるよう、例だけコメントで残している。
     # alb.ingress.kubernetes.io/auth-type: oidc
     # alb.ingress.kubernetes.io/auth-scope: "openid"
     # alb.ingress.kubernetes.io/auth-session-timeout: "3600"
@@ -21,7 +21,7 @@ metadata:
     #    "userInfoEndpoint":"REPLACE_USERINFO",
     #    "secretName":"oidc-client-secret"}
 
-    # ALB Access Logs（deploy scriptでbucket埋め）
+    # Access Logs を有効化する場合は deploy script で bucket 名を埋め込む。
     # alb.ingress.kubernetes.io/load-balancer-attributes: >
     #   access_logs.s3.enabled=true,access_logs.s3.bucket=YOUR_BUCKET,access_logs.s3.prefix=knowledgebot
 

@@ -1,3 +1,4 @@
+# この構成で外から差し替えやすい入力値をまとめて定義する。
 variable "region" {
   type    = string
   default = "ap-northeast-1"

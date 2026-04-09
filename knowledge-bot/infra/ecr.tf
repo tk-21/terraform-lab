@@ -1,3 +1,4 @@
+# アプリイメージの保存先 ECR と、古いイメージ整理ポリシーを管理する。
 resource "aws_ecr_repository" "app" {
   name = "${local.name}/app"
   image_scanning_configuration { scan_on_push = true }

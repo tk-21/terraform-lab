@@ -1,5 +1,6 @@
 name: build-and-deploy
 
+# app / k8s / scripts 変更時に、イメージ更新から EKS 反映までを自動実行する。
 on:
   push:
     branches: ["main"]
@@ -17,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # リポジトリ内容を runner に展開する。
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
@@ -36,6 +38,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Terraform outputs (for ECR/EKS)
+        # 既存インフラの出力値を後続 step の入力として取り出す。
         id: tfout
         working-directory: infra
         run: |
@@ -46,11 +49,13 @@ jobs:
           echo "IRSA_APP_ROLE_ARN=$(terraform output -raw irsa_app_role_arn)" >> $GITHUB_OUTPUT
 
       - name: Login to ECR
+        # push 先レジストリへ Docker 認証する。
         run: |
           aws ecr get-login-password --region ${{ steps.tfout.outputs.REGION }} \
             | docker login --username AWS --password-stdin "${{ steps.tfout.outputs.ECR%%/* }}"
 
       - name: Build & Push image
+        # commit SHA をタグにしたイメージを作って ECR へ保存する。
         run: |
           IMAGE="${{ steps.tfout.outputs.ECR }}:${{ github.sha }}"
           docker build -t "$IMAGE" ./app
@@ -58,6 +63,7 @@ jobs:
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Deploy to EKS
+        # 既存スクリプトを使ってマニフェスト適用とロールアウト確認を行う。
         run: |
           APP_IMAGE="${IMAGE}" bash scripts/deploy_k8s.sh
           kubectl -n knowledgebot rollout status deploy/knowledgebot

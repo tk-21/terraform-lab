@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# S3 に置いたナレッジ原本を Bedrock Knowledge Base へ再取り込みする。
 tf() { (cd infra && terraform output -raw "$1"); }
 
 WAIT_MODE="true"
 POLL_INTERVAL="${POLL_INTERVAL:-10}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 
+# オプションは待機有無だけを受け付ける。
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-wait)
@@ -37,8 +39,7 @@ REGION="$(tf region)"
 KB_ID="$(tf knowledge_base_id)"
 DS_ID="$(tf data_source_id)"
 
-# terraform output が "ID1,ID2" のように複数返る環境があるため、
-# StartIngestionJob には有効な10文字IDを1つだけ渡す。
+# data source ID が複数並ぶ出力にも耐えるよう、先頭の有効 ID だけを使う。
 DS_ID="$(echo "$DS_ID" | tr ',' '\n' | awk '/^[0-9A-Za-z]{10}$/{print; exit}')"
 
 if [[ -z "${KB_ID}" || "${KB_ID}" == "null" ]]; then
@@ -51,6 +52,7 @@ if [[ -z "${DS_ID}" || "${DS_ID}" == "null" ]]; then
   exit 0
 fi
 
+# Bedrock の ingestion job を起動して job ID を受け取る。
 JOB_ID="$(aws bedrock-agent start-ingestion-job \
   --region "$REGION" \
   --knowledge-base-id "$KB_ID" \
@@ -68,6 +70,7 @@ echo "[*] Waiting for ingestion to complete..."
 start_ts="$(date +%s)"
 
 while true; do
+  # ステータスと統計を定期ポーリングし、完了・失敗・タイムアウトを判定する。
   STATUS="$(aws bedrock-agent get-ingestion-job \
     --region "$REGION" \
     --knowledge-base-id "$KB_ID" \

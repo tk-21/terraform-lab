@@ -1,8 +1,9 @@
+# OpenSearch Serverless 側の collection と、その前提になる各種ポリシーを定義する。
 locals {
   aoss_collection_name = "${local.name}-kb"
 }
 
-# 1) Encryption policy（必須：これが無いと collection が作れない）
+# collection 作成前に必須となる暗号化ポリシー。
 resource "aws_opensearchserverless_security_policy" "encryption" {
   name = "${local.name}-enc"
   type = "encryption"
@@ -18,7 +19,7 @@ resource "aws_opensearchserverless_security_policy" "encryption" {
   })
 }
 
-# 2) Network policy（ここでは簡易：public禁止）
+# ネットワーク到達条件を定義するポリシー。
 resource "aws_opensearchserverless_security_policy" "network" {
   name = "${local.name}-net"
   type = "network"
@@ -35,13 +36,12 @@ resource "aws_opensearchserverless_security_policy" "network" {
       }
     ]
 
-    # NOTE: このプロバイダ/スキーマでは false が弾かれるため true にする
+    # provider の制約に合わせた設定値。実運用では公開範囲を別途見直す余地がある。
     AllowFromPublic = true
   }])
 }
 
-# 3) Access policy（コレクションにアクセスできる principal を指定）
-# ここではまず “KB用IAM Role” を許可（bedrock_kb.tf の aws_iam_role.kb を参照）
+# collection / index にアクセスできる principal をここで制御する。
 resource "aws_opensearchserverless_access_policy" "kb" {
   name = "${local.name}-aoss-access"
   type = "data"
@@ -61,16 +61,16 @@ resource "aws_opensearchserverless_access_policy" "kb" {
     ]
 
     Principal = [
-      # Terraform実行者（index作成する人）
+      # Terraform 実行者は index の初期作成・更新用。
       data.aws_caller_identity.current.arn,
 
-      # Bedrock KB が使うロール（Retrieve/Write する主体）
+      # Bedrock KB はこのロールでベクトルの書き込み・検索を行う。
       aws_iam_role.kb.arn
     ]
   }])
 }
 
-# 4) Collection（policy が揃ってから作る）
+# 上記ポリシーがそろった後に、ベクトル検索用 collection を作成する。
 resource "aws_opensearchserverless_collection" "kb" {
   name = local.aoss_collection_name
   type = "VECTORSEARCH"
@@ -83,9 +83,7 @@ resource "aws_opensearchserverless_collection" "kb" {
   ]
 }
 
-# AOSS collection endpoint（https://xxxx.ap-northeast-1.aoss.amazonaws.com）
-# NOTE: collection の endpoint は attribute 名が provider で異なる場合があります。
-# まずは "collection_endpoint" を試し、違えば plan の出力で合わせます。
+# 後続 provider が参照する collection endpoint を local にまとめる。
 locals {
   aoss_endpoint = aws_opensearchserverless_collection.kb.collection_endpoint
 }
