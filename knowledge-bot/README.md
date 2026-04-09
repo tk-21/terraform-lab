@@ -40,6 +40,30 @@ export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
 - `src/static/style.css`: スタイル
 - `src/static/app.js`: フロント側の `/ask` 呼び出し処理
 
+## どこから読むか
+
+実装を追うときは、次の順に読むと役割がつながりやすいです。
+
+- `app/`: ユーザーの質問を受けて回答を返す本体コード
+- `infra/`: AWS 側の基盤を Terraform で作る定義
+- `k8s/`: EKS 上でアプリを動かすための Kubernetes マニフェスト
+- `scripts/`: Terraform 出力を使って build / deploy / ingest を実行する補助スクリプト
+- `.github/workflows/`: push された変更をどの自動化につなぐかを決める CI/CD 定義
+- `docs/sample_knowledge/`: Knowledge Base に取り込む原本ドキュメントのサンプル
+
+主要ファイルの対応関係:
+
+| 役割 | 主なファイル |
+|---|---|
+| API の入口 | `app/src/main.py` |
+| KB 検索 + 回答生成 | `app/src/rag_kb.py` |
+| MVP 用の簡易検索 | `app/src/rag_mvp.py` |
+| プロンプト制約 | `app/src/prompts.py` |
+| AWS 基盤 | `infra/*.tf` |
+| EKS 配置定義 | `k8s/base/*.yaml` |
+| 手動運用コマンド | `scripts/*.sh`, `Makefile` |
+| 自動デプロイ | `.github/workflows/*.yml` |
+
 ## 全体像（図解）
 
 ### 1. システム全体マップ
