@@ -1433,3 +1433,184 @@ KB モードでは Titan Embed v2 が文章全体の「意味」をベクトル�
 使わない期間の基本対応:
 - 検証環境は `terraform destroy` を検討
 - docs 更新頻度が低い場合は ingestion 実行回数を必要最小限にする
+
+---
+
+## 最小コスト版の設計メモ
+
+この構成を「できるだけ安く動かす」方向に作り替えるなら、最初に削るべき固定費は `EKS`、`NAT Gateway`、`ALB`、`OpenSearch Serverless` です。
+
+現行構成は学習要素が多い反面、
+
+- `EKS` のクラスター固定費
+- `NAT Gateway` の時間課金
+- `ALB` の時間課金
+- `OpenSearch Serverless` の最低 OCU
+
+が効くため、アクセスが少なくても月額が積み上がりやすいです。
+
+### 比較
+
+| 案 | 構成 | 固定費 | 検索品質 | 向いている用途 |
+|---|---|---:|---|---|
+| 現行 | `EKS + ALB + NAT + AOSS + Bedrock KB` | 高い | 高い | Kubernetes / IRSA / KB / AOSS をまとめて学ぶ |
+| 節約版 | `App Runner + S3 + AOSS + Bedrock KB` | 中 | 高い | Bedrock KB を残しつつインフラを簡素化する |
+| 最小版 | `Lambda or App Runner + S3 + アプリ内検索 + Bedrock` | 低い | 中 | RAG の基本を安く検証する |
+
+### 構成図
+
+現行:
+
+```text
+Browser
+  -> ALB
+  -> EKS / FastAPI
+  -> Bedrock Runtime
+  -> Bedrock Knowledge Base
+  -> OpenSearch Serverless
+  -> S3
+```
+
+節約版:
+
+```text
+Browser
+  -> App Runner
+  -> FastAPI
+  -> Bedrock Runtime
+  -> Bedrock Knowledge Base
+  -> OpenSearch Serverless (dev-test)
+  -> S3
+```
+
+最小コスト版:
+
+```text
+Browser
+  -> Lambda Function URL or App Runner
+  -> FastAPI
+  -> S3 から docs を読む
+  -> アプリ内検索（MVP 型）
+  -> Bedrock Runtime
+```
+
+### 最小コスト版で残すもの
+
+- `app/`
+  - FastAPI 本体
+- `docs/sample_knowledge/`
+  - ナレッジ原本
+- `S3`
+  - 文書置き場
+- `Bedrock Runtime`
+  - 最終回答生成
+- `Lambda` または `App Runner`
+  - アプリ実行基盤
+- 必要最小限の `IAM`
+  - S3 読み取り
+  - Bedrock 呼び出し
+
+### 最小コスト版で削るもの
+
+- `EKS`
+- `Managed Node Group`
+- `ALB`
+- `NAT Gateway`
+- `VPC Endpoints`
+- `AWS Load Balancer Controller`
+- `OpenSearch Serverless`
+- `Bedrock Knowledge Base`
+- `k8s/base/*`
+- `scripts/deploy_k8s.sh`
+
+### 何が変わるか
+
+安くなる代わりに、次の機能は割り切ることになります。
+
+- Kubernetes 運用学習は外れる
+- IRSA / Ingress / HPA / PDB は不要になる
+- Bedrock Knowledge Base のマネージド検索は使わない
+- 検索は `rag_mvp.py` 型のアプリ内検索が中心になる
+
+一方で、次はそのまま残せます。
+
+- UI から質問して回答を返す流れ
+- S3 に文書を置いて更新する流れ
+- Bedrock を使った回答生成
+- RAG の基本的な考え方
+
+### どの実行基盤を選ぶか
+
+#### 1. Lambda 版
+
+特徴:
+
+- 固定費が最も小さい
+- アクセスが少ない検証用途に向く
+- 従量課金中心
+
+注意点:
+
+- FastAPI をそのまま動かすには `Mangum` などの ASGI 変換が必要
+- コールドスタートがある
+- ファイルのローカル保持前提の実装は避ける
+
+#### 2. App Runner 版
+
+特徴:
+
+- コンテナのまま移しやすい
+- EKS よりかなり簡単
+- 常時起動の API として扱いやすい
+
+注意点:
+
+- Lambda よりは固定費がある
+- Bedrock KB を使わないなら、App Runner の上に FastAPI を載せるだけでも十分
+
+実装移行のしやすさを優先するなら `App Runner`、固定費最小を優先するなら `Lambda` が向いています。
+
+### コスト感の目安
+
+以下は 2026-04-09 時点で確認した AWS 公式 pricing を元にした概算イメージです。実際の請求はリージョン、通信量、トークン量、実行時間で変動します。
+
+- `EKS` は標準サポートのクラスターで `0.10 USD / cluster-hour`
+  - 月あたり約 `73 USD`
+  - 出典: [Amazon EKS Pricing](https://aws.amazon.com/eks/pricing/)
+- `NAT Gateway` は時間課金 + データ処理課金
+  - 出典: [Pricing for NAT gateways](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-pricing.html)
+- `OpenSearch Serverless` は dev-test でも最低 OCU が必要
+  - 公式 pricing では dev-test option で `0.5 OCU indexing + 0.5 OCU search` が最小構成
+  - 出典: [Amazon OpenSearch Service Pricing](https://aws.amazon.com/opensearch-service/pricing/)
+- `App Runner` は東京リージョンで provisioned memory が `0.009 USD / GB-hour`
+  - 小さい API なら固定費をかなり抑えやすい
+  - 出典: [AWS App Runner Pricing](https://aws.amazon.com/apprunner/pricing/)
+- `Lambda` は従量課金で free tier がある
+  - 小規模検証なら固定費をほぼゼロに寄せやすい
+  - 出典: [AWS Lambda Pricing](https://aws.amazon.com/lambda/pricing/)
+- `S3` は小規模文書保管では非常に安い
+  - 出典: [Amazon S3 Pricing](https://aws.amazon.com/s3/pricing/)
+- `Bedrock` はモデルとトークン量に依存する従量課金
+  - 出典: [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)
+
+ざっくりした方向感としては、
+
+- 現行構成: 月数百 USD 帯に乗りやすい
+- `App Runner + KB + AOSS`: 現行より安いが、AOSS がまだ重い
+- `Lambda/App Runner + S3 + アプリ内検索 + Bedrock`: 固定費を数 USD から十数 USD 未満に抑えやすい
+
+### このリポジトリで最小コスト版を作るなら
+
+最小差分で考えると、次の順で落とすのが現実的です。
+
+1. `RAG_MODE=MVP` を正式な低コストモードとして使う
+2. `docs/sample_knowledge/` をアプリ起動時または定期的に読み込む
+3. 実行基盤を `EKS` から `App Runner` か `Lambda` に置き換える
+4. `infra/bedrock_kb.tf` と `infra/opensearch_*` を外す
+5. `k8s/` と EKS 関連 script/workflow を段階的に削る
+
+### おすすめの判断基準
+
+- Kubernetes も含めて学びたい: 現行構成
+- Bedrock Knowledge Base を残したい: 節約版
+- とにかく安く長く置いておきたい: 最小コスト版
