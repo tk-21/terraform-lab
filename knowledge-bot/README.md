@@ -40,6 +40,9 @@ export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
 - `src/static/style.css`: スタイル
 - `src/static/app.js`: フロント側の `/ask` 呼び出し処理
 
+動作確認用の質問セット:
+- `docs/test-checklist.md`: MVP モード / KB モード別の質問例と期待結果
+
 ## どこから読むか
 
 実装を追うときは、次の順に読むと役割がつながりやすいです。
