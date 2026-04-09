@@ -881,14 +881,29 @@ RAG アプリを AWS 上で動かすには、Bedrock の API だけ知ってい�
 Collection を作る前に、**3種類のポリシーをすべて存在させる**必要があります。
 
 ```
-Encryption policy（誰が暗号化するか）
+Encryption policy（どう暗号化するか）
   +
-Network policy（どこからアクセス可能か）
+Network policy（どこから到達できるか）
   +
 Data Access policy（誰がデータを読み書きできるか）
   ↓
 この3つが揃って初めて Collection を作れる
 ```
+
+ざっくり言うと、AOSS Collection は「箱」だけ先に作ればよいわけではありません。
+次の 3 つがそろって、初めて検索基盤として成立します。
+
+- Encryption policy: Collection の保存データをどの暗号化ルールで守るか
+- Network policy: その Collection にどこから通信できるか
+- Data Access policy: その中の index / document を誰が読み書きできるか
+
+建物にたとえると:
+
+- Encryption policy は「金庫の鍵のルール」
+- Network policy は「建物の入口ルール」
+- Data Access policy は「中の部屋を使える人のルール」
+
+なので、Collection が存在しても Data Access policy が足りなければ、「建物はあるが中のデータを使えない」状態になります。
 
 これが `infra/opensearch_serverless.tf` で `depends_on` を明示している理由です。
 
@@ -903,9 +918,61 @@ resource "aws_opensearchserverless_collection" "kb" {
 }
 ```
 
-Terraform はデフォルトでリソースを並列 apply します。`depends_on` を書かないと、ポリシーが作成される前に Collection の apply が走り、エラーになります。
+Terraform はデフォルトで、依存関係が見えないリソースを並列で apply します。
+`depends_on` を書かないと、Terraform から見ると
 
-**よくある失敗：** Data Access policy を後から追加しようとすると「Collection は作られているのに検索ができない」という謎の状態になります。最初から3つ揃えておくことが重要です。
+- policy を作る処理
+- collection を作る処理
+
+が同時に走ってよいように見えてしまいます。
+
+その結果、Collection 作成 API が先に呼ばれると AWS 側で
+「前提になる policy がまだ無い」
+と判定され、apply が失敗します。
+
+つまり `depends_on` は、
+「3つの policy を作り終わってから Collection を作る」
+という順番を Terraform に明示するためのものです。
+
+処理順のイメージ:
+
+```text
+良い順番:
+1. Encryption policy
+2. Network policy
+3. Data Access policy
+4. Collection
+
+悪い順番:
+1. Collection
+2. policy 作成途中
+=> Collection 作成時点で前提不足になり失敗
+```
+
+**「Collection は動くのに検索できない」とは何か：**
+
+これは特に Data Access policy が足りないときに起きやすいです。
+
+- Collection 自体は作成済み
+- endpoint も見える
+- でも Terraform 実行者や Bedrock KB ロールが index を読めない / 書けない
+
+この状態だと、見た目は「AOSS はある」のに、実際には
+
+- `opensearch_index` の作成が失敗する
+- KB ingestion が失敗する
+- 検索時に `AccessDenied` に近いエラーになる
+
+という半端な状態になります。
+
+このリポジトリでは、それを避けるために Data Access policy へ次の principal を最初から入れています。
+
+- `data.aws_caller_identity.current.arn`
+  - Terraform を実行して index を作る主体
+- `aws_iam_role.kb.arn`
+  - Bedrock Knowledge Base がベクトルを書き込み・検索する主体
+
+最初から 3 種類の policy をそろえ、`depends_on` で順番も固定するのが安全です。
 
 ---
 
@@ -1329,6 +1396,28 @@ def simple_retrieve(chunks, query, k=4):
 「VPN 接続方法」という質問なら「VPN」「接続」「方法」という単語がチャンクに何個含まれるかを数えるだけです。実装は 10行ですが、同義語や文脈は無視されます。
 
 KB モードでは Titan Embed v2 が文章全体の「意味」をベクトル化するため、「VPN をつなぐ手順」のような言い換えでも正しく検索できます。MVP モードと KB モードの違いは、「文字のマッチング」か「意味のマッチング」かという根本的な差があります。
+
+この差は、実際に質問を変えてみると体感しやすいです。
+
+```text
+言いたいことは同じだが、書き方が違う例:
+
+- 「CrashLoopBackOff とは？」
+- 「Pod が再起動を繰り返す原因は？」
+
+- 「VPN 接続方法を教えて」
+- 「VPN をつなぐ手順を知りたい」
+```
+
+キーワード検索では、文字がそのまま一致しないとヒットしにくくなります。
+一方でベクトル検索では、単語が完全一致していなくても「意味が近い」と判定された文書を拾いやすくなります。
+
+このプロジェクトでは、
+
+- `MVP` モード: 単語一致ベースの簡易検索
+- `KB` モード: Bedrock Knowledge Base + ベクトル検索
+
+を両方試せるため、「AI の検索」が単なる文字列一致ではなく、意味の近さを使う検索だと比較しながら理解できます。
 
 ---
 
