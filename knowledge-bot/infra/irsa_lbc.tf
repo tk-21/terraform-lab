@@ -1,6 +1,5 @@
-# AWS公式推奨のポリシーJSONはバージョンで更新されることがあるので
-# 実運用は “公式手順の最新” を参照するのが安全です :contentReference[oaicite:5]{index=5}
-# ここでは「最低限動く」ために、install手順に沿って作る前提で割り切ります。
+# AWS Load Balancer Controller 用の IRSA ロールとポリシーを定義する。
+# 実運用では IAM ポリシー JSON を AWS 公式手順の最新状態に合わせて更新する前提。
 
 data "aws_iam_policy_document" "lbc_assume" {
   count = var.enable_lbc ? 1 : 0
@@ -28,8 +27,7 @@ resource "aws_iam_role" "lbc" {
   tags               = local.tags
 }
 
-# ポリシーはAWS公式ドキュメント／公式手順のJSONを貼り付け運用が鉄板（更新追従しやすい）
-# 例：re:Postや公式ガイドに「IAM policyを作れ」と明記 :contentReference[oaicite:6]{index=6}
+# ポリシー本体は別ファイルに分離し、AWS 公式 JSON と差し替えやすくしている。
 resource "aws_iam_policy" "lbc" {
   count = var.enable_lbc ? 1 : 0
 

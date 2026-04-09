@@ -4,12 +4,15 @@ from typing import List, Tuple, Dict
 
 import boto3
 
+
 def _short_source_from_s3_uri(uri: str) -> str:
-    # s3://bucket/docs/vpn_setup.md -> docs/vpn_setup.md
+    # KBの検索結果で返るS3 URIを、画面表示しやすい短いパスに整える。
     m = re.match(r"^s3://[^/]+/(.+)$", uri)
     return m.group(1) if m else uri
 
+
 def retrieve(region: str, kb_id: str, query: str, k: int = 3) -> List[Dict]:
+    # Bedrock Knowledge Base から関連ドキュメント断片を取得する。
     client = boto3.client("bedrock-agent-runtime", region_name=region)
 
     resp = client.retrieve(
@@ -22,6 +25,7 @@ def retrieve(region: str, kb_id: str, query: str, k: int = 3) -> List[Dict]:
 
     results = []
     for r in resp.get("retrievalResults", []):
+        # 取得本文に加えて、出典URIとスコアを後段で使いやすい形にそろえる。
         text = r.get("content", {}).get("text", "")
         uri = (
             r.get("location", {})
@@ -37,13 +41,14 @@ def retrieve(region: str, kb_id: str, query: str, k: int = 3) -> List[Dict]:
         })
     return results
 
+
 def generate_with_claude(region: str, model_id: str, system: str, question: str, snippets: List[Dict]) -> str:
     """
     model_id は例: anthropic.claude-3-5-sonnet-20240620-v1:0
     """
     client = boto3.client("bedrock-runtime", region_name=region)
 
-    # デモは「参照」を明示すると説得力が出る
+    # 検索結果ごとに参照番号を付け、回答の根拠を示しやすくする。
     context_lines = []
     for i, s in enumerate(snippets, start=1):
         context_lines.append(f"[{i}] source: {s['source']}\n{s['text']}")
@@ -76,6 +81,7 @@ def generate_with_claude(region: str, model_id: str, system: str, question: str,
     payload = json.loads(resp["body"].read())
     return payload["content"][0]["text"]
 
+
 def retrieve_and_generate(region: str, kb_id: str, _kb_model_arn_unused: str, question: str) -> Tuple[str, List[Dict]]:
     """
     既存の main.py に合わせて引数は残す（KB_MODEL_ARN は今回は使わない）。
@@ -88,7 +94,7 @@ def retrieve_and_generate(region: str, kb_id: str, _kb_model_arn_unused: str, qu
             []
         )
 
-    # 参照（重複は除く）
+    # 同じ出典が重複する場合は、引用一覧では1件にまとめる。
     citations = []
     seen = set()
     for i, h in enumerate(hits, start=1):
@@ -98,9 +104,7 @@ def retrieve_and_generate(region: str, kb_id: str, _kb_model_arn_unused: str, qu
         seen.add(key)
         citations.append({"id": i, "source": h["source"], "uri": h["source_uri"], "score": h["score"]})
 
-    # 生成（Bedrock RuntimeでClaudeを叩く）
-    # main.py の MODEL_ID を環境変数で統一しているなら、ここでは固定せず main 側で渡すのが理想。
-    # でも main.py を変えたくない場合は、環境変数から読む形にしてもOK。
+    # 回答生成モデルは main.py と同じ環境変数を見てそろえる。
     import os
     from .prompts import SYSTEM
     model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")

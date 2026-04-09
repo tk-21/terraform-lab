@@ -1,3 +1,4 @@
+# FastAPI アプリ本体の Pod 数、環境変数、ヘルスチェックを定義する。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,11 +17,13 @@ spec:
     metadata:
       labels: { app: knowledgebot }
     spec:
+      # Pod はこの ServiceAccount 経由で Bedrock への IAM 権限を受け取る。
       serviceAccountName: knowledgebot-sa
       containers:
         - name: api
           image: REPLACE_WITH_ECR_IMAGE
           ports: [{ containerPort: 8080 }]
+          # 非機密値は ConfigMap、必要に応じた補助値だけ Secret から注入する。
           env:
             - name: AWS_REGION
               valueFrom:
@@ -49,6 +52,7 @@ spec:
                   key: KB_MODEL_ARN
                   optional: true
           resources:
+            # 小さめに起動しつつ、推論時の余裕を limits で確保する。
             requests:
               cpu: 200m
               memory: 256Mi
@@ -56,6 +60,7 @@ spec:
               cpu: 1000m
               memory: 1024Mi
           startupProbe:
+            # 起動直後の失敗判定を緩めにして、アプリ初期化中の再起動を防ぐ。
             httpGet: { path: /healthz, port: 8080 }
             failureThreshold: 30
             periodSeconds: 5

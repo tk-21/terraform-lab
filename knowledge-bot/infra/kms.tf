@@ -1,5 +1,6 @@
+# ナレッジ用 S3 バケット暗号化に使う KMS キーと、その利用ポリシーを定義する。
 data "aws_iam_policy_document" "kms_knowledge" {
-  # 1) 管理者（アカウントroot）にフル権限
+  # アカウント管理者は引き続きキーをフル管理できるようにする。
   statement {
     sid     = "EnableRootPermissions"
     effect  = "Allow"
@@ -11,7 +12,7 @@ data "aws_iam_policy_document" "kms_knowledge" {
     resources = ["*"]
   }
 
-  # 2) ★追加：Bedrock KB ロールに復号権限（S3上の暗号化オブジェクト読取りに必要）
+  # Bedrock KB ロールには、S3 上の暗号化済みドキュメントを読むための権限だけを渡す。
   statement {
     sid    = "AllowKBRoleDecrypt"
     effect = "Allow"
@@ -25,7 +26,7 @@ data "aws_iam_policy_document" "kms_knowledge" {
     ]
     resources = ["*"]
 
-    # 任意：S3経由の復号に限定したい場合（より安全）
+    # S3 経由の利用に限定し、他サービスからの復号を防ぐ。
     condition {
       test     = "StringEquals"
       variable = "kms:ViaService"

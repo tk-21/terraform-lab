@@ -1,3 +1,4 @@
+# Cluster 内で Deployment の Pod を 80 番ポートで公開する。
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,3 +1,4 @@
+# Terraform 本体と各 provider の対応バージョンを固定して再現性を保つ。
 terraform {
   required_version = ">= 1.6.0"
 

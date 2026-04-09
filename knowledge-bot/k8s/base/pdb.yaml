@@ -1,3 +1,4 @@
+# ノード更新や退避時でも最低 1 Pod は残すようにする。
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

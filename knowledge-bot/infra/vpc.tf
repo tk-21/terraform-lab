@@ -1,3 +1,4 @@
+# VPC は 2AZ 構成で作成し、public は ALB/NAT、private は EKS ノード用に使う。
 data "aws_availability_zones" "available" {}
 
 module "vpc" {

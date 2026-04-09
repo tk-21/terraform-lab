@@ -1,3 +1,4 @@
+# 内部 ALB のアクセスログを保管するための S3 バケット。
 resource "aws_s3_bucket" "alb_logs" {
   bucket = "${local.name}-${data.aws_caller_identity.current.account_id}-${var.region}-alb-logs"
   tags   = local.tags

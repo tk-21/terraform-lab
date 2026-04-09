@@ -15,6 +15,7 @@ from .prompts import SYSTEM
 from .rag_kb import retrieve_and_generate
 from .rag_mvp import simple_retrieve
 
+# アプリ全体で使う実行モードやBedrock接続先を環境変数から読み込む。
 REGION = os.getenv("AWS_REGION", "ap-northeast-1")
 MODE = os.getenv("RAG_MODE", "MVP")  # MVP or KB
 MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
@@ -31,6 +32,7 @@ CHUNKS = [
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
+# FastAPI本体と、静的ファイル・テンプレートの公開設定。
 app = FastAPI(title="Knowledge Bot")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -56,6 +58,7 @@ def index(request: Request):
 
 
 def invoke_model_claude(question: str, context: str) -> str:
+    # 検索で集めた文脈をClaudeに渡し、最終回答だけを生成する。
     try:
         client = boto3.client("bedrock-runtime", region_name=REGION)
         body = {
@@ -99,12 +102,14 @@ def invoke_model_claude(question: str, context: str) -> str:
 @app.post("/ask")
 def ask(req: AskReq):
     try:
+        # KBモードでは Bedrock Knowledge Bases を直接検索して回答を作る。
         if MODE.upper() == "KB":
             if not KB_ID:
                 return {"answer": "KBモード設定が不足しています（KNOWLEDGE_BASE_ID）", "citations": []}
             text, cites = retrieve_and_generate(REGION, KB_ID, KB_MODEL_ARN, req.question)
             return {"answer": text, "citations": cites}
 
+        # MVPモードではローカルの簡易チャンク検索結果を文脈として使う。
         hits = simple_retrieve(CHUNKS, req.question, k=4)
         if not hits:
             return {

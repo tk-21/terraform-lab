@@ -1,4 +1,4 @@
-# KB用IAM Role（BedrockがS3/OSにアクセスするため）
+# Bedrock Knowledge Base が S3 と OpenSearch Serverless を触るための IAM を定義する。
 data "aws_iam_policy_document" "kb_assume" {
   statement {
     effect  = "Allow"
@@ -40,7 +40,7 @@ data "aws_iam_policy_document" "kb_policy" {
     ]
   }
 
-  # ★追加：S3(KMS暗号化)を読めるようにする
+  # KMS で暗号化した S3 原本も取り込めるようにする。
   statement {
     effect = "Allow"
     actions = [
@@ -65,6 +65,7 @@ resource "aws_iam_role_policy_attachment" "kb" {
 }
 
 resource "aws_bedrockagent_knowledge_base" "this" {
+  # 埋め込みモデルは Titan、ベクトル保存先は OpenSearch Serverless を使う。
   name     = "${local.name}-kb"
   role_arn = aws_iam_role.kb.arn
 
@@ -96,6 +97,7 @@ resource "aws_bedrockagent_knowledge_base" "this" {
 }
 
 resource "aws_bedrockagent_data_source" "s3" {
+  # KB の取り込み元として knowledge バケット全体を紐付ける。
   knowledge_base_id = aws_bedrockagent_knowledge_base.this.id
   name              = "${local.name}-s3"
 

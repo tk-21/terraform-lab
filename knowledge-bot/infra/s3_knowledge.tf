@@ -1,3 +1,4 @@
+# Knowledge Base の原本ドキュメントを置く S3 バケットを保護付きで作成する。
 resource "aws_s3_bucket" "knowledge" {
   bucket = "${local.name}-${data.aws_caller_identity.current.account_id}-${var.region}-knowledge"
   tags   = local.tags

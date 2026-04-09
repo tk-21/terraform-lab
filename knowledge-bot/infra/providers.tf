@@ -1,7 +1,9 @@
+# Terraform から AWS/EKS/OpenSearch を操作するための provider 設定。
 provider "aws" {
   region = var.region
 }
 
+# Helm/Kubernetes provider 用に、EKS クラスタへ接続する一時トークンを取得する。
 data "aws_eks_cluster_auth" "lbc" {
   count = var.enable_lbc ? 1 : 0
   name  = module.eks.cluster_name

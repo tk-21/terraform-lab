@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# docs 配下のナレッジ原本を S3 の knowledge バケットへ同期する。
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DOCS_DIR="${ROOT_DIR}/docs"
 
-# default: keep remote files (no delete)
+# デフォルトでは S3 側の既存ファイルは消さずに同期する。
 DELETE_FLAG="false"
 
+# 任意で docs ディレクトリ差し替えと --delete を受け付ける。
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --delete)
@@ -40,6 +42,7 @@ if [[ ! -d "$DOCS_DIR" ]]; then
 fi
 
 cd "$ROOT_DIR/infra"
+# 同期先バケット名とリージョンは Terraform outputs を正とする。
 BUCKET="$(terraform output -raw knowledge_bucket)"
 REGION="$(terraform output -raw region)"
 
@@ -48,6 +51,7 @@ if [[ -z "$BUCKET" || "$BUCKET" == "null" ]]; then
   exit 1
 fi
 
+# aws s3 sync の引数を組み立てて、必要なら delete を追加する。
 SYNC_ARGS=(s3 sync "$DOCS_DIR" "s3://$BUCKET/docs/" --region "$REGION")
 if [[ "$DELETE_FLAG" == "true" ]]; then
   SYNC_ARGS+=(--delete)

@@ -1,3 +1,4 @@
+# アプリ関連リソースを knowledgebot 名前空間に分離して配置する。
 apiVersion: v1
 kind: Namespace
 metadata:

@@ -1,5 +1,6 @@
 name: terraform
 
+# infra 変更時の Terraform 検証と、本番ブランチ反映時の apply を担当する。
 on:
   pull_request:
     paths:
@@ -19,9 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        # Terraform 関連コマンドはすべて infra 配下で実行する。
         working-directory: infra
 
     steps:
+      # リポジトリ内容を runner に展開する。
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
@@ -45,9 +48,11 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
+        # PR では差分確認だけ行い、実リソース変更はしない。
         if: github.event_name == 'pull_request'
         run: terraform plan -no-color
 
       - name: Terraform Apply
+        # main への push 時だけ自動 apply する。
         if: github.event_name == 'push'
         run: terraform apply -auto-approve

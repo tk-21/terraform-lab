@@ -1,3 +1,4 @@
+# GitHub Actions が AWS にフェデレーションログインするための OIDC と IAM を作る。
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -32,6 +33,7 @@ resource "aws_iam_role" "gha" {
 }
 
 resource "aws_iam_policy" "gha" {
+  # CI で Terraform apply と ECR push を行えるよう、広めの権限をまとめて付与する。
   name = "${local.name}-gha-policy"
   policy = jsonencode({
     Version = "2012-10-17",
