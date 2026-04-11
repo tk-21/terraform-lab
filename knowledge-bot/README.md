@@ -563,6 +563,17 @@ aws --version
 github_repository = "your-org/knowledge-bot"
 ```
 
+初回導入時の推奨値:
+
+```hcl
+enable_lbc         = false
+sso_admin_role_arn = ""
+```
+
+補足:
+- `sso_admin_role_arn` は初回は空文字で開始し、EKS 作成後に正しい `arn:aws:iam::...:role/...` を設定します
+- `assumed-role` 形式ではなく `iam role ARN` を設定してください
+
 ### 1. Terraform 初期化と適用
 
 ```bash
@@ -571,10 +582,15 @@ terraform -chdir=infra validate
 terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve
 ```
 
-補足（LBCを使う場合の推奨順序）:
-1. 初回は `enable_lbc=false` で EKS クラスタ本体を先に作成
+補足（初回導入時の推奨順序）:
+1. 初回は `enable_lbc=false` かつ `sso_admin_role_arn=""` で EKS クラスタ本体を先に作成
 2. `aws eks update-kubeconfig --region ap-northeast-1 --name knowledge-bot-eks` を実行し、`kubectl get ns` が通ることを確認
 3. `enable_lbc=true` に変更して再度 `terraform apply`
+4. 最後に `sso_admin_role_arn` を正しい `arn:aws:iam::...:role/...` に変更して再度 `terraform apply`
+
+この順序を推奨する理由:
+- 初回から LBC と SSO 管理ロール付与を同時に有効化すると、Kubernetes 認証や IAM Role 解決で切り分けが難しくなりやすいため
+- `data.aws_iam_role.sso_admin` で失敗する場合でも、先に EKS 本体の作成を進められるため
 
 ### 2. Terraform 出力値の確認
 
