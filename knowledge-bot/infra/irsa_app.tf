@@ -9,6 +9,17 @@ data "aws_iam_policy_document" "app_bedrock" {
     resources = ["*"]
   }
 
+  # Bedrock Marketplace モデルの初回有効化で必要になる権限。
+  statement {
+    effect = "Allow"
+    actions = [
+      "aws-marketplace:Subscribe",
+      "aws-marketplace:Unsubscribe",
+      "aws-marketplace:ViewSubscriptions"
+    ]
+    resources = ["*"]
+  }
+
   # Knowledge Bases / Agent Runtime を使う場合（RetrieveAndGenerate等）
   statement {
     effect = "Allow"

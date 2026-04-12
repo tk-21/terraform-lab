@@ -17,6 +17,10 @@
 | `vpn_setup.md` | VPN 接続と切り分け | 「VPN 接続方法は？」 |
 | `password_reset.md` | パスワード再設定 | 「パスワードを忘れたときは？」 |
 | `aws_account_access.md` | AWS 利用申請と初回ログイン | 「AWS アカウント申請方法は？」 |
+| `kubernetes_deployment_runbook.md` | Kubernetes デプロイ手順 | 「EKS に新しいイメージを反映する手順は？」 |
+| `eks_ingress_troubleshooting.md` | Ingress / ALB 切り分け | 「Ingress の URL を開いても見えないときは？」 |
+| `terraform_destroy_runbook.md` | Terraform destroy の後片付け | 「destroy で Subnet や VPC が消えないときは？」 |
+| `bedrock_access_troubleshooting.md` | Bedrock モデル利用条件 | 「Bedrock モデルアクセスで失敗するときは？」 |
 | `incident_contact.md` | 障害時の連絡順序 | 「インシデント時の連絡先は？」 |
 | `security_basics.md` | 基本セキュリティルール | 「機密情報の扱いルールは？」 |
 | `device_replacement.md` | 端末交換申請 | 「PC を交換したいときは？」 |
@@ -31,4 +35,5 @@
 
 - `internal_faq.md` は他ドキュメントへの導線として機能します
 - `onboarding.md` は複数の手順書をまたぐ案内役として機能します
+- 技術系ランブックを増やすと、MVP モードでも KB モードでも検証質問の幅を広げやすくなります
 - 実運用では 1 ファイル 1 テーマを意識すると、検索結果の根拠が分かりやすくなります

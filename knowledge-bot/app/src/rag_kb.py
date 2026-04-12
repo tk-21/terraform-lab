@@ -44,7 +44,7 @@ def retrieve(region: str, kb_id: str, query: str, k: int = 3) -> List[Dict]:
 
 def generate_with_claude(region: str, model_id: str, system: str, question: str, snippets: List[Dict]) -> str:
     """
-    model_id は例: anthropic.claude-3-5-sonnet-20240620-v1:0
+    model_id は例: global.anthropic.claude-sonnet-4-20250514-v1:0
     """
     client = boto3.client("bedrock-runtime", region_name=region)
 
@@ -107,7 +107,7 @@ def retrieve_and_generate(region: str, kb_id: str, _kb_model_arn_unused: str, qu
     # 回答生成モデルは main.py と同じ環境変数を見てそろえる。
     import os
     from .prompts import SYSTEM
-    model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+    model_id = os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-20250514-v1:0")
 
     answer = generate_with_claude(region, model_id, SYSTEM, question, hits)
 

@@ -1,6 +1,7 @@
 # デプロイ後に参照したい主要な識別子をまとめて出力する。
 output "region" { value = var.region }
 output "cluster_name" { value = module.eks.cluster_name }
+output "vpc_id" { value = module.vpc.vpc_id }
 
 output "ecr_repo_url" { value = aws_ecr_repository.app.repository_url }
 output "app_image" { value = "${aws_ecr_repository.app.repository_url}:${var.app_image_tag}" }

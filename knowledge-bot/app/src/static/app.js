@@ -8,6 +8,113 @@ const responseMetaEl = document.getElementById("responseMeta");
 const statusBadgeEl = document.getElementById("statusBadge");
 const quickPromptsEl = document.getElementById("quickPrompts");
 
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function renderMarkdown(text) {
+  const normalized = (text || "").replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const html = [];
+  let paragraph = [];
+  let listItems = [];
+  let inCodeBlock = false;
+  let codeLines = [];
+
+  function flushParagraph() {
+    if (paragraph.length === 0) {
+      return;
+    }
+    html.push(`<p>${paragraph.map(renderInlineMarkdown).join("<br>")}</p>`);
+    paragraph = [];
+  }
+
+  function flushList() {
+    if (listItems.length === 0) {
+      return;
+    }
+    html.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    listItems = [];
+  }
+
+  function flushCodeBlock() {
+    if (!inCodeBlock) {
+      return;
+    }
+    html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    inCodeBlock = false;
+    codeLines = [];
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      if (inCodeBlock) {
+        flushCodeBlock();
+      } else {
+        inCodeBlock = true;
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(headingMatch[1].length, 3);
+      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    const listMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (listMatch) {
+      flushParagraph();
+      listItems.push(listMatch[1]);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph();
+  flushList();
+  flushCodeBlock();
+
+  return html.join("");
+}
+
+function setAnswerContent(markdownText) {
+  const text = markdownText || "(回答なし)";
+  answerEl.innerHTML = renderMarkdown(text);
+}
+
 function setStatus(text, busy = false) {
   statusBadgeEl.textContent = text;
   statusBadgeEl.classList.toggle("busy", busy);
@@ -86,7 +193,7 @@ async function submitQuestion() {
     }
 
     const data = await resp.json();
-    answerEl.textContent = data.answer || "(回答なし)";
+    setAnswerContent(data.answer);
     renderCitations(data.citations);
     responseMetaEl.textContent = `updated ${formatTime()}`;
     setStatus("Ready", false);
