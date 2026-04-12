@@ -21,6 +21,14 @@ build-push:
 deploy:
 	./scripts/deploy_k8s.sh
 
+# Terraform destroy 前に、ALB などの依存を生みやすい k8s リソースを先に削除する。
+destroy-prep:
+	./scripts/destroy_prep.sh
+
+# tfvars を指定して Terraform destroy を実行する。
+tf-destroy:
+	cd infra && terraform destroy -var-file=envs/dev.tfvars -auto-approve
+
 # Knowledge Base の再取り込みジョブを開始する。
 kb-ingest:
 	./scripts/kb_ingest.sh

@@ -7,25 +7,38 @@ FastAPI + Amazon Bedrock Knowledge Bases を使った社内ナレッジ Q&A ア�
 
 ```bash
 cd app
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+rm -rf .venv && python3 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 注意:
 - `uvicorn src.main:app ...` は `app/` ディレクトリで実行してください（リポジトリルートで実行すると `ModuleNotFoundError: No module named 'src'` になります）
+- 既存の `.venv` が壊れている場合に備えて、クイックスタートでは `.venv` を作り直す手順にしています
 
 起動後:
 - UI: `http://localhost:8000/`
 - API Docs: `http://localhost:8000/docs`
 
+補足:
+- ローカル `MVP` モードでも最終回答生成には Bedrock Runtime を使うため、モデル推論料金は発生します
+
 KB モードで使う場合は、起動前に以下を設定:
+
+- これは「ローカルでアプリを起動しつつ、検索先は AWS 上の Bedrock Knowledge Base を使う」場合の設定です
+- AWS 上に作成済みの Knowledge Base と `KNOWLEDGE_BASE_ID` が必要です
 
 ```bash
 export RAG_MODE=KB
 export KNOWLEDGE_BASE_ID="<your-kb-id>"
 export AWS_REGION="ap-northeast-1"
-export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
+export BEDROCK_MODEL_ID="global.anthropic.claude-sonnet-4-20250514-v1:0"
 ```
+
+注意:
+- `BEDROCK_MODEL_ID` には Amazon Bedrock の `Active` なモデルを設定してください
+- Claude Sonnet 4 系は、通常の model ID ではなく inference profile ID を指定してください（既定: `global.anthropic.claude-sonnet-4-20250514-v1:0`）
+- `Legacy` モデルは、新規利用や長期間未使用後の再利用で `Access denied` / `ResourceNotFoundException` になる場合があります
+- モデル変更後は、EKS では `make deploy` を再実行して ConfigMap を更新してください
 
 ## 構成
 
@@ -102,6 +115,11 @@ flowchart TD
   BR1 --> R[Answer + citations]
   BR2 --> R
 ```
+
+補足:
+- `MVP` モードは Bedrock を使いますが、Bedrock Knowledge Base は使いません
+- `MVP` はローカル文書をアプリ側で簡易検索し、その結果を Bedrock Runtime に渡して回答生成します
+- `KB` モードは Bedrock Knowledge Base で検索し、その検索結果を使って Bedrock Runtime で回答生成します
 
 ### 3. 変更内容ごとのパイプライン
 
@@ -305,7 +323,7 @@ MVP と KB の違い（検索部分）:
 - 回答生成モデル（生成用）
   - 役割: 検索で得たコンテキストを使って自然文の回答を生成する
   - 利用箇所: アプリの `POST /ask`
-  - 設定値: `BEDROCK_MODEL_ID`（デフォルト: Claude 3.5 Sonnet）
+  - 設定値: `BEDROCK_MODEL_ID`（デフォルト: Claude Sonnet 4 の global inference profile）
 
 ### ナレッジ取り込みフロー（docs -> KB）
 
@@ -393,7 +411,7 @@ sequenceDiagram
 `deploy_k8s.sh` 実行時に使える主な上書き環境変数:
 - `APP_IMAGE`: デプロイするコンテナイメージを強制指定（未指定時は Terraform output `app_image`）
 - `RAG_MODE`: `MVP` / `KB`（未指定時 `MVP`）
-- `BEDROCK_MODEL_ID`: 利用モデルID（未指定時 Claude 3.5 Sonnet）
+- `BEDROCK_MODEL_ID`: 利用モデルID（未指定時 Claude Sonnet 4 の global inference profile）
 - `KB_MODEL_ARN`: `knowledgebot-secrets` に注入する互換用値
 
 内部で実施しているテンプレート置換:
@@ -532,7 +550,10 @@ flowchart LR
 - KB モード利用時: Bedrock Knowledge Base 作成済み
 
 重要:
-- Anthropic モデル（例: Claude 3.5 Sonnet）を使う場合、AWS アカウントで `use case details` 提出が必要です。未提出だと `ResourceNotFoundException` で失敗します。
+- Anthropic モデル（例: Claude Sonnet 4）を使う場合、AWS アカウントで `use case details` 提出が必要です。未提出だと `ResourceNotFoundException` で失敗します。
+- Claude Sonnet 4 系は on-demand の model ID 直指定に対応しない場合があります。`BEDROCK_MODEL_ID` には inference profile ID（既定: `global.anthropic.claude-sonnet-4-20250514-v1:0`）を設定してください。
+- Bedrock 側でモデルが `Legacy` 扱いになっている場合、利用申請済みでも `Access denied` で失敗することがあります。`Model access` または `Model catalog` で `Active` なモデル ID を確認してください。
+- Bedrock Marketplace モデルの初回有効化では、呼び出し元ロールに `aws-marketplace:Subscribe` / `aws-marketplace:ViewSubscriptions` などの権限が必要になる場合があります。
 
 ## 動作確認バージョン（目安）
 
@@ -563,17 +584,6 @@ aws --version
 github_repository = "your-org/knowledge-bot"
 ```
 
-初回導入時の推奨値:
-
-```hcl
-enable_lbc         = false
-sso_admin_role_arn = ""
-```
-
-補足:
-- `sso_admin_role_arn` は初回は空文字で開始し、EKS 作成後に正しい `arn:aws:iam::...:role/...` を設定します
-- `assumed-role` 形式ではなく `iam role ARN` を設定してください
-
 ### 1. Terraform 初期化と適用
 
 ```bash
@@ -582,15 +592,10 @@ terraform -chdir=infra validate
 terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve
 ```
 
-補足（初回導入時の推奨順序）:
-1. 初回は `enable_lbc=false` かつ `sso_admin_role_arn=""` で EKS クラスタ本体を先に作成
+補足（LBCを使う場合の推奨順序）:
+1. 初回は `enable_lbc=false` で EKS クラスタ本体を先に作成
 2. `aws eks update-kubeconfig --region ap-northeast-1 --name knowledge-bot-eks` を実行し、`kubectl get ns` が通ることを確認
 3. `enable_lbc=true` に変更して再度 `terraform apply`
-4. 最後に `sso_admin_role_arn` を正しい `arn:aws:iam::...:role/...` に変更して再度 `terraform apply`
-
-この順序を推奨する理由:
-- 初回から LBC と SSO 管理ロール付与を同時に有効化すると、Kubernetes 認証や IAM Role 解決で切り分けが難しくなりやすいため
-- `data.aws_iam_role.sso_admin` で失敗する場合でも、先に EKS 本体の作成を進められるため
 
 ### 2. Terraform 出力値の確認
 
@@ -616,11 +621,41 @@ make build-push
 ./scripts/build_push_ecr.sh <tag>
 ```
 
+アプリ変更を確実に EKS へ反映したい場合:
+
+```bash
+./scripts/build_push_ecr.sh mvp-fix-1
+APP_IMAGE="<account>.dkr.ecr.<region>.amazonaws.com/knowledge-bot/app:mvp-fix-1" make deploy
+kubectl -n knowledgebot rollout status deploy/knowledgebot
+```
+
+補足:
+- `make build-push` は既定で `:dev` タグを push します
+- 既存の `:dev` タグを上書きしても、Kubernetes が新しいイメージを再取得しない場合があります
+- 変更反映を確実にしたい場合は、毎回ユニークなタグを使って `APP_IMAGE=... make deploy` する運用を推奨します
+
 ### 4. EKS へデプロイ
 
 ```bash
 make deploy
 ```
+
+モードを切り替える場合:
+
+- `MVP` モード: `RAG_MODE=MVP`
+- `KB` モード: `RAG_MODE=KB`
+
+EKS で `MVP` モードに切り替える手順:
+
+```bash
+APP_IMAGE="<account>.dkr.ecr.<region>.amazonaws.com/knowledge-bot/app:<tag>" RAG_MODE=MVP make deploy
+kubectl -n knowledgebot rollout status deploy/knowledgebot
+kubectl -n knowledgebot get configmap knowledgebot-config -o yaml
+```
+
+確認ポイント:
+- `RAG_MODE: MVP`
+- `KNOWLEDGE_BASE_ID` は未使用でも可
 
 KBモードでデプロイする場合:
 
@@ -628,10 +663,33 @@ KBモードでデプロイする場合:
 RAG_MODE=KB make deploy
 ```
 
+EKS で `KB` モードに切り替える手順:
+
+```bash
+APP_IMAGE="<account>.dkr.ecr.<region>.amazonaws.com/knowledge-bot/app:<tag>" \
+RAG_MODE=KB \
+BEDROCK_MODEL_ID="global.anthropic.claude-sonnet-4-20250514-v1:0" \
+make deploy
+kubectl -n knowledgebot rollout status deploy/knowledgebot
+kubectl -n knowledgebot get configmap knowledgebot-config -o yaml
+```
+
+確認ポイント:
+- `RAG_MODE: KB`
+- `KNOWLEDGE_BASE_ID` に値が入っている
+- `BEDROCK_MODEL_ID: global.anthropic.claude-sonnet-4-20250514-v1:0`
+
 CIで作ったイメージを指定してデプロイする場合:
 
 ```bash
 APP_IMAGE="<account>.dkr.ecr.<region>.amazonaws.com/knowledge-bot/app:<tag>" make deploy
+```
+
+MVP モードで特定タグのイメージを反映する場合:
+
+```bash
+APP_IMAGE="<account>.dkr.ecr.<region>.amazonaws.com/knowledge-bot/app:<tag>" RAG_MODE=MVP make deploy
+kubectl -n knowledgebot rollout status deploy/knowledgebot
 ```
 
 ### 5. デプロイ後の状態確認
@@ -669,11 +727,36 @@ make kb-ingest
 ./scripts/kb_ingest.sh --no-wait
 ```
 
-### 7. 本番動作確認（UI/API）
+### 7. internal ALB のまま社内向けに運用する場合
 
-1. Ingress のURLにブラウザでアクセス
-2. UIで質問を送信して回答と引用が返ることを確認
-3. ヘルスチェック: `/healthz`
+`k8s/base/ingress.yaml` は既定で `alb.ingress.kubernetes.io/scheme: internal` のため、インターネット公開ではなく、社内ネットワーク向けの運用に向いています。
+
+構成イメージ:
+- 社内 LAN または VPN からアクセス
+- 社内向け DNS 名を internal ALB に向ける
+- 例: `kb.company.internal`
+- 必要に応じて ALB OIDC 認証またはアプリ側認証を追加
+
+ユーザーのアクセス方法:
+1. 社内ネットワークに接続する
+2. VPN 利用環境なら先に VPN 接続する
+3. 社内 DNS 名または internal ALB の URL にアクセスする
+
+運用時のポイント:
+- `kubectl port-forward` は運用者の確認用であり、一般ユーザー向けのアクセス方法ではありません
+- 社外からも利用させたい場合は、`internet-facing` ALB に変更するか、別途認証付きの公開フロントを用意してください
+- 本番 URL は internal ALB の生 URL ではなく、社内 DNS 名を割り当てる運用を推奨します
+
+### 8. 本番動作確認（UI/API）
+
+1. `kubectl -n knowledgebot get deploy,svc,ingress,pods` と `kubectl -n knowledgebot rollout status deploy/knowledgebot` で Deployment / Service / Ingress / Pod が正常であることを確認
+2. Ingress に到達できるネットワークから確認できる場合は、Ingress のURLにブラウザでアクセス
+3. UIで質問を送信して回答と引用が返ることを確認
+4. ヘルスチェック: `/healthz`
+
+補足:
+- `k8s/base/ingress.yaml` は既定で `alb.ingress.kubernetes.io/scheme: internal` のため、Ingress URL へのブラウザアクセスは VPC 内や VPN 接続時など、到達可能なネットワークからのみ行えます
+- Ingress に直接到達できない場合は、代替として `kubectl -n knowledgebot port-forward svc/knowledgebot 8080:80` を実行し、`http://localhost:8080/` と `http://localhost:8080/healthz` で確認します
 
 API確認例:
 
@@ -683,9 +766,30 @@ curl -s -X POST http://<ingress-host>/ask \
   -d '{"question":"VPN 接続方法を教えて"}'
 ```
 
-### 8. 環境削除（Terraform destroy）
+Ingress に直接到達できない場合の確認例:
+
+```bash
+kubectl -n knowledgebot port-forward svc/knowledgebot 8080:80
+curl -s http://localhost:8080/healthz
+curl -s -X POST http://localhost:8080/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"VPN 接続方法を教えて"}'
+```
+
+### 9. 環境削除（Terraform destroy）
 
 必ず `apply` と同じ `tfvars` を指定して実行します。
+
+推奨手順:
+
+```bash
+make destroy-prep
+make tf-destroy
+```
+
+`destroy-prep` は Kubernetes 側の `Ingress` / `Service` / `Deployment` などを先に削除し、ALB や ENI の依存を減らすための前処理です。
+
+直接実行する場合:
 
 ```bash
 terraform -chdir=infra destroy -var-file=envs/dev.tfvars -auto-approve
@@ -695,6 +799,8 @@ terraform -chdir=infra destroy -var-file=envs/dev.tfvars -auto-approve
 - `terraform destroy` だけで実行すると、変数がデフォルト評価になり、削除漏れや依存残りの原因になります
 - 削除は 10-30分以上かかる場合があります（NAT Gateway / ALB ENI 削除待ち）
 - `destroy` 前に `enable_lbc` などの値を変更しないでください（`apply` 時と同じ `tfvars` のまま実行）
+- `internal` ALB を使っている場合、`Ingress` 由来の ENI が Subnet 削除をブロックすることがあります。`make destroy-prep` を先に実行してください
+- VPC 削除時は Security Group が最後まで残る場合があります。多くは ALB や VPC Endpoint の ENI に紐づいたままなので、`destroy-prep` の出力で残存 ENI / Security Group を確認してください
 
 S3 が `BucketNotEmpty` で失敗する場合（バージョン/削除マーカー含め削除）:
 
@@ -728,7 +834,8 @@ fi
 cd app
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
 ### 2. MVP モードで起動（既定）
@@ -747,7 +854,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 export RAG_MODE=KB
 export KNOWLEDGE_BASE_ID="<your-kb-id>"
 export AWS_REGION="ap-northeast-1"
-export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
+export BEDROCK_MODEL_ID="global.anthropic.claude-sonnet-4-20250514-v1:0"
 
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -841,10 +948,36 @@ github_repository = "your-org/knowledge-bot"
   - `kubectl -n knowledgebot get configmap knowledgebot-config -o yaml`
   - `kubectl -n knowledgebot get secret knowledgebot-secrets -o yaml`
 
+- `Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions`
+  - Bedrock Marketplace モデルの初回有効化に必要な権限が不足しています
+  - アプリ用 IRSA ロールに `aws-marketplace:Subscribe`, `aws-marketplace:Unsubscribe`, `aws-marketplace:ViewSubscriptions` を付与してください
+  - `terraform -chdir=infra apply -var-file=envs/dev.tfvars -auto-approve`
+  - 反映後 2 分ほど待ってから再度 `make deploy` と動作確認を実施してください
+
+- `build-push` / `deploy` 後もアプリ変更が反映されない
+  - `make build-push` は既定で `:dev` タグを push します
+  - 同じタグを再 push しても、Pod が新しいイメージを取り直さない場合があります
+  - `./scripts/build_push_ecr.sh <new-tag>` でユニークタグを push し、`APP_IMAGE="...:<new-tag>" make deploy` を実行してください
+  - `kubectl -n knowledgebot rollout status deploy/knowledgebot`
+  - `kubectl -n knowledgebot get deploy knowledgebot -o jsonpath='{.spec.template.spec.containers[0].image}'`
+
+- `Access denied. This Model is marked by provider as Legacy ... Please upgrade to an active model on Amazon Bedrock`
+  - 現在の `BEDROCK_MODEL_ID` が `Legacy` モデルです
+  - AWS コンソールの Bedrock `Model access` または `Model catalog` で `Active` なモデル ID を確認してください
+  - `BEDROCK_MODEL_ID` を更新して再デプロイしてください
+  - `kubectl -n knowledgebot get configmap knowledgebot-config -o yaml`
+
+- `Invocation of model ID ... with on-demand throughput isn’t supported`
+  - 現在の `BEDROCK_MODEL_ID` に on-demand 非対応の model ID を指定しています
+  - Claude Sonnet 4 系では inference profile ID を指定してください
+  - 既定値は `global.anthropic.claude-sonnet-4-20250514-v1:0` です
+  - `kubectl -n knowledgebot get configmap knowledgebot-config -o yaml`
+
 - Ingress が作成されない / ADDRESS が空のまま
   - `kubectl -n knowledgebot describe ingress knowledgebot`
   - `kubectl -n kube-system get pods | grep -i aws-load-balancer-controller`
   - `kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=100`
+  - `k8s/base/ingress.yaml` が `alb.ingress.kubernetes.io/scheme: internal` の場合、ALB 作成後も外部ブラウザからは直接見えません。必要に応じて `kubectl port-forward` でアプリ疎通を確認してください
 
 - KB ingestion が失敗する
   - `./scripts/kb_ingest.sh --no-wait` で JOB ID を取得
@@ -852,9 +985,11 @@ github_repository = "your-org/knowledge-bot"
   - `./scripts/upload_knowledge.sh --delete` 後に再実行
 
 - `terraform destroy` で止まる（S3/ECR/Subnet）
+  - まず `make destroy-prep` を実行し、Kubernetes 側の `Ingress` / `Service` / `Deployment` を削除する
   - `BucketNotEmpty`: バージョン/削除マーカーを含めてS3を空にする
-  - `RepositoryNotEmpty`: ECRイメージ（manifest list含む）を先に削除する
+  - `RepositoryNotEmpty`: 現在は `aws_ecr_repository.app.force_delete = true` を有効化しているが、既存 state で残る場合は ECRイメージ（manifest list含む）を先に削除する
   - `DependencyViolation (subnet)`: `describe-network-interfaces` で残存ENI（多くはALB）を特定して削除する
+  - `DependencyViolation (vpc)`: Security Group が残っていることがあります。多くは ALB / VPC Endpoint の ENI に紐づいているため、まず ENI 側の削除完了を待ってください
 
 ## GitHub Actions
 

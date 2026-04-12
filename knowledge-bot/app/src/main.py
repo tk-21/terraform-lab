@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -18,25 +19,85 @@ from .rag_mvp import simple_retrieve
 # アプリ全体で使う実行モードやBedrock接続先を環境変数から読み込む。
 REGION = os.getenv("AWS_REGION", "ap-northeast-1")
 MODE = os.getenv("RAG_MODE", "MVP")  # MVP or KB
-MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-20250514-v1:0")
 KB_ID = os.getenv("KNOWLEDGE_BASE_ID", "")
 KB_MODEL_ARN = os.getenv(
     "KB_MODEL_ARN", ""
-)  # 例: arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0
-
-# MVP用ダミーチャンク（発表時は docs/ からロードでもOK）
-CHUNKS = [
-    {"source": "Wiki:VPN", "section": "接続方法", "text": "VPNは…（例）"},
-    {"source": "Runbook:障害対応", "section": "一次切り分け", "text": "障害時は…（例）"},
-    {"source": "規程:就業", "section": "休暇", "text": "有給は…（例）"},
-]
+)  # 例: global.anthropic.claude-sonnet-4-20250514-v1:0
 
 BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parents[1]
+SAMPLE_KNOWLEDGE_DIR = REPO_ROOT / "docs" / "sample_knowledge"
 # FastAPI本体と、静的ファイル・テンプレートの公開設定。
 app = FastAPI(title="Knowledge Bot")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+
+
+def _split_markdown_sections(markdown_text: str) -> list[dict[str, str]]:
+    title = ""
+    current_section = ""
+    body_lines: list[str] = []
+    chunks: list[dict[str, str]] = []
+
+    def flush() -> None:
+        nonlocal body_lines
+        text = "\n".join(line.strip() for line in body_lines if line.strip()).strip()
+        if text:
+            chunks.append(
+                {
+                    "source": title or "sample_knowledge",
+                    "section": current_section or "本文",
+                    "text": text,
+                }
+            )
+        body_lines = []
+
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            body_lines.append("")
+            continue
+
+        heading = re.match(r"^(#{1,3})\s+(.*)$", line)
+        if heading:
+            level = len(heading.group(1))
+            heading_text = heading.group(2).strip()
+            if level == 1 and not title:
+                title = heading_text
+                current_section = "概要"
+            else:
+                flush()
+                current_section = heading_text
+            continue
+
+        body_lines.append(raw_line)
+
+    flush()
+    return chunks
+
+
+def load_mvp_chunks() -> list[dict[str, str]]:
+    chunks: list[dict[str, str]] = []
+    if SAMPLE_KNOWLEDGE_DIR.exists():
+        for path in sorted(SAMPLE_KNOWLEDGE_DIR.glob("*.md")):
+            if path.name.lower() == "readme.md":
+                continue
+            text = path.read_text(encoding="utf-8")
+            chunks.extend(_split_markdown_sections(text))
+
+    if chunks:
+        return chunks
+
+    return [
+        {"source": "Wiki:VPN", "section": "接続方法", "text": "VPNは…（例）"},
+        {"source": "Runbook:障害対応", "section": "一次切り分け", "text": "障害時は…（例）"},
+        {"source": "規程:就業", "section": "休暇", "text": "有給は…（例）"},
+    ]
+
+
+CHUNKS = load_mvp_chunks()
 
 
 class AskReq(BaseModel):

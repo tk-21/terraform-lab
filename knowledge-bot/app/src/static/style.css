@@ -147,22 +147,56 @@ code {
   color: #4c5d75;
 }
 
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.prompt-panel {
   margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.prompt-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 11px 14px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #243952;
+}
+
+.prompt-summary::-webkit-details-marker {
+  display: none;
+}
+
+.prompt-summary::after {
+  content: "+";
+  float: right;
+  color: #52709a;
+  font-size: 1rem;
+}
+
+.prompt-panel[open] .prompt-summary::after {
+  content: "-";
+}
+
+.chips {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0 12px 12px;
 }
 
 .chip {
   border: 1px solid #d7e4f7;
   background: #f5f9ff;
   color: #1f3b61;
-  border-radius: 999px;
-  padding: 6px 10px;
+  border-radius: 12px;
+  padding: 9px 10px;
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
+  line-height: 1.35;
+  text-align: left;
 }
 
 .chip:hover {
@@ -234,12 +268,54 @@ textarea:focus {
 
 .result {
   min-height: 236px;
-  white-space: pre-wrap;
   line-height: 1.72;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: linear-gradient(180deg, #fafcff, #f4f8fd);
   padding: 14px;
+}
+
+.result h1,
+.result h2,
+.result h3 {
+  margin: 0 0 12px;
+  line-height: 1.35;
+}
+
+.result h1 { font-size: 1.28rem; }
+.result h2 { font-size: 1.12rem; }
+.result h3 { font-size: 1rem; }
+
+.result p {
+  margin: 0 0 12px;
+}
+
+.result ul {
+  margin: 0 0 12px 1.2rem;
+  padding: 0;
+}
+
+.result li + li {
+  margin-top: 4px;
+}
+
+.result pre {
+  margin: 0 0 12px;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid #d5e2fa;
+  border-radius: 10px;
+  background: #eef4ff;
+}
+
+.result pre code {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.result > :last-child {
+  margin-bottom: 0;
 }
 
 .error {
@@ -307,7 +383,17 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .chips {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .result {
     min-height: 140px;
+  }
+}
+
+@media (max-width: 560px) {
+  .chips {
+    grid-template-columns: 1fr;
   }
 }

@@ -17,7 +17,7 @@ ALB_LOG_BUCKET="$(tf alb_logs_bucket)"
 # KB (optional)
 KB_ID="$(tf knowledge_base_id || true)"
 RAG_MODE="${RAG_MODE:-MVP}"
-MODEL_ID="${BEDROCK_MODEL_ID:-anthropic.claude-3-5-sonnet-20240620-v1:0}"
+MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-20250514-v1:0}"
 KB_MODEL_ARN="${KB_MODEL_ARN:-}"
 
 echo "[*] Update kubeconfig..."

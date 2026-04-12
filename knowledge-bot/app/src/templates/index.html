@@ -17,8 +17,8 @@
           <span class="pill">KNOWLEDGE ASSISTANT</span>
           <span class="status" id="statusBadge">Ready</span>
         </div>
-        <h1>社内ナレッジに、素早くアクセス</h1>
-        <p class="sub">質問を送信すると <code>/ask</code> API の回答と引用元を即時表示します。</p>
+        <h1>必要な答えへ、最短で。</h1>
+        <p class="sub">質問を送信すると <code>/ask</code> API の回答と引用元をその場で確認できます。</p>
       </header>
 
       <div class="grid">
@@ -28,14 +28,20 @@
             <span class="mono" id="charCount">0 chars</span>
           </div>
 
-          <div class="chips" id="quickPrompts">
-            <button type="button" class="chip" data-prompt="VPN の接続方法を教えて">VPN 接続</button>
-            <button type="button" class="chip" data-prompt="パスワードリセットの手順を教えて">パスワードリセット</button>
-            <button type="button" class="chip" data-prompt="オンボーディングの初日タスクは？">オンボーディング</button>
-          </div>
+          <details class="prompt-panel">
+            <summary class="prompt-summary">おすすめ質問</summary>
+            <div class="chips" id="quickPrompts">
+              <button type="button" class="chip" data-prompt="EKS に新しいイメージを反映する手順は？">EKS デプロイ</button>
+              <button type="button" class="chip" data-prompt="Ingress の URL を開いても表示されないときは？">Ingress 切り分け</button>
+              <button type="button" class="chip" data-prompt="terraform destroy で VPC が消えないときは？">destroy 対応</button>
+              <button type="button" class="chip" data-prompt="Bedrock モデルアクセスで失敗するときは？">Bedrock 権限</button>
+              <button type="button" class="chip" data-prompt="internal ALB だと利用者はどうやってアクセスする？">internal ALB</button>
+              <button type="button" class="chip" data-prompt="MVP モードと KB モードの違いは？">モード比較</button>
+            </div>
+          </details>
 
           <label for="question">問い合わせ内容</label>
-          <textarea id="question" placeholder="例: VPN の接続方法を教えて"></textarea>
+          <textarea id="question" placeholder="例: EKS に新しいイメージを反映する手順は？"></textarea>
           <div class="actions">
             <button id="askBtn">送信する</button>
             <span class="hint">Ctrl+Enter / Cmd+Enter で送信</span>

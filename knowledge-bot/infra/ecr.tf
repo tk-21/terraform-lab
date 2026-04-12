@@ -1,6 +1,8 @@
 # アプリイメージの保存先 ECR と、古いイメージ整理ポリシーを管理する。
 resource "aws_ecr_repository" "app" {
-  name = "${local.name}/app"
+  name         = "${local.name}/app"
+  force_delete = true
+
   image_scanning_configuration { scan_on_push = true }
   tags = local.tags
 }
