@@ -1,0 +1,425 @@
+name: CD
+
+# main ブランチへのマージ（push）でトリガーする。
+# ジョブの依存関係（全て直列実行）:
+#   terraform-apply → deploy-lambda → integration-test → promote-or-rollback
+# 各ジョブが成功した場合のみ次のジョブへ進む（promote-or-rollback は if: always() で常に実行）。
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_VERSION: "~1.7"
+  PYTHON_VERSION: "3.12"
+  # カナリアデプロイ対象の Lambda 関数名（スペース区切り）
+  LAMBDA_FUNCTIONS: "sep-dev-ingestor sep-dev-transformer sep-dev-aggregator sep-dev-dlq-handler"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # 1. Terraform Apply（インフラの変更を適用）
+  # main マージ後にインフラ変更を自動適用する。
+  # CI の terraform-plan とは独立して再度 plan を実行することで、
+  # CI から apply までの時間差によるドリフトを防ぐ。
+  # 適用結果を GitHub Step Summary に記録し、変更履歴として残す。
+  # ────────────────────────────────────────────────────────────────────
+  terraform-apply:
+    name: "Terraform: Apply (dev)"
+    runs-on: ubuntu-latest
+    # GitHub Environment のブランチ保護・承認ルールで追加の安全制御を設定できる
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 認証（OIDC · アクセスキー不使用）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sep-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-CD-Apply-${{ github.run_id }}
+
+      - name: Terraform ${{ env.TF_VERSION }} セットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "terraform init（S3 バックエンド接続）"
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=sep-tfstate-${{ secrets.AWS_ACCOUNT_ID }}" \
+            -backend-config="dynamodb_table=sep-tfstate-lock" \
+            -backend-config="kms_key_id=alias/sep-tfstate-key" \
+            -input=false \
+            -reconfigure
+
+      # apply 用の plan ファイルを生成する。
+      # CI の plan ファイルをアーティファクト経由で再利用しないのは、
+      # CI と CD の間に別の commit が push される可能性があるためリスク回避。
+      - name: "terraform plan（apply 用 tfplan 生成）"
+        working-directory: terraform/environments/dev
+        run: |
+          terraform plan \
+            -var="account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+            -var="alert_email=${{ vars.ALERT_EMAIL || 'ops@example.com' }}" \
+            -no-color \
+            -out=tfplan \
+            2>&1 | tee plan.txt
+
+      # -auto-approve: tfplan ファイルを使用するため対話確認は不要
+      - name: "terraform apply -auto-approve"
+        working-directory: terraform/environments/dev
+        run: |
+          terraform apply -auto-approve tfplan 2>&1 | tee apply.txt
+
+      # Step Summary: apply 結果を GitHub Actions の Summary ページに記録する。
+      # コミット・実行者・タイムスタンプを残し、変更履歴として活用できるようにする。
+      - name: GitHub Step Summary に apply 結果を記録
+        if: always()
+        working-directory: terraform/environments/dev
+        run: |
+          {
+            echo "## Terraform Apply — dev 環境"
+            echo ""
+            echo "| 項目 | 値 |"
+            echo "|---|---|"
+            echo "| 環境 | \`dev\` |"
+            echo "| コミット | \`${{ github.sha }}\` |"
+            echo "| コミットメッセージ | ${{ github.event.head_commit.message }} |"
+            echo "| 実行者 | @${{ github.actor }} |"
+            echo "| タイムスタンプ | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |"
+            echo ""
+            echo "### Apply サマリー"
+            echo '```'
+            grep -E 'Plan:|Apply complete|Error:|Warning:' apply.txt || echo "(サマリー行なし)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 2. Lambda デプロイ（カナリア 10%）
+  # terraform apply でインフラを更新した後、Lambda 関数のコードを更新する。
+  # 全関数で同一の src/ zip を使用し、S3 経由でデプロイする。
+  # デプロイ手順:
+  #   1. src/ を zip 化して S3 にアップロード
+  #   2. lambda update-function-code でコードを更新
+  #   3. publish-version で新バージョン番号を発行（immutable）
+  #   4. live エイリアスに 10% カナリアウェイトを設定
+  #      → 安定版 90% + 新バージョン 10% のトラフィック分散
+  # バージョン情報（stable/new）を versions.json で artifacts に保存する。
+  # ────────────────────────────────────────────────────────────────────
+  deploy-lambda:
+    name: "Lambda: Deploy (Canary 10%)"
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 認証（OIDC · アクセスキー不使用）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sep-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-CD-Deploy-${{ github.run_id }}
+
+      # 全 Lambda 関数共通のデプロイパッケージを作成する。
+      # src/ 全体を zip 化することで shared/ モジュールが各 Lambda に含まれる
+      # （lambda-function モジュールの設計方針と一致）。
+      - name: Lambda デプロイパッケージ作成（src/ → /tmp/lambda-package.zip）
+        run: |
+          cd src
+          zip -r /tmp/lambda-package.zip . --exclude="**/__pycache__/*" --exclude="**/*.pyc"
+          echo "パッケージサイズ: $(du -sh /tmp/lambda-package.zip | cut -f1)"
+
+      # 各 Lambda 関数を順番にデプロイしてカナリア設定を行う。
+      # バージョン情報は versions.json に保存し、promote-or-rollback ジョブで使用する。
+      - name: 各 Lambda 関数デプロイ（S3 → update-code → publish → canary alias）
+        id: deploy
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID }}"
+          ARTIFACTS_BUCKET="sep-artifacts-${ACCOUNT_ID}"
+          VERSIONS_JSON="{}"
+
+          for FUNCTION_NAME in ${{ env.LAMBDA_FUNCTIONS }}; do
+            echo "━━━ $FUNCTION_NAME ━━━"
+            S3_KEY="lambda-packages/${FUNCTION_NAME}/package.zip"
+
+            # ─── Step 1: S3 にパッケージをアップロード ───────────────
+            echo "  [1/4] S3 アップロード: s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
+            aws s3 cp /tmp/lambda-package.zip "s3://${ARTIFACTS_BUCKET}/${S3_KEY}" \
+              --no-progress
+
+            # ─── Step 2: ロールバック先（安定バージョン）を記録 ───────
+            # live エイリアスが現在指しているバージョンを取得する。
+            # ロールバック時にこのバージョンに戻す。
+            STABLE_VERSION=$(aws lambda get-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name live \
+              --query FunctionVersion \
+              --output text)
+            echo "  [2/4] 安定バージョン: v${STABLE_VERSION}"
+
+            # ─── Step 3: コードを更新して新バージョンを発行 ────────────
+            # update-function-code: S3 から新しいコードを取得して関数を更新する
+            # --no-publish: 非同期更新を開始する（バージョン発行は次のコマンドで行う）
+            echo "  [3/4] コード更新中..."
+            aws lambda update-function-code \
+              --function-name "$FUNCTION_NAME" \
+              --s3-bucket "$ARTIFACTS_BUCKET" \
+              --s3-key "$S3_KEY" \
+              --no-cli-pager \
+              --no-publish \
+              > /dev/null
+
+            # 非同期更新の完了を待機する（最大 5 分）。
+            # 更新完了前に publish-version を実行すると古いコードが発行される。
+            aws lambda wait function-updated \
+              --function-name "$FUNCTION_NAME"
+
+            # publish-version: 現在のコードを immutable なバージョンとして発行する。
+            # 一度発行したバージョンのコードは変更できないため、ロールバックが確実になる。
+            NEW_VERSION=$(aws lambda publish-version \
+              --function-name "$FUNCTION_NAME" \
+              --description "Deployed by GitHub Actions: ${{ github.sha }}" \
+              --query Version \
+              --output text)
+            echo "  [3/4] 新バージョン発行: v${NEW_VERSION}"
+
+            # ─── Step 4: live エイリアスにカナリアウェイトを設定 ───────
+            # FunctionVersion（安定版）に 90% のトラフィックを維持しつつ、
+            # AdditionalVersionWeights（新バージョン）に 10% を流す。
+            # 統合テスト成功後に promote-or-rollback ジョブで 100% に切り替える。
+            echo "  [4/4] カナリア設定: v${STABLE_VERSION}(90%) ← → v${NEW_VERSION}(10%)"
+            aws lambda update-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name live \
+              --function-version "$STABLE_VERSION" \
+              --routing-config "{\"AdditionalVersionWeights\":{\"${NEW_VERSION}\": 0.1}}" \
+              > /dev/null
+
+            # バージョン情報を JSON に追記する（jq が必要: ubuntu-latest に標準搭載）
+            VERSIONS_JSON=$(echo "$VERSIONS_JSON" | jq \
+              --arg fn "$FUNCTION_NAME" \
+              --arg sv "$STABLE_VERSION" \
+              --arg nv "$NEW_VERSION" \
+              '.[$fn] = {"stable": $sv, "new": $nv}')
+          done
+
+          echo ""
+          echo "=== デプロイ完了 ==="
+          echo "$VERSIONS_JSON" | jq .
+
+          # promote-or-rollback ジョブで使用するバージョン情報を保存する
+          echo "$VERSIONS_JSON" > versions.json
+
+      # versions.json を artifacts にアップロードする。
+      # promote-or-rollback ジョブが別マシンで実行されるため artifacts 経由で受け渡す。
+      - name: versions.json を artifacts にアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-versions-${{ github.run_id }}
+          path: versions.json
+          retention-days: 1
+
+  # ────────────────────────────────────────────────────────────────────
+  # 3. 統合テスト（E2E）
+  # 実 AWS リソースに対してパイプライン全体を検証する。
+  # テスト用イベントを投入し、DynamoDB への書き込みを待機して結果を確認する。
+  # 最大 60 秒ポーリングして書き込みを確認する（TEST_TIMEOUT_SECONDS 環境変数で制御）。
+  # ────────────────────────────────────────────────────────────────────
+  integration-test:
+    name: "Test: Integration (E2E)"
+    runs-on: ubuntu-latest
+    needs: deploy-lambda
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 認証（OIDC · アクセスキー不使用）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sep-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-CD-IntTest-${{ github.run_id }}
+
+      - name: Python ${{ env.PYTHON_VERSION }} セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: テスト依存パッケージのインストール
+        run: |
+          pip install --quiet \
+            pytest \
+            boto3 \
+            aws-lambda-powertools \
+            pydantic
+
+      # 統合テストを実行する。
+      # exit code 5 = pytest がテストを 1 件も収集できなかった場合（TODO 状態での暫定対応）。
+      # テストが実装されたら exit code 5 の特別扱いを削除すること。
+      - name: "pytest tests/integration/（E2E テスト実行）"
+        id: test
+        run: |
+          set +e
+          pytest tests/integration/test_pipeline_e2e.py \
+            -v \
+            --tb=short \
+            --timeout=120
+          TEST_EXIT=$?
+          set -e
+
+          # exit code 5: テストが 0 件（TODO 状態）は暫定的に成功として扱う
+          # ※ テスト実装後はこの分岐を削除し、厳格な終了コードチェックに移行すること
+          if [ "$TEST_EXIT" -eq 5 ]; then
+            echo "::warning::統合テストが 0 件です。tests/integration/test_pipeline_e2e.py を実装してください。"
+            TEST_EXIT=0
+          fi
+
+          exit "$TEST_EXIT"
+        env:
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          # 命名規則から直接構築する（terraform output より高速で Terraform 依存を排除）
+          EVENTS_TABLE_NAME: "sep-dev-events"
+          AGGREGATIONS_TABLE_NAME: "sep-dev-aggregations"
+          RAW_INPUT_BUCKET: "sep-dev-raw-input-${{ secrets.AWS_ACCOUNT_ID }}"
+          KINESIS_STREAM_NAME: "sep-dev-events-stream"
+          INGEST_QUEUE_URL: "https://sqs.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ACCOUNT_ID }}/sep-dev-ingest-queue"
+          # DynamoDB への書き込みを待機する最大秒数（CLAUDE.md: 最大 60 秒）
+          TEST_TIMEOUT_SECONDS: "60"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 4. プロモート または ロールバック
+  # 統合テスト成功: 全 Lambda エイリアスを新バージョン 100% に昇格する。
+  # 統合テスト失敗: 全 Lambda エイリアスを安定バージョンに戻し、SNS でアラートを送信する。
+  # if: always() で統合テスト失敗時でも必ずこのジョブを実行する（ロールバック保証）。
+  # ────────────────────────────────────────────────────────────────────
+  promote-or-rollback:
+    name: >-
+      ${{ needs.integration-test.result == 'success'
+          && 'Lambda: Promote 100%'
+          || 'Lambda: Rollback + Alert' }}
+    runs-on: ubuntu-latest
+    needs: integration-test
+    # 統合テストの結果に関わらず（成功・失敗・キャンセル）必ず実行する
+    if: always()
+    steps:
+      - name: AWS 認証（OIDC · アクセスキー不使用）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sep-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-CD-Promote-${{ github.run_id }}
+
+      - name: versions.json を artifacts からダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-versions-${{ github.run_id }}
+
+      # ─── 統合テスト成功: 新バージョン 100% に昇格 ─────────────────
+      # routing-config を空オブジェクト（{}）にすることで
+      # FunctionVersion が 100% のトラフィックを受けるシンプルな状態に戻す。
+      - name: "プロモート: 新バージョン 100% 切り替え"
+        if: needs.integration-test.result == 'success'
+        run: |
+          set -euo pipefail
+          echo "==> 統合テスト成功: 新バージョンを 100% に昇格します"
+
+          for FUNCTION_NAME in ${{ env.LAMBDA_FUNCTIONS }}; do
+            NEW_VERSION=$(jq -r ".\"${FUNCTION_NAME}\".new" versions.json)
+
+            echo "  $FUNCTION_NAME: v${NEW_VERSION} → 100%"
+            aws lambda update-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name live \
+              --function-version "$NEW_VERSION" \
+              --routing-config '{}' \
+              > /dev/null
+          done
+          echo "==> 全 Lambda のプロモート完了"
+
+      - name: "Step Summary: プロモート結果を記録"
+        if: needs.integration-test.result == 'success'
+        run: |
+          {
+            echo "## Deploy 完了 ✅"
+            echo ""
+            echo "| 関数 | バージョン | ステータス |"
+            echo "|---|---|---|"
+            for FUNCTION_NAME in ${{ env.LAMBDA_FUNCTIONS }}; do
+              NEW_VERSION=$(jq -r ".\"${FUNCTION_NAME}\".new" versions.json)
+              echo "| \`$FUNCTION_NAME\` | v${NEW_VERSION} | 🟢 100% |"
+            done
+            echo ""
+            echo "**コミット**: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─── 統合テスト失敗: 安定バージョンにロールバック ────────────────
+      # routing-config を空オブジェクト（{}）にして
+      # FunctionVersion（安定版）が 100% のトラフィックを受ける状態に戻す。
+      # 新バージョンへの 10% カナリアルーティングが解除される。
+      - name: "ロールバック: 安定バージョンに戻す"
+        if: needs.integration-test.result != 'success'
+        run: |
+          set -euo pipefail
+          echo "==> 統合テスト失敗: 安定バージョンにロールバックします"
+
+          for FUNCTION_NAME in ${{ env.LAMBDA_FUNCTIONS }}; do
+            STABLE_VERSION=$(jq -r ".\"${FUNCTION_NAME}\".stable" versions.json)
+
+            echo "  $FUNCTION_NAME: v${STABLE_VERSION} に戻します"
+            aws lambda update-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name live \
+              --function-version "$STABLE_VERSION" \
+              --routing-config '{}' \
+              > /dev/null
+          done
+          echo "==> 全 Lambda のロールバック完了"
+
+      - name: "Step Summary: ロールバック結果を記録"
+        if: needs.integration-test.result != 'success'
+        run: |
+          {
+            echo "## Deploy ロールバック ❌"
+            echo ""
+            echo "統合テストが失敗したため安定バージョンにロールバックしました。"
+            echo ""
+            echo "| 関数 | ロールバック先 | ステータス |"
+            echo "|---|---|---|"
+            for FUNCTION_NAME in ${{ env.LAMBDA_FUNCTIONS }}; do
+              STABLE_VERSION=$(jq -r ".\"${FUNCTION_NAME}\".stable" versions.json)
+              echo "| \`$FUNCTION_NAME\` | v${STABLE_VERSION} | 🔴 Rolled Back |"
+            done
+            echo ""
+            echo "**失敗したコミット**: \`${{ github.sha }}\`"
+            echo ""
+            echo "**調査手順**: runbook.md の「統合テスト失敗対応」を参照してください。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ロールバック時に SNS でアラートを送信する。
+      # 既存の sep-dev-alerts SNS トピック（email サブスクリプション）を使用する。
+      # Slack 通知は SNS サブスクリプション経由（Lambda Webhook）で追加可能。
+      - name: "SNS アラート送信（ロールバック時のみ）"
+        if: needs.integration-test.result != 'success'
+        run: |
+          ALERTS_TOPIC_ARN="arn:aws:sns:${AWS_REGION}:${{ secrets.AWS_ACCOUNT_ID }}:sep-dev-alerts"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          aws sns publish \
+            --topic-arn "$ALERTS_TOPIC_ARN" \
+            --subject "[ROLLBACK] sep-dev パイプライン統合テスト失敗 (${{ github.sha }})" \
+            --message "sep-dev パイプラインの統合テストが失敗しました。
+          Lambda エイリアスを安定バージョンに自動ロールバックしました。
+
+          コミット  : ${{ github.sha }}
+          メッセージ: ${{ github.event.head_commit.message }}
+          実行者    : ${{ github.actor }}
+          Actions URL: ${RUN_URL}
+
+          調査手順: runbook.md の「統合テスト失敗対応」を参照してください。"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}

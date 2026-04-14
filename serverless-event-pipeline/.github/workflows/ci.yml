@@ -1,0 +1,330 @@
+name: CI
+
+# PR がオープン・更新・再オープンされた際に実行する。
+# ジョブの依存関係:
+#   lint-python ──┐
+#   test-unit   ──┼─→ terraform-plan
+#   lint-terraform┘
+# lint-python / test-unit / lint-terraform は AWS 認証不要のため完全並列実行する。
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+# PR コメント書き込みに pull-requests: write が必要。
+# OIDC トークン取得に id-token: write が必要。
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_VERSION: "~1.7"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # 1. Python 静的解析・型チェック
+  # ruff（Rust 製高速 linter）・black（フォーマット）・mypy（型チェック）を実行する。
+  # AWS 認証不要のため test-unit・lint-terraform と完全並列実行する。
+  # ────────────────────────────────────────────────────────────────────
+  lint-python:
+    name: "Lint: Python (ruff / black / mypy)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python ${{ env.PYTHON_VERSION }} セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: linter 依存パッケージのインストール
+        run: |
+          pip install --quiet \
+            ruff \
+            black \
+            mypy \
+            boto3 \
+            aws-lambda-powertools \
+            pydantic \
+            moto
+
+      # ruff: flake8・isort・pyupgrade など多数ルールを統合した高速 linter
+      # src/ と tests/ 両方に適用して一貫性を保証する
+      - name: "ruff check（構文・スタイル・セキュリティ）"
+        run: ruff check src/ tests/
+
+      # black: フォーマットが崩れている場合は差分を表示して失敗する
+      # --check: 実際には書き換えず、差分があれば exit code 1 を返す
+      - name: "black --check（フォーマット検証）"
+        run: black --check src/ tests/
+
+      # mypy: 型アノテーションの静的チェック
+      # --ignore-missing-imports: boto3 など py.typed スタブのないライブラリはスキップする
+      - name: "mypy src/（静的型チェック）"
+        run: mypy src/ --ignore-missing-imports
+
+  # ────────────────────────────────────────────────────────────────────
+  # 2. Python ユニットテスト + カバレッジ計測
+  # moto で AWS サービスをローカルモックして高速・コスト無しでテストする。
+  # カバレッジ 80% 未満で失敗し、coverage.xml を artifacts に保存する。
+  # AWS 認証不要のため lint-python・lint-terraform と完全並列実行する。
+  # ────────────────────────────────────────────────────────────────────
+  test-unit:
+    name: "Test: Unit (pytest / coverage ≥ 80%)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python ${{ env.PYTHON_VERSION }} セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: テスト依存パッケージのインストール
+        run: |
+          pip install --quiet \
+            pytest \
+            pytest-cov \
+            moto[dynamodb,s3,kinesis,sqs] \
+            boto3 \
+            aws-lambda-powertools \
+            pydantic
+
+      # --cov=src: src/ ディレクトリのカバレッジを計測する
+      # --cov-report=xml: Codecov / SonarQube 連携用の XML レポートを生成する
+      # --cov-report=term-missing: 未カバー行をターミナルに表示する
+      # --cov-fail-under=80: 80% 未満でテストを失敗扱いにする
+      - name: "pytest（カバレッジ計測 · 80% 閾値チェック）"
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+        env:
+          # moto が boto3 呼び出しをモックするためにダミー認証情報を設定する。
+          # 実際の AWS にアクセスしないため値は任意でよい。
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+          AWS_SECURITY_TOKEN: testing
+
+      # テスト失敗時でも coverage.xml をアップロードして原因分析に活用する
+      - name: coverage.xml を artifacts にアップロード
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+  # ────────────────────────────────────────────────────────────────────
+  # 3. Terraform 静的解析・セキュリティスキャン
+  # terraform fmt（フォーマット）・tflint（ベストプラクティス）・
+  # checkov（セキュリティ設定ミス検出）を実行する。
+  # AWS 認証不要のため lint-python・test-unit と完全並列実行する。
+  # ────────────────────────────────────────────────────────────────────
+  lint-terraform:
+    name: "Lint: Terraform (fmt / tflint / checkov)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Terraform ${{ env.TF_VERSION }} セットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # -check: フォーマットが崩れているファイルを一覧表示して exit code 3 を返す
+      # -recursive: terraform/ 配下の全ディレクトリを再帰的にチェックする
+      - name: "terraform fmt -check（フォーマット検証）"
+        run: terraform fmt -check -recursive terraform/
+
+      # TFLint: terraform plan では検知できないプロバイダ固有の問題を検出する
+      # AWS Plugin: 無効なリソースタイプ・廃止予定の引数・変数型の不一致を検査する
+      - name: TFLint セットアップ（AWS Plugin 付き）
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      # --init: .tflint.hcl で定義した AWS Plugin をダウンロードする
+      # GITHUB_TOKEN: Plugin のリリースアセット取得レート制限を回避する
+      - name: "tflint --init（AWS Plugin のダウンロード）"
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # --recursive: terraform/ 配下の全モジュールを走査する
+      - name: "tflint --recursive terraform/"
+        run: tflint --recursive terraform/
+
+      # checkov: Terraform コードのセキュリティ設定ミス・コンプライアンス違反を検出する
+      # soft_fail: true はコードベースに合わせたスキップルール調整前の暫定設定。
+      # .checkov.yml でスキップルールを整備後に soft_fail: false に変更すること。
+      - name: "checkov セキュリティスキャン（terraform/）"
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          quiet: true
+          soft_fail: true
+
+  # ────────────────────────────────────────────────────────────────────
+  # 4. Terraform Plan（dev 環境）→ PR コメント投稿
+  # 前 3 ジョブが全て成功した後に OIDC 認証で実行する。
+  # アクセスキー不使用: AWS_ACCOUNT_ID のみ Secrets に保存し、
+  # ロール ARN はアカウント ID から動的に構築する。
+  # plan 結果を PR コメントに投稿し（既存コメントがあれば更新）、
+  # 変更有無を has_changes output で後続ジョブへ伝達する。
+  # ────────────────────────────────────────────────────────────────────
+  terraform-plan:
+    name: "Terraform: Plan (dev) → PR Comment"
+    runs-on: ubuntu-latest
+    needs: [lint-python, test-unit, lint-terraform]
+    outputs:
+      # true: インフラ変更あり / false: 変更なし
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC 認証: アクセスキーを使用しない。
+      # GitHub Actions が OIDC トークンを取得し、AssumeRoleWithWebIdentity で認証する。
+      # ロール ARN は AWS_ACCOUNT_ID から構築する（ARN 自体は Secrets に保存しない）。
+      - name: AWS 認証（OIDC · アクセスキー不使用）
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/sep-dev-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-CI-${{ github.run_id }}
+
+      - name: Terraform ${{ env.TF_VERSION }} セットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # output-commands: plan 出力の取得を簡単にするため有効化する
+          terraform_wrapper: true
+
+      # S3 バックエンドのバケット名は AWS_ACCOUNT_ID から構築する。
+      # backend.tf の REPLACE_WITH_ACCOUNT_ID を -backend-config で上書きする。
+      - name: "terraform init（S3 バックエンド接続）"
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=sep-tfstate-${{ secrets.AWS_ACCOUNT_ID }}" \
+            -backend-config="dynamodb_table=sep-tfstate-lock" \
+            -backend-config="kms_key_id=alias/sep-tfstate-key" \
+            -input=false \
+            -reconfigure
+
+      # -detailed-exitcode: 変更有無を exit code で区別する
+      #   0 = 変更なし（インフラは最新状態）
+      #   1 = エラー（plan 自体の失敗）
+      #   2 = 変更あり（apply が必要）
+      # set +e: exit code 2（変更あり）でシェルが停止しないようにする
+      - name: "terraform plan（-detailed-exitcode で変更検出）"
+        id: plan
+        working-directory: terraform/environments/dev
+        run: |
+          set +e
+          terraform plan \
+            -var="account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+            -var="alert_email=${{ vars.ALERT_EMAIL || 'ops@example.com' }}" \
+            -no-color \
+            -detailed-exitcode \
+            -out=tfplan \
+            2>&1 | tee plan.txt
+          PLAN_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          case "$PLAN_EXIT" in
+            0)
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::インフラの変更はありません"
+              ;;
+            2)
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::インフラの変更が検出されました"
+              ;;
+            *)
+              echo "::error::terraform plan が失敗しました（exit code: $PLAN_EXIT）"
+              exit 1
+              ;;
+          esac
+
+      # PR コメントに plan 結果を投稿する。
+      # 既存の Bot コメントがある場合は更新して、コメントが増殖するのを防ぐ。
+      # plan.txt が 60,000 文字を超える場合は末尾を切り捨てる（GitHub API の上限対策）。
+      - name: plan 結果を PR コメントに投稿（既存コメントがあれば更新）
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs   = require('fs');
+            const path = require('path');
+
+            const planFile = path.join(
+              process.env.GITHUB_WORKSPACE,
+              'terraform/environments/dev/plan.txt'
+            );
+            const rawPlan = fs.existsSync(planFile)
+              ? fs.readFileSync(planFile, 'utf8')
+              : '(plan 出力が見つかりませんでした)';
+
+            const truncated = rawPlan.length > 60000
+              ? rawPlan.substring(0, 60000) + '\n\n... (出力が長いため省略しました)'
+              : rawPlan;
+
+            const hasChanges = '${{ steps.plan.outputs.has_changes }}';
+            const statusIcon = hasChanges === 'true' ? '⚠️ 変更あり' : '✅ 変更なし';
+
+            const body = [
+              '## Terraform Plan (dev)',
+              '',
+              `| 項目 | 値 |`,
+              `|---|---|`,
+              `| ステータス | ${statusIcon} |`,
+              `| コミット | \`${{ github.sha }}\` |`,
+              `| ブランチ | \`${{ github.head_ref }}\` |`,
+              '',
+              '<details>',
+              '<summary>Plan 詳細（クリックで展開）</summary>',
+              '',
+              '```',
+              truncated,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            // 既存の Bot コメントを検索して更新する（コメント重複防止）
+            const { data: comments } = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('## Terraform Plan (dev)')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
