@@ -1,0 +1,216 @@
+name: Terraform Deploy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "lambda/**"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "lambda/**"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  id-token: write   # OIDC トークン取得に必要
+  contents: read
+  pull-requests: write  # PR コメント投稿に必要
+
+env:
+  TF_VERSION: "1.7.5"
+  PYTHON_VERSION: "3.12"
+  AWS_REGION: "ap-northeast-1"
+  WORKING_DIR: "./terraform"
+
+jobs:
+  # ----------------------------------------------------------------
+  # PR 時: format check / validate / plan + PR コメント投稿
+  # ----------------------------------------------------------------
+  plan:
+    if: github.event_name == 'pull_request'
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Lambda ZIP を生成（terraform validate / plan 時に archive_file が参照するため）
+      - name: Build Lambda ZIPs
+        run: |
+          mkdir -p .terraform/lambda_zips
+
+          cd lambda/analyzer_trigger
+          pip install -r requirements.txt -t ./
+          cd ../..
+          zip -r .terraform/lambda_zips/analyzer_trigger.zip lambda/analyzer_trigger/
+
+          cd lambda/policy_advisor
+          pip install -r requirements.txt -t ./
+          cd ../..
+          zip -r .terraform/lambda_zips/policy_advisor.zip lambda/policy_advisor/
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -var="github_token_secret_arn=${{ secrets.GITHUB_TOKEN_SECRET_ARN }}" \
+            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
+            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -var="github_owner=${{ secrets.GITHUB_OWNER }}" \
+            -var="github_repo=${{ secrets.GITHUB_REPO }}" \
+            2>&1 | tee /tmp/plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Post Plan Result to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('/tmp/plan_output.txt', 'utf8');
+            const maxLen = 65000;
+            const truncated = planOutput.length > maxLen
+              ? planOutput.slice(0, maxLen) + '\n... (出力が長いため省略されました)'
+              : planOutput;
+
+            const exitCode = '${{ steps.plan.outputs.exitcode }}';
+            const status = exitCode === '0' ? '✅ 成功' : '❌ 失敗';
+
+            const body = [
+              '## Terraform Plan 結果 ' + status,
+              '',
+              '<details><summary>plan 出力を展開</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+              '',
+              `**実行者:** @${context.actor}  `,
+              `**コミット:** ${context.sha.slice(0, 7)}`,
+            ].join('\n');
+
+            // 既存の Bot コメントを更新（重複投稿を避ける）
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const botComment = comments.find(
+              c => c.user.type === 'Bot' && c.body.includes('Terraform Plan 結果')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if Plan Failed
+        if: steps.plan.outputs.exitcode != '0'
+        run: exit 1
+
+  # ----------------------------------------------------------------
+  # main マージ時: Lambda ZIP 生成 → terraform apply
+  # ----------------------------------------------------------------
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # apply 前に Lambda ZIP を生成する（archive_file の source が存在しないと apply が失敗するため）
+      - name: Build Lambda ZIPs
+        run: |
+          mkdir -p .terraform/lambda_zips
+
+          cd lambda/analyzer_trigger
+          pip install -r requirements.txt -t ./
+          cd ../..
+          zip -r .terraform/lambda_zips/analyzer_trigger.zip lambda/analyzer_trigger/
+
+          cd lambda/policy_advisor
+          pip install -r requirements.txt -t ./
+          cd ../..
+          zip -r .terraform/lambda_zips/policy_advisor.zip lambda/policy_advisor/
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            -var="github_token_secret_arn=${{ secrets.GITHUB_TOKEN_SECRET_ARN }}" \
+            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
+            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -var="github_owner=${{ secrets.GITHUB_OWNER }}" \
+            -var="github_repo=${{ secrets.GITHUB_REPO }}"
