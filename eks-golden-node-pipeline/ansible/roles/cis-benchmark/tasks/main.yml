@@ -1,0 +1,145 @@
+---
+# CIS Benchmark Level 1 ハードニング タスク
+# Amazon Linux 2023 対応
+# 参考: CIS Amazon Linux 2023 Benchmark v1.0.0
+
+# === 1. ファイルシステム設定 ===
+
+- name: 不要なファイルシステムを無効化（CIS 1.1.x）
+  ansible.builtin.copy:
+    dest: "/etc/modprobe.d/{{ item }}.conf"
+    content: "install {{ item }} /bin/true\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - cramfs
+    - freevxfs
+    - jffs2
+    - hfs
+    - hfsplus
+    - squashfs
+    - udf
+    - usb-storage
+  when: cis_disable_cramfs  # 変数で制御
+
+# === 2. パッケージ管理 ===
+
+- name: セキュリティパッチを適用（CIS 1.8.x）
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    security: true
+  tags: ["packages", "security"]
+
+- name: 不要なパッケージを削除（CIS 2.x）
+  ansible.builtin.dnf:
+    name:
+      - telnet
+      - rsh
+      - ypbind
+      - ypserv
+    state: absent
+  tags: ["packages"]
+
+# === 3. SSH ハードニング ===
+
+- name: SSH 設定を強化（CIS 5.2.x）
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "/usr/sbin/sshd -t -f %s"
+  notify: restart sshd
+  tags: ["ssh"]
+
+# === 4. ネットワークカーネルパラメータ ===
+
+- name: ネットワークセキュリティ設定（sysctl）（CIS 3.x）
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    # IPスプーフィング対策
+    - { key: "net.ipv4.conf.all.rp_filter", value: "1" }
+    - { key: "net.ipv4.conf.default.rp_filter", value: "1" }
+    # ICMPリダイレクト無効化
+    - { key: "net.ipv4.conf.all.accept_redirects", value: "0" }
+    - { key: "net.ipv4.conf.default.accept_redirects", value: "0" }
+    # SYN Cookie 有効化（SYNフラッド対策）
+    - { key: "net.ipv4.tcp_syncookies", value: "1" }
+    # EKSノードに必要なIPフォワード
+    - { key: "net.ipv4.ip_forward", value: "1" }
+    # ブロードキャストへのICMP応答を無効化
+    - { key: "net.ipv4.icmp_echo_ignore_broadcasts", value: "1" }
+  tags: ["network", "sysctl"]
+
+# === 5. ファイル権限 ===
+
+- name: /etc/passwd の権限設定（CIS 6.1.x）
+  ansible.builtin.file:
+    path: /etc/passwd
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: /etc/shadow の権限設定（CIS 6.1.x）
+  ansible.builtin.file:
+    path: /etc/shadow
+    owner: root
+    group: root
+    mode: "0000"
+
+# === 6. Auditd 設定 ===
+
+- name: auditd インストール（CIS 4.1.x）
+  ansible.builtin.dnf:
+    name: audit
+    state: present
+  tags: ["audit"]
+
+- name: auditd 有効化
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+  tags: ["audit"]
+
+- name: auditd ルール設定（CIS 4.1.x）
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/cis.rules
+    content: |
+      # CIS Benchmark auditd ルール
+      # 特権コマンドの監査
+      -a always,exit -F arch=b64 -S execve -F euid=0 -k privileged
+      # ファイル削除の監査
+      -a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -k delete
+      # ユーザー・グループ変更の監査
+      -w /etc/passwd -p wa -k identity
+      -w /etc/group -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/sudoers -p wa -k sudoers
+    owner: root
+    group: root
+    mode: "0640"
+  notify: restart auditd
+  tags: ["audit"]
+
+# === 7. パスワードポリシー ===
+
+- name: パスワードエイジング設定（CIS 5.4.x）
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^{{ item.key }}"
+    line: "{{ item.key }}\t{{ item.value }}"
+    state: present
+  loop:
+    - { key: "PASS_MIN_DAYS", value: "{{ cis_password_min_days }}" }
+    - { key: "PASS_MAX_DAYS", value: "{{ cis_password_max_days }}" }
+    - { key: "PASS_WARN_AGE", value: "{{ cis_password_warn_age }}" }
+  tags: ["password"]

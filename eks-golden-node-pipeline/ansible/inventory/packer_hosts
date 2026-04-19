@@ -1,0 +1,4 @@
+# Packer が動的に生成するホスト
+# Packer の ansible provisioner が自動的にこのインベントリを上書きする
+[packer]
+# placeholder - Packer実行時に自動設定される

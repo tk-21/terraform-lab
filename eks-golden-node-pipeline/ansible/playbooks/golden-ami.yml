@@ -1,0 +1,31 @@
+---
+# Golden AMI ビルド用メインPlaybook
+# Packer から呼び出される。CIS Benchmark ハードニング → containerd → EKS準備の順に実行
+- name: Golden AMI Build Playbook
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # EKS バージョン（Packer変数から渡される）
+    eks_version: "1.30"
+    # AWSリージョン
+    aws_region: "ap-northeast-1"
+
+  roles:
+    # CIS Benchmark Level1 ハードニング（セキュリティ強化）
+    - role: cis-benchmark
+      tags: ["security", "cis"]
+
+    # containerd インストール（Dockerランタイム代替）
+    - role: docker-runtime
+      tags: ["runtime", "containerd"]
+
+    # EKS ノード起動準備（kubelet設定など）
+    - role: eks-node-prep
+      tags: ["eks", "kubelet"]
+
+  post_tasks:
+    - name: AMIビルド完了ログ出力
+      ansible.builtin.debug:
+        msg: "Golden AMI build completed. EKS={{ eks_version }}, Region={{ aws_region }}"

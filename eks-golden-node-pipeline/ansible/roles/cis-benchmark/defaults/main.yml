@@ -1,0 +1,31 @@
+---
+# CIS Benchmark Level 1 デフォルト変数
+# 環境ごとにPlaybookから上書き可能
+
+# SSH設定
+cis_ssh_port: 22
+cis_ssh_permit_root_login: "no"
+cis_ssh_password_authentication: "no"
+cis_ssh_max_auth_tries: 4
+cis_ssh_client_alive_interval: 300
+cis_ssh_client_alive_count_max: 0
+
+# パスワードポリシー
+cis_password_min_days: 7
+cis_password_max_days: 365
+cis_password_warn_age: 7
+
+# ファイルシステム
+cis_disable_cramfs: true
+cis_disable_freevxfs: true
+cis_disable_jffs2: true
+cis_disable_hfs: true
+cis_disable_squashfs: true
+cis_disable_udf: true
+cis_disable_usb_storage: true
+
+# ネットワーク
+cis_disable_ipv6: false          # EKSはIPv6を使う場合があるため無効化しない
+cis_enable_iptables: true
+cis_tcp_syncookies: true
+cis_ip_forward: true             # EKSノードはIPフォワードが必要

@@ -1,0 +1,102 @@
+---
+# containerd インストール・設定タスク
+# EKS 1.30 は containerd を CRI として使用する
+# Docker デーモン（dockerd）はインストールしない
+
+# === 1. 前提パッケージ ===
+
+- name: containerd の依存パッケージをインストール
+  ansible.builtin.dnf:
+    name:
+      - socat        # kubelet が使用
+      - conntrack    # ネットワーク接続追跡
+      - ipvsadm      # IPVSロードバランシング
+      - ipset        # iptables拡張
+      - tc           # トラフィック制御
+    state: present
+  tags: ["packages"]
+
+# === 2. containerd インストール ===
+
+- name: containerd のリポジトリ設定
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable
+    baseurl: "https://download.docker.com/linux/centos/9/aarch64/stable"
+    gpgcheck: true
+    gpgkey: "https://download.docker.com/linux/centos/gpg"
+    enabled: true
+  tags: ["containerd"]
+
+- name: containerd.io をインストール
+  ansible.builtin.dnf:
+    name: containerd.io
+    state: present
+  tags: ["containerd"]
+
+# === 3. containerd 設定 ===
+
+- name: containerd デフォルト設定を生成
+  ansible.builtin.shell:
+    cmd: containerd config default > /etc/containerd/config.toml
+    creates: /etc/containerd/config.toml
+  tags: ["containerd"]
+
+- name: containerd の SystemdCgroup を有効化（EKS必須設定）
+  # kubelet と containerd の cgroup ドライバーを統一する
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: restart containerd
+  tags: ["containerd"]
+
+- name: containerd の sandbox image を EKS 対応版に変更
+  # EKS の pause コンテナイメージを使用する
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'sandbox_image = ".*"'
+    replace: 'sandbox_image = "602401143452.dkr.ecr.ap-northeast-1.amazonaws.com/eks/pause:3.5"'
+  notify: restart containerd
+  tags: ["containerd"]
+
+# === 4. カーネルモジュール（コンテナネットワーク用）===
+
+- name: コンテナ用カーネルモジュールを自動ロード設定
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/containerd.conf
+    content: |
+      # containerd / Kubernetes が必要とするカーネルモジュール
+      overlay      # OverlayFS（コンテナ層管理）
+      br_netfilter  # bridge経由のネットワークフィルタリング
+    owner: root
+    group: root
+    mode: "0644"
+  tags: ["kernel"]
+
+- name: カーネルモジュールをロード（即時適用）
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+  tags: ["kernel"]
+
+- name: containerd を有効化・起動
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+  tags: ["containerd"]
+
+- name: containerd の動作確認
+  ansible.builtin.command: ctr version
+  register: ctr_version
+  changed_when: false
+  tags: ["validation"]
+
+- name: containerd バージョンを表示
+  ansible.builtin.debug:
+    msg: "containerd: {{ ctr_version.stdout }}"
+  tags: ["validation"]
