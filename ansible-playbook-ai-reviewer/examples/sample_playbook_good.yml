@@ -1,0 +1,217 @@
+---
+# ============================================================
+# ベストプラクティスに準拠したPlaybook（比較用）
+# このファイルは sample_playbook_bad.yml と対比して、
+# Ansible推奨パターンを網羅的に示す（Webサーバーセットアップ例）。
+#
+# ベストプラクティスカバレッジ:
+#   ✅ FQCNモジュール名 (ansible.builtin.*)
+#   ✅ no_log設定（機密情報を扱うタスク）
+#   ✅ changed_when / failed_when の適切な使用
+#   ✅ loop（with_itemsの代わり）
+#   ✅ block/rescue/always によるエラーハンドリング
+#   ✅ 明確なタスク名とタグ
+#   ✅ handlersの活用
+#   ✅ becomeを必要なタスクのみに限定
+#   ✅ 変数はvault参照（平文ハードコードなし）
+# ============================================================
+
+- name: Webサーバー（Apache + MySQL + PHP）のセットアップ
+  hosts: webservers
+  gather_facts: true
+  # become: yes はPlaybookレベルでは付与しない。必要なタスクのみに付与する。
+
+  vars:
+    app_port: 8080
+    app_user: webappuser
+    web_root: /var/www/html
+    # 認証情報はansible-vaultで暗号化した変数ファイルから参照
+    # db_password: "{{ vault_db_password }}"
+
+  handlers:
+    - name: Apacheを再起動する
+      ansible.builtin.service:
+        name: httpd
+        state: restarted
+      become: true
+
+    - name: MySQLを再起動する
+      ansible.builtin.service:
+        name: mysqld
+        state: restarted
+      become: true
+
+  tasks:
+    # ----------------------------------------------------------------
+    # パッケージインストール
+    # ----------------------------------------------------------------
+    - name: 必要なパッケージ（Apache/MySQL/PHP）をインストールする
+      ansible.builtin.dnf:
+        name:
+          - httpd
+          - mysql-server
+          - php
+          - php-mysqlnd
+        state: present
+        update_cache: true
+      become: true
+      tags:
+        - install
+        - packages
+
+    # ----------------------------------------------------------------
+    # サービス設定
+    # ----------------------------------------------------------------
+    - name: Apacheをサービス起動・自動起動に設定する
+      ansible.builtin.service:
+        name: httpd
+        state: started
+        enabled: true
+      become: true
+      tags:
+        - service
+        - apache
+
+    - name: MySQLをサービス起動・自動起動に設定する
+      ansible.builtin.service:
+        name: mysqld
+        state: started
+        enabled: true
+      become: true
+      tags:
+        - service
+        - mysql
+
+    # ----------------------------------------------------------------
+    # ユーザー作成（loopを使用）
+    # ----------------------------------------------------------------
+    - name: アプリケーション用システムユーザーを作成する
+      ansible.builtin.user:
+        name: "{{ item }}"
+        system: true
+        shell: /sbin/nologin
+        state: present
+      loop:
+        - webappuser
+        - deployer
+      become: true
+      tags:
+        - users
+
+    # ----------------------------------------------------------------
+    # データベース設定（no_log + block/rescue/always）
+    # ----------------------------------------------------------------
+    - name: データベースユーザーを設定する（認証情報を保護）
+      block:
+        - name: DBユーザーを作成する
+          community.mysql.mysql_user:
+            name: "{{ db_user }}"
+            password: "{{ vault_db_password }}"  # ansible-vaultで暗号化済み
+            priv: "appdb.*:SELECT,INSERT,UPDATE,DELETE"
+            state: present
+          no_log: true  # 認証情報がログに出力されないよう保護
+          become: true
+
+        - name: MySQLのroot初期パスワードを変更する
+          community.mysql.mysql_user:
+            name: root
+            password: "{{ vault_mysql_root_password }}"
+            host: localhost
+            state: present
+          no_log: true  # 認証情報を保護
+          become: true
+          notify: MySQLを再起動する
+
+      rescue:
+        - name: DB設定エラーをアラートログに記録する
+          ansible.builtin.debug:
+            msg: "データベース設定に失敗しました。手動確認が必要です: {{ ansible_failed_task.name }}"
+
+      always:
+        - name: DB設定の一時ファイルを削除する
+          ansible.builtin.file:
+            path: /tmp/db_setup.sql
+            state: absent
+          become: true
+
+      tags:
+        - database
+        - security
+
+    # ----------------------------------------------------------------
+    # Apacheの設定ファイル配置
+    # ----------------------------------------------------------------
+    - name: Apache設定ファイルを配置する
+      ansible.builtin.template:
+        src: templates/httpd.conf.j2
+        dest: /etc/httpd/conf/httpd.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/httpd -t -f %s  # 配置前に構文チェック
+      become: true
+      notify: Apacheを再起動する
+      tags:
+        - config
+        - apache
+
+    # ----------------------------------------------------------------
+    # Webルートのパーミッション設定
+    # ----------------------------------------------------------------
+    - name: Webルートディレクトリのオーナーとパーミッションを設定する
+      ansible.builtin.file:
+        path: "{{ web_root }}"
+        owner: "{{ app_user }}"
+        group: apache
+        mode: "0755"  # 最小権限の原則。777は使用しない
+        recurse: false
+      become: true
+      tags:
+        - config
+        - security
+
+    # ----------------------------------------------------------------
+    # アプリケーションデプロイ（冪等なgitモジュール使用）
+    # ----------------------------------------------------------------
+    - name: アプリケーションコードをデプロイする
+      ansible.builtin.git:
+        repo: "{{ app_repo_url }}"
+        dest: "{{ web_root }}"
+        version: "{{ app_version | default('main') }}"
+        force: false
+      become: true
+      become_user: "{{ app_user }}"  # 最小権限: appuserとして実行
+      register: git_result
+      tags:
+        - deploy
+
+    # ----------------------------------------------------------------
+    # ポート疎通確認（changed_when / failed_when の明示的設定）
+    # ----------------------------------------------------------------
+    - name: Apacheがポート{{ app_port }}でリッスンしていることを確認する
+      ansible.builtin.command:
+        cmd: "ss -tlnp sport = :{{ app_port }}"
+      register: port_check
+      changed_when: false  # 確認コマンドはchangedにしない（冪等性）
+      failed_when:
+        - port_check.rc != 0
+        - "'LISTEN' not in port_check.stdout"
+      tags:
+        - verify
+
+    # ----------------------------------------------------------------
+    # ファイアウォール設定
+    # ----------------------------------------------------------------
+    - name: HTTP/HTTPSポートをファイアウォールで許可する
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop:
+        - http
+        - https
+      become: true
+      tags:
+        - firewall
+        - security

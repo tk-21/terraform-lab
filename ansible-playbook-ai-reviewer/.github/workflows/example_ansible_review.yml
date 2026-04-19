@@ -1,0 +1,39 @@
+# 使用例: Ansible PlaybookのPR時にAIレビューを実行するワークフロー
+# このファイルをAnsible管理リポジトリの .github/workflows/ にコピーして使う
+
+name: Ansible Playbook AI Review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.yml'
+      - '**.yaml'
+
+permissions:
+  contents: read
+  pull-requests: write  # PRコメント投稿に必要
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ansible Playbook AI Review
+        id: ai-review
+        uses: ./github_actions/ansible-ai-review
+        with:
+          api_endpoint: ${{ secrets.AI_REVIEWER_API_ENDPOINT }}
+          api_key: ${{ secrets.AI_REVIEWER_API_KEY }}
+          api_secret: ${{ secrets.AI_REVIEWER_API_SECRET }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          playbook_paths: 'playbooks/**/*.yml,roles/**/*.yml'
+          fail_on_critical: 'true'
+
+      - name: レビュー結果サマリー表示
+        if: always()
+        run: |
+          echo "レビュースコア: ${{ steps.ai-review.outputs.overall_score }}/100"
+          echo "検出問題数: ${{ steps.ai-review.outputs.issues_found }}"
+          echo "ステータス: ${{ steps.ai-review.outputs.review_status }}"

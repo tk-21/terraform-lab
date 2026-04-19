@@ -1,0 +1,164 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write      # OIDC認証に必要
+  contents: read
+  pull-requests: write  # Terraform planコメント投稿に必要
+
+env:
+  TF_VERSION: '1.9.x'
+  PYTHON_VERSION: '3.12'
+  AWS_REGION: 'ap-northeast-1'
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS認証 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraformセットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: terraform/
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true  # planが失敗してもコメント投稿は行う
+
+      - name: Terraform PlanをPRにコメント投稿
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `### Terraform Plan結果 🔍
+
+            **ステータス**: ${{ steps.plan.outcome == 'success' && '✅ 成功' || '❌ 失敗' }}
+
+            <details><summary>Plan詳細を表示</summary>
+
+            \`\`\`terraform
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *実行者: @${{ github.actor }}, ワークフロー: \`${{ github.workflow }}\`*`;
+
+            // 既存の同種コメントを検索して更新（重複防止）
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Terraform Plan結果')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: output,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: output,
+              });
+            }
+
+            // planが失敗した場合はジョブを失敗させる
+            if ('${{ steps.plan.outcome }}' === 'failure') {
+              core.setFailed('Terraform planが失敗しました');
+            }
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve
+
+  deploy-lambda:
+    name: Deploy Lambda
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS認証 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Pythonセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 依存関係インストール & パッケージング
+        run: |
+          # arm64向けにmanylinux2014_aarch64バイナリをインストール
+          pip install -r lambda/playbook_reviewer/requirements.txt \
+            -t lambda/playbook_reviewer/ \
+            --platform manylinux2014_aarch64 \
+            --only-binary=:all:
+
+          cd lambda/playbook_reviewer
+          zip -r ../../lambda_package.zip .
+
+      - name: Lambdaへデプロイ
+        run: |
+          aws lambda update-function-code \
+            --function-name ansible-ai-reviewer \
+            --zip-file fileb://lambda_package.zip
+
+          aws lambda wait function-updated \
+            --function-name ansible-ai-reviewer
+
+          aws lambda publish-version \
+            --function-name ansible-ai-reviewer
+
+      - name: デプロイ完了通知
+        run: |
+          VERSION=$(aws lambda list-versions-by-function \
+            --function-name ansible-ai-reviewer \
+            --query 'Versions[-1].Version' \
+            --output text)
+          echo "Lambda デプロイ完了: version $VERSION"

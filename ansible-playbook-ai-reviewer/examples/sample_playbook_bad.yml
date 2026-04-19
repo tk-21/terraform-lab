@@ -1,0 +1,81 @@
+---
+# ============================================================
+# 意図的に問題を含むPlaybook（AIレビューのデモ用）
+# このファイルを examples/sample_playbook_bad.yml として使用し、
+# AIレビューが問題をどのように検出・報告するかを示す。
+#
+# 含まれる問題:
+#   CRITICAL : パスワードのハードコード、no_log未設定
+#   HIGH     : shell多用、不要なbecome: yes
+#   MEDIUM   : with_items使用（非推奨）、changed_when未設定のshell
+#   LOW      : 不明確なタスク名、タグ未設定
+# ============================================================
+
+- name: webserver setup
+  hosts: webservers
+  become: yes  # HIGH: ホスト全体に不必要なbecome: yesを付与。必要なタスクのみに限定すべき
+  gather_facts: yes
+
+  vars:
+    db_password: "SuperSecret123!"  # CRITICAL: パスワードのハードコード。ansible-vaultまたは変数化すべき
+    db_user: "admin"
+    app_port: 8080
+
+  tasks:
+    - name: do stuff  # LOW: タスク名が不明確。何をするか分からない
+      shell: yum update -y  # HIGH: shellモジュールの多用。ansible.builtin.yumを使うべき
+      # MEDIUM: changed_when未設定。常にchangedとなる
+
+    - name: install  # LOW: タスク名が不明確
+      shell: yum install -y httpd mysql php  # HIGH: shellモジュール多用
+      # MEDIUM: changed_when未設定
+
+    - name: configure database
+      shell: |
+        mysql -u root -pSuperSecret123! -e "CREATE USER '{{ db_user }}'@'localhost' IDENTIFIED BY '{{ db_password }}';"
+        mysql -u root -pSuperSecret123! -e "GRANT ALL PRIVILEGES ON *.* TO '{{ db_user }}'@'localhost';"
+      # CRITICAL: no_log: trueが未設定。パスワードがログに出力される
+      # HIGH: shellモジュールで認証情報を直接渡している
+      # MEDIUM: changed_when未設定
+
+    - name: copy config files
+      shell: "cp /tmp/httpd.conf /etc/httpd/conf/httpd.conf"  # HIGH: copyモジュールを使うべき
+      # MEDIUM: changed_when未設定
+
+    - name: create users
+      user:
+        name: "{{ item }}"
+        state: present
+      with_items:  # MEDIUM: with_itemsは非推奨。loopを使うべき
+        - webuser1
+        - webuser2
+        - webuser3
+
+    - name: set permissions
+      shell: "chmod -R 777 /var/www/html"  # HIGH: shellモジュール多用。fileモジュールを使うべき
+      # MEDIUM: changed_when未設定
+      # HIGH: 777パーミッションはセキュリティリスク
+
+    - name: start service
+      shell: "systemctl start httpd && systemctl enable httpd"  # HIGH: serviceモジュールを使うべき
+      ignore_errors: yes  # HIGH: ignore_errorsの乱用。failed_whenで適切に処理すべき
+      # MEDIUM: changed_when未設定
+
+    - name: check port
+      shell: "netstat -tlnp | grep {{ app_port }}"
+      register: port_check
+      ignore_errors: yes  # HIGH: ignore_errorsの乱用
+
+    - name: deploy app
+      shell: |
+        cd /var/www/html
+        git clone http://github.com/example/app .
+        python setup.py install
+      become: yes
+      # MEDIUM: changed_when未設定
+      # HIGH: shellでgit clone。git/pipモジュールを使うべき
+
+    - name: write credentials to file
+      shell: "echo 'DB_PASS={{ db_password }}' > /etc/app/config"
+      # CRITICAL: 認証情報をファイルに平文書き込み。no_log未設定
+      # MEDIUM: changed_when未設定
