@@ -1,0 +1,129 @@
+---
+# EKS ノード事前設定タスク
+# Karpenter が起動するノードに必要な設定を事前に Golden AMI に焼き込む
+
+# === 1. aws-cli v2 インストール ===
+
+- name: aws-cli v2 をインストール
+  # EKS ノードブートストラップスクリプトが aws-cli を使用する
+  ansible.builtin.shell:
+    cmd: |
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install
+      rm -rf /tmp/aws /tmp/awscliv2.zip
+    creates: /usr/local/bin/aws
+  tags: ["awscli"]
+
+# === 2. SSM Agent インストール ===
+
+- name: SSM Agent をインストール（Session Manager経由でのアクセス用）
+  ansible.builtin.dnf:
+    name: amazon-ssm-agent
+    state: present
+  tags: ["ssm"]
+
+- name: SSM Agent を有効化
+  ansible.builtin.systemd:
+    name: amazon-ssm-agent
+    enabled: true
+    state: started
+  tags: ["ssm"]
+
+# === 3. kubelet 事前設定 ===
+
+- name: kubelet 設定ディレクトリ作成
+  ansible.builtin.file:
+    path: /etc/kubernetes/kubelet
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: ["kubelet"]
+
+- name: kubelet 追加設定（EKS最適化）
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/kubelet/kubelet-config-additional.json
+    content: |
+      {
+        "apiVersion": "kubelet.config.k8s.io/v1beta1",
+        "kind": "KubeletConfiguration",
+        "maxPods": 110,
+        "evictionHard": {
+          "memory.available": "100Mi",
+          "nodefs.available": "10%",
+          "nodefs.inodesFree": "5%"
+        },
+        "systemReserved": {
+          "cpu": "100m",
+          "memory": "100Mi",
+          "ephemeral-storage": "1Gi"
+        },
+        "kubeReserved": {
+          "cpu": "100m",
+          "memory": "100Mi",
+          "ephemeral-storage": "1Gi"
+        }
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  tags: ["kubelet"]
+
+# === 4. EKS ブートストラップスクリプト ===
+
+- name: EKS ノードブートストラップスクリプトをインストール
+  ansible.builtin.dnf:
+    name: "amazon-eks-node-{{ eks_version }}"
+    state: present
+  tags: ["eks"]
+
+# === 5. ディスク設定 ===
+
+- name: /var/lib/containerd のディスク確保（コンテナイメージ用）
+  ansible.builtin.file:
+    path: /var/lib/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  tags: ["disk"]
+
+# === 6. ログローテーション ===
+
+- name: コンテナログのローテーション設定
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/containers
+    content: |
+      /var/log/containers/*.log {
+          daily
+          rotate 7
+          compress
+          missingok
+          notifempty
+          sharedscripts
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  tags: ["logging"]
+
+# === 7. AMI メタデータタグ ===
+
+- name: AMI ビルド情報をファイルに記録
+  ansible.builtin.copy:
+    dest: /etc/eks-golden-ami-version
+    content: |
+      BUILD_DATE={{ ansible_date_time.date }}
+      EKS_VERSION={{ eks_version }}
+      CIS_LEVEL=1
+      CONTAINERD_ENABLED=true
+    owner: root
+    group: root
+    mode: "0644"
+  tags: ["metadata"]
+
+- name: EKS ノード準備完了メッセージ
+  ansible.builtin.debug:
+    msg: "EKS node prep completed. EKS_VERSION={{ eks_version }}"
+  tags: ["validation"]

@@ -1,0 +1,63 @@
+# EC2NodeClass - Golden AMI を参照するノード設定
+# このファイルは Terraform templatefile() でレンダリングされる
+# ${ami_id} など ${} は Terraform 変数プレースホルダー
+
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: golden-ami-node-class
+  annotations:
+    # AMI の追跡情報（どのビルドの AMI か記録）
+    eks-golden-node-pipeline/ami-id: "${ami_id}"
+    eks-golden-node-pipeline/eks-version: "${eks_version}"
+spec:
+  # AMI の指定方法: ID 直接指定（Immutable AMI 原則）
+  # latest タグや名前フィルタによる暗黙的な AMI 参照は禁止
+  amiSelectorTerms:
+    - id: "${ami_id}"
+
+  # ノードの IAM Instance Profile
+  instanceProfile: "${instance_profile}"
+
+  # ノードを配置するサブネット（karpenter.sh/discovery タグで検索）
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${cluster_name}"
+
+  # セキュリティグループ（EKS ノードグループのセキュリティグループを使用）
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${cluster_name}"
+
+  # ユーザーデータ: EKS ブートストラップスクリプトを実行
+  # Golden AMI に amazon-eks-node パッケージがインストール済みのため
+  # --apiserver-endpoint と --b64-cluster-ca のみ渡せばよい
+  userData: |
+    #!/bin/bash
+    set -o xtrace
+    /etc/eks/bootstrap.sh "${cluster_name}" \
+      --use-max-pods false \
+      --kubelet-extra-args '--node-labels=node.kubernetes.io/lifecycle=spot'
+
+  # ルートボリューム設定
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 30Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+        iops: 3000
+        throughput: 125
+
+  # IMDSv2 強制（セキュリティ要件）
+  metadataOptions:
+    httpEndpoint: enabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+
+  # タグ
+  tags:
+    Project: eks-golden-node-pipeline
+    ManagedBy: karpenter
+    GoldenAMI: "${ami_id}"

@@ -1,0 +1,39 @@
+# SSHd設定 - CIS Benchmark Level 1 準拠
+# Ansible管理ファイル - 手動編集禁止
+
+Port {{ cis_ssh_port }}
+Protocol 2
+
+# 認証設定
+PermitRootLogin {{ cis_ssh_permit_root_login }}
+PasswordAuthentication {{ cis_ssh_password_authentication }}
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM yes
+
+# セッション制限
+MaxAuthTries {{ cis_ssh_max_auth_tries }}
+MaxSessions 4
+LoginGraceTime 60
+
+# アイドルタイムアウト（300秒 = 5分）
+ClientAliveInterval {{ cis_ssh_client_alive_interval }}
+ClientAliveCountMax {{ cis_ssh_client_alive_count_max }}
+
+# 転送設定（EKSノードでは不要なため無効化）
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+
+# 暗号化設定（強い暗号のみ許可）
+KexAlgorithms curve25519-sha256,diffie-hellman-group14-sha256
+Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# ログ設定
+SyslogFacility AUTHPRIV
+LogLevel VERBOSE
+
+# その他
+PrintLastLog yes
+Banner /etc/issue.net

@@ -1,0 +1,136 @@
+name: Golden AMI Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      eks_version:
+        description: "EKS Version (e.g. 1.30)"
+        required: true
+        default: "1.30"
+      dry_run:
+        description: "Dry run (validate only, no AMI build)"
+        required: false
+        default: "false"
+        type: boolean
+
+  push:
+    branches:
+      - main
+    paths:
+      - "ansible/**"
+      - "packer/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  PACKER_VERSION: "1.10.3"
+  ANSIBLE_VERSION: "2.15.*"
+
+jobs:
+  validate:
+    name: Validate Packer Template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Packer Init
+        run: packer init packer/golden-ami.pkr.hcl
+
+      - name: Packer Validate
+        run: |
+          packer validate \
+            -var "aws_region=${{ env.AWS_REGION }}" \
+            -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
+            packer/golden-ami.pkr.hcl
+
+      - name: Ansible Syntax Check
+        run: |
+          pip install ansible==${{ env.ANSIBLE_VERSION }} ansible-lint
+          ansible-playbook \
+            --syntax-check \
+            -i ansible/inventory/packer_hosts \
+            ansible/playbooks/golden-ami.yml
+
+  build:
+    name: Build Golden AMI
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ inputs.dry_run != 'true' || github.event_name == 'push' }}
+
+    environment: production
+
+    outputs:
+      ami_id: ${{ steps.get_ami_id.outputs.ami_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: AWS OIDC 認証
+        # IAM Access Key を使わない。OIDC で一時クレデンシャルを取得する
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/eks-golden-node-pipeline-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-AMIBuild-${{ github.run_id }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Install Ansible
+        run: pip install ansible==${{ env.ANSIBLE_VERSION }}
+
+      - name: Packer Init
+        run: packer init packer/golden-ami.pkr.hcl
+
+      - name: Build Golden AMI
+        run: |
+          packer build \
+            -var "aws_region=${{ env.AWS_REGION }}" \
+            -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
+            packer/golden-ami.pkr.hcl
+        env:
+          PACKER_LOG: 1
+
+      - name: AMI ID を取得
+        id: get_ami_id
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
+          echo "ami_id=${AMI_ID}" >> $GITHUB_OUTPUT
+          echo "Built AMI ID: ${AMI_ID}"
+
+      - name: AMI ビルド結果をサマリーに出力
+        run: |
+          echo "## Golden AMI Build Result" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| AMI ID | ${{ steps.get_ami_id.outputs.ami_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EKS Version | ${{ inputs.eks_version || '1.30' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | ${{ env.AWS_REGION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Run | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Failure Notification
+    runs-on: ubuntu-latest
+    needs: [validate, build]
+    if: failure()
+
+    steps:
+      - name: Chatwork 通知（ビルド失敗）
+        run: |
+          curl -X POST \
+            -H "X-ChatWorkToken: ${{ secrets.CHATWORK_API_TOKEN }}" \
+            -d "body=[info][title]❌ Golden AMI Build Failed[/title]Workflow: ${{ github.workflow }}%0ARun: ${{ github.run_id }}%0ABranch: ${{ github.ref_name }}[/info]" \
+            "https://api.chatwork.com/v2/rooms/${{ secrets.CHATWORK_ROOM_ID }}/messages"
