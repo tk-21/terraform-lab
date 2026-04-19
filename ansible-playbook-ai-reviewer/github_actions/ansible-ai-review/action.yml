@@ -1,0 +1,194 @@
+name: 'Ansible Playbook AI Reviewer'
+description: 'Amazon Bedrockを使ってAnsible PlaybookのAIレビューをPRコメントに投稿する'
+author: 'infra-team'
+
+inputs:
+  api_endpoint:
+    description: 'Reviewer APIのエンドポイントURL'
+    required: true
+  api_key:
+    description: 'API GatewayのAPIキー'
+    required: true
+  api_secret:
+    description: '追加認証シークレット'
+    required: true
+  github_token:
+    description: 'GitHubトークン（PRコメント投稿用）'
+    required: true
+    default: ${{ github.token }}
+  playbook_paths:
+    description: 'レビュー対象PlaybookのGlobパターン（カンマ区切り）'
+    required: false
+    default: '**/*.yml,**/*.yaml'
+  fail_on_critical:
+    description: 'CRITICALな問題が検出された場合にワークフローを失敗させるか'
+    required: false
+    default: 'true'
+
+outputs:
+  review_status:
+    description: 'レビュー結果ステータス (passed/failed/error)'
+    value: ${{ steps.review.outputs.review_status }}
+  issues_found:
+    description: '検出された問題の総数'
+    value: ${{ steps.review.outputs.issues_found }}
+  overall_score:
+    description: '総合スコア (0-100)'
+    value: ${{ steps.review.outputs.overall_score }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 変更されたPlaybookファイルを取得
+      id: get-changed-files
+      shell: bash
+      run: |
+        # PRで変更されたファイルをgh CLIで取得し、Globパターンでフィルタリング
+        CHANGED_FILES=$(gh pr view "$PR_NUMBER" \
+          --repo "$REPO_OWNER/$REPO_NAME" \
+          --json files \
+          --jq '.files[].path')
+
+        # カンマ区切りのGlobパターンを配列に変換
+        IFS=',' read -ra PATTERNS <<< "${{ inputs.playbook_paths }}"
+
+        MATCHED_FILES=""
+        while IFS= read -r file; do
+          for pattern in "${PATTERNS[@]}"; do
+            # bashのパターンマッチングでGlobフィルタリング
+            if [[ "$file" == $pattern ]]; then
+              MATCHED_FILES="${MATCHED_FILES}${file}"$'\n'
+              break
+            fi
+          done
+        done <<< "$CHANGED_FILES"
+
+        # 改行区切りをスペース区切りに変換してOUTPUTへ
+        MATCHED_FILES_ONELINE=$(echo "$MATCHED_FILES" | tr '\n' ' ' | sed 's/ $//')
+        echo "changed_playbooks=$MATCHED_FILES_ONELINE" >> $GITHUB_OUTPUT
+
+        if [ -z "$MATCHED_FILES_ONELINE" ]; then
+          echo "レビュー対象のPlaybookファイルが見つかりませんでした"
+        else
+          echo "対象ファイル: $MATCHED_FILES_ONELINE"
+        fi
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO_OWNER: ${{ github.repository_owner }}
+        REPO_NAME: ${{ github.event.repository.name }}
+
+    - name: 各Playbookをレビュー
+      id: review
+      shell: bash
+      run: |
+        CHANGED_PLAYBOOKS="${{ steps.get-changed-files.outputs.changed_playbooks }}"
+
+        if [ -z "$CHANGED_PLAYBOOKS" ]; then
+          echo "review_status=passed" >> $GITHUB_OUTPUT
+          echo "issues_found=0" >> $GITHUB_OUTPUT
+          echo "overall_score=100" >> $GITHUB_OUTPUT
+          echo "対象Playbookなし。レビューをスキップします。"
+          exit 0
+        fi
+
+        TOTAL_ISSUES=0
+        TOTAL_SCORE=0
+        FILE_COUNT=0
+        HAS_CRITICAL=false
+        REVIEW_FAILED=false
+
+        for playbook_file in $CHANGED_PLAYBOOKS; do
+          echo "レビュー中: $playbook_file"
+
+          # ファイルが存在しない場合はスキップ（削除されたファイルなど）
+          if [ ! -f "$playbook_file" ]; then
+            echo "ファイルが見つかりません。スキップ: $playbook_file"
+            continue
+          fi
+
+          PLAYBOOK_CONTENT=$(cat "$playbook_file" | base64 -w 0)
+
+          # APIリクエスト送信
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "$API_ENDPOINT/review" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $API_KEY" \
+            -H "X-Api-Secret: $API_SECRET" \
+            -d "{
+              \"playbook_content\": \"$PLAYBOOK_CONTENT\",
+              \"playbook_path\": \"$playbook_file\",
+              \"pr_number\": $PR_NUMBER,
+              \"repo_owner\": \"$REPO_OWNER\",
+              \"repo_name\": \"$REPO_NAME\",
+              \"github_token\": \"$GH_TOKEN\"
+            }" \
+            --max-time 120)
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "APIエラー (HTTP $HTTP_STATUS): $playbook_file"
+            echo "レスポンス: $BODY"
+            REVIEW_FAILED=true
+            continue
+          fi
+
+          # jqでスコアと問題数を抽出
+          SCORE=$(echo "$BODY" | jq -r '.overall_score // 0')
+          ISSUES=$(echo "$BODY" | jq -r '.issues | length // 0')
+          RISK_LEVEL=$(echo "$BODY" | jq -r '.risk_level // "UNKNOWN"')
+
+          echo "  スコア: $SCORE/100, 問題数: $ISSUES, リスク: $RISK_LEVEL"
+
+          TOTAL_SCORE=$((TOTAL_SCORE + SCORE))
+          TOTAL_ISSUES=$((TOTAL_ISSUES + ISSUES))
+          FILE_COUNT=$((FILE_COUNT + 1))
+
+          # CRITICALチェック
+          CRITICAL_COUNT=$(echo "$BODY" | jq '[.issues[] | select(.severity == "CRITICAL")] | length')
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            HAS_CRITICAL=true
+            echo "  !! CRITICAL問題が $CRITICAL_COUNT 件検出されました"
+          fi
+        done
+
+        # 平均スコア計算
+        if [ "$FILE_COUNT" -gt 0 ]; then
+          AVG_SCORE=$((TOTAL_SCORE / FILE_COUNT))
+        else
+          AVG_SCORE=100
+        fi
+
+        # ステータス決定
+        if [ "$REVIEW_FAILED" = true ]; then
+          STATUS="error"
+        elif [ "$HAS_CRITICAL" = true ] && [ "${{ inputs.fail_on_critical }}" = "true" ]; then
+          STATUS="failed"
+        else
+          STATUS="passed"
+        fi
+
+        echo "review_status=$STATUS" >> $GITHUB_OUTPUT
+        echo "issues_found=$TOTAL_ISSUES" >> $GITHUB_OUTPUT
+        echo "overall_score=$AVG_SCORE" >> $GITHUB_OUTPUT
+
+        echo "=== レビュー完了 ==="
+        echo "ステータス: $STATUS"
+        echo "総問題数: $TOTAL_ISSUES"
+        echo "平均スコア: $AVG_SCORE/100"
+
+        # fail_on_criticalがtrueでCRITICAL検出時はexit 1
+        if [ "$STATUS" = "failed" ]; then
+          echo "CRITICALな問題が検出されたためワークフローを失敗させます"
+          exit 1
+        fi
+      env:
+        API_ENDPOINT: ${{ inputs.api_endpoint }}
+        API_KEY: ${{ inputs.api_key }}
+        API_SECRET: ${{ inputs.api_secret }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO_OWNER: ${{ github.repository_owner }}
+        REPO_NAME: ${{ github.event.repository.name }}
