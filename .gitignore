@@ -78,3 +78,8 @@ dist/
 *.swo
 *~
 *.log
+
+################
+# Claude
+################
+.claude/settings.json
