@@ -1,0 +1,56 @@
+# =============================================================================
+# CPU Stress Chaos Job
+# stress-ngでchaos-targetネームスペースのノードにCPU 80%の負荷を60秒間注入し、
+# Podエビクション（CPU limitsを超えた場合）と
+# KarpenterのNode追加スケールアウトを検証する。
+#
+# 使用方法:
+#   kubectl apply -f k8s/chaos-jobs/cpu-stress-job.yaml
+#   # または FIS実験テンプレートのkubernetesSpecとして自動注入される
+#
+# 注意:
+#   - resources.limitsを設定してノード全体への影響を制限する
+#   - 60秒後に自動終了してノードCPUを解放する
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cpu-stress-chaos
+  namespace: chaos-target
+  labels:
+    app: cpu-stress-chaos
+    chaos-type: cpu-stress
+    managed-by: fis
+spec:
+  # 完了後60秒でJobとPodを自動削除してクリーンアップ
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app: cpu-stress-chaos
+        chaos-type: cpu-stress
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: cpu-stress
+          image: alexeiled/stress-ng:latest
+          # --cpu 0: 利用可能な全CPUコアを対象
+          # --cpu-load 80: CPU使用率80%を維持
+          # --timeout 60s: 60秒後に自動終了
+          command:
+            - stress-ng
+            - --cpu
+            - "0"
+            - --cpu-load
+            - "80"
+            - --timeout
+            - 60s
+            - --metrics-brief
+          resources:
+            limits:
+              # 500mCPUに制限してノード全体の過負荷を防ぐ
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 500m
+              memory: 128Mi

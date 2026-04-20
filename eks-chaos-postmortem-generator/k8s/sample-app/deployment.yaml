@@ -1,0 +1,57 @@
+# =============================================================================
+# sample-app Deployment
+# AWS FIS（Fault Injection Service）実験の対象アプリケーション
+# chaos-target namespaceに配置し、ChaosTarget=trueのノードで動作させる
+# Pod kill、Node termination、Network latency、CPU stress実験の対象となる
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  # FIS実験対象のnamespaceにデプロイ
+  namespace: chaos-target
+  labels:
+    app: sample-app
+    chaos-target: "true"
+spec:
+  # 3レプリカ: FISによるPod kill実験時の可用性確認に使用
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        chaos-target: "true"
+    spec:
+      # ChaosTarget=trueのノードグループにスケジューリング
+      # これにより、Chaos実験がbaseline（本番相当）ノードに影響しない
+      nodeSelector:
+        role: chaos-target
+      containers:
+        - name: nginx
+          image: nginx:1.25
+          ports:
+            - containerPort: 80
+          # リソース設定: FIS CPU stress実験時の挙動確認に使用
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          # ヘルスチェック: Pod kill実験後の回復確認に使用
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 3

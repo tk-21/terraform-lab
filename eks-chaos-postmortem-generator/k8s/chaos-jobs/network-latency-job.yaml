@@ -1,0 +1,61 @@
+# =============================================================================
+# Network Latency Chaos Job
+# tc netemコマンドでchaos-targetネームスペースのネットワークに
+# 100msの遅延を注入する。
+#
+# 使用方法:
+#   kubectl apply -f k8s/chaos-jobs/network-latency-job.yaml
+#   # または FIS実験テンプレートのkubernetesSpecとして自動注入される
+#
+# 注意:
+#   - hostNetwork: true のためノードのネットワークスタックに直接作用する
+#   - NET_ADMIN capability が必要（tc netem実行のため）
+#   - 60秒後に自動でtc設定を削除してクリーンアップする
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: network-latency-chaos
+  namespace: chaos-target
+  labels:
+    app: network-latency-chaos
+    chaos-type: network-latency
+    managed-by: fis
+spec:
+  # 完了後60秒でJobとPodを自動削除してクリーンアップ
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app: network-latency-chaos
+        chaos-type: network-latency
+    spec:
+      restartPolicy: Never
+      # ノードのネットワークスタックを直接操作するためhostNetworkを使用
+      hostNetwork: true
+      containers:
+        - name: network-latency
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "ネットワーク遅延注入開始: 100ms"
+              tc qdisc add dev eth0 root netem delay 100ms
+              echo "遅延注入完了。60秒維持します..."
+              sleep 60
+              echo "ネットワーク遅延削除開始"
+              tc qdisc del dev eth0 root netem
+              echo "クリーンアップ完了"
+          securityContext:
+            # tc netem実行にNET_ADMIN capabilityが必要
+            capabilities:
+              add:
+                - NET_ADMIN
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
