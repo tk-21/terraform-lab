@@ -1,0 +1,110 @@
+{
+  "Comment": "EKS障害ポストモーテム自動生成ワークフロー - FIS実験完了後に4段階で分析レポートを生成する",
+  "StartAt": "CollectData",
+  "States": {
+    "CollectData": {
+      "Type": "Task",
+      "Resource": "${data_collector_arn}",
+      "Comment": "CloudWatch Logs/Metrics, CloudTrail, K8s Eventsを並列収集",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ErrorNotify",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AnalyzeWithBedrock"
+    },
+    "AnalyzeWithBedrock": {
+      "Type": "Task",
+      "Resource": "${bedrock_analyzer_arn}",
+      "Comment": "収集データをBedrock Claude Sonnet 3.5でポストモーテム分析・6項目バリデーション",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ErrorNotify",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "FormatReport"
+    },
+    "FormatReport": {
+      "Type": "Task",
+      "Resource": "${report_formatter_arn}",
+      "Comment": "ポストモーテムJSONをHTMLレポートに変換してS3に保存しpresigned URLを生成",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ErrorNotify",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Notify"
+    },
+    "Notify": {
+      "Type": "Task",
+      "Resource": "${notifier_arn}",
+      "Comment": "Chatworkへポストモーテムレポートのpresigned URLを通知",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ErrorNotify",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Succeed",
+      "Comment": "ポストモーテムワークフロー正常完了"
+    },
+    "ErrorNotify": {
+      "Type": "Task",
+      "Resource": "${notifier_arn}",
+      "Comment": "ワークフロー失敗時にエラー内容をChatworkへ通知",
+      "Parameters": {
+        "error_mode": true,
+        "error.$": "$.error",
+        "experiment_id.$": "$.experiment_id"
+      },
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "ポストモーテムワークフローでエラーが発生しました"
+    }
+  }
+}

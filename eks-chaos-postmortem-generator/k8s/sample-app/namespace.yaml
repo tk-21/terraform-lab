@@ -1,0 +1,12 @@
+# =============================================================================
+# chaos-target Namespace
+# AWS Fault Injection Service（FIS）実験の対象namespace
+# このnamespaceのリソースにのみChaos Engineeringを適用する
+# 本番namespaceへの誤適用を防ぐための分離レイヤーとして機能する
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-target
+  labels:
+    chaos-enabled: "true"

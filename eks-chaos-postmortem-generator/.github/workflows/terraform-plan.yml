@@ -1,0 +1,107 @@
+# =============================================================================
+# Terraform Plan ワークフロー
+# PRのマージ前にterraform planを実行し、変更内容をPRコメントに投稿する
+# =============================================================================
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+
+# OIDC認証に必要な権限設定（アクセスキー不要）
+permissions:
+  id-token: write       # OIDCトークンの発行に必要
+  contents: read        # リポジトリのチェックアウトに必要
+  pull-requests: write  # PRコメントの投稿に必要
+
+env:
+  TF_VERSION: "1.6.0"
+  WORKING_DIR: terraform/environments/dev
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      # ソースコードのチェックアウト
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # OIDC認証でAWSにアクセス（アクセスキー不使用）
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      # Terraformのセットアップ
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # フォーマットチェック（HCLの書式確認）
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+
+      # 初期化（バックエンドとプロバイダーのセットアップ）
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # バリデーション（構文・設定の検証）
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # Plan実行（変更内容のプレビュー）
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -input=false
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+
+      # planの結果をPRコメントに投稿
+      - name: Post Plan Result to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.plan.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `## Terraform Plan Results
+
+            #### Format and Style 🖌 \`${{ steps.fmt.outcome }}\`
+            #### Initialization ⚙️ \`${{ steps.init.outcome }}\`
+            #### Validation 🤖 \`${{ steps.validate.outcome }}\`
+            #### Plan 📖 \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform
+            ${process.env.PLAN}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      # Plan失敗時はワークフローを失敗させる
+      - name: Terraform Plan Status Check
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
