@@ -1,0 +1,55 @@
+---
+- name: Set timezone to Asia/Tokyo
+  community.general.timezone:
+    name: Asia/Tokyo
+
+- name: Install chrony
+  ansible.builtin.dnf:
+    name: chrony
+    state: present
+  notify: Restart chrony
+
+- name: Enable and start chrony
+  ansible.builtin.systemd:
+    name: chronyd
+    enabled: true
+    state: started
+
+- name: Update all packages
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+  changed_when: false
+
+- name: Install required packages
+  ansible.builtin.dnf:
+    name:
+      - python3
+      - python3-pip
+      - git
+      - jq
+      - wget
+    state: present
+
+- name: Create app group
+  ansible.builtin.group:
+    name: "{{ app_group }}"
+    system: true
+    state: present
+
+- name: Create app user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    system: true
+    home: "{{ app_dir }}"
+    create_home: true
+    shell: /sbin/nologin
+    state: present
+
+- name: Disable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    enabled: false
+    state: stopped
+  failed_when: false

@@ -1,0 +1,41 @@
+---
+- name: CloudWatch Agentパッケージのインストール
+  ansible.builtin.dnf:
+    name: amazon-cloudwatch-agent
+    state: present
+
+- name: SSM Parameter StoreからAgent設定を取得
+  ansible.builtin.command:
+    cmd: >
+      aws ssm get-parameter
+      --name "/tap/{{ env }}/cloudwatch-agent/config"
+      --region ap-northeast-1
+      --query "Parameter.Value"
+      --output text
+  register: cw_agent_config
+  changed_when: false
+
+- name: Agent設定ファイルを配置
+  ansible.builtin.copy:
+    content: "{{ cw_agent_config.stdout }}"
+    dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart cloudwatch agent
+
+- name: CloudWatch Agentをfetch-config で設定適用
+  ansible.builtin.command:
+    cmd: >
+      /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+      -a fetch-config
+      -m ec2
+      -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+      -s
+  changed_when: false
+
+- name: CloudWatch Agentを有効化・起動
+  ansible.builtin.systemd:
+    name: amazon-cloudwatch-agent
+    enabled: true
+    state: started

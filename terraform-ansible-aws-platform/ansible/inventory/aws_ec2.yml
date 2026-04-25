@@ -1,0 +1,23 @@
+---
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - ap-northeast-1
+
+filters:
+  tag:Project: "terraform-ansible-platform"
+  tag:Environment: "dev"
+  tag:Role: "app"
+  instance-state-name: running
+
+hostnames:
+  - instance-id
+
+keyed_groups:
+  - key: tags.Role
+    prefix: role
+  - key: tags.Environment
+    prefix: env
+
+compose:
+  ansible_host: instance_id
