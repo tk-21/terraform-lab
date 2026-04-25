@@ -1,0 +1,6 @@
+---
+nginx_proxy_pass: "http://127.0.0.1:{{ app_port }}"
+nginx_server_name: "_"
+
+python_version: "python3"
+pip_executable: "pip3"

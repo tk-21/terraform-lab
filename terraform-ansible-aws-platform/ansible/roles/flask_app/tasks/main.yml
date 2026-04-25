@@ -1,0 +1,59 @@
+---
+- name: Create app directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+
+- name: Copy requirements.txt
+  ansible.builtin.copy:
+    src: requirements.txt
+    dest: "{{ app_dir }}/requirements.txt"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+
+- name: Install Python packages
+  ansible.builtin.pip:
+    requirements: "{{ app_dir }}/requirements.txt"
+    executable: "{{ pip_executable }}"
+    extra_args: "--upgrade"
+
+- name: Copy app.py
+  ansible.builtin.copy:
+    src: app.py
+    dest: "{{ app_dir }}/app.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  notify: Restart flask-app
+
+- name: Deploy flask-app systemd service
+  ansible.builtin.template:
+    src: flask-app.service.j2
+    dest: /etc/systemd/system/flask-app.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart flask-app
+
+- name: Enable and start flask-app
+  ansible.builtin.systemd:
+    name: flask-app
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for flask-app health check
+  ansible.builtin.uri:
+    url: "http://localhost/api/health"
+    method: GET
+    status_code: 200
+  register: health_result
+  retries: 3
+  delay: 5
+  until: health_result.status == 200

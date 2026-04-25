@@ -1,0 +1,11 @@
+---
+- name: App Server Provisioning
+  hosts: role_app
+  become: true
+  gather_facts: true
+
+  roles:
+    - common
+    - nginx
+    - flask_app
+    - cloudwatch_agent

@@ -1,0 +1,17 @@
+[Unit]
+Description=Flask Platform API
+After=network.target
+
+[Service]
+Type=simple
+User=app
+Group=app
+WorkingDirectory=/opt/flask-app
+ExecStart=/usr/local/bin/gunicorn --workers 2 --bind 0.0.0.0:5000 app:app
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
