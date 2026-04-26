@@ -1,0 +1,105 @@
+{
+  "Comment": "IaC Drift Detective - ドリフト検知から修復PRまでのワークフロー",
+  "StartAt": "DetectDrift",
+  "States": {
+    "DetectDrift": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DriftDetectorFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "drift_detected.$": "$.Payload.drift_detected",
+        "drifts.$": "$.Payload.drifts",
+        "stack_name.$": "$.Payload.stack_name",
+        "detection_timestamp.$": "$.Payload.detection_timestamp"
+      },
+      "ResultPath": "$.detection_result",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "CheckDriftExists"
+    },
+    "CheckDriftExists": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.detection_result.drift_detected",
+          "BooleanEquals": true,
+          "Next": "AnalyzeDrift"
+        }
+      ],
+      "Default": "NoDriftFound"
+    },
+    "NoDriftFound": {
+      "Type": "Succeed",
+      "Comment": "ドリフトなし - 正常終了"
+    },
+    "AnalyzeDrift": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${BedrockAnalyzerFunctionArn}",
+        "Payload.$": "$.detection_result"
+      },
+      "ResultSelector": {
+        "drift_summary.$": "$.Payload.drift_summary",
+        "root_cause.$": "$.Payload.root_cause",
+        "remediation_hcl.$": "$.Payload.remediation_hcl",
+        "severity.$": "$.Payload.severity",
+        "affected_resources.$": "$.Payload.affected_resources",
+        "risk_assessment.$": "$.Payload.risk_assessment",
+        "analysis_timestamp.$": "$.Payload.analysis_timestamp",
+        "report_s3_key.$": "$.Payload.report_s3_key"
+      },
+      "ResultPath": "$.analysis_result",
+      "TimeoutSeconds": 360,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Next": "CreatePR"
+    },
+    "CreatePR": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PRCreatorFunctionArn}",
+        "Payload.$": "$.analysis_result"
+      },
+      "ResultSelector": {
+        "pr_created.$": "$.Payload.pr_created",
+        "pr_url.$": "$.Payload.pr_url",
+        "pr_number.$": "$.Payload.pr_number",
+        "branch_name.$": "$.Payload.branch_name",
+        "chatwork_notified.$": "$.Payload.chatwork_notified",
+        "severity.$": "$.Payload.severity"
+      },
+      "ResultPath": "$.pr_result",
+      "TimeoutSeconds": 60,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "WorkflowComplete"
+    },
+    "WorkflowComplete": {
+      "Type": "Succeed"
+    }
+  }
+}

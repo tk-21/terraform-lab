@@ -1,0 +1,89 @@
+name: Lambda Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "lambda/**"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-lambdas:
+    name: Deploy ${{ matrix.lambda }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lambda:
+          - drift_detector
+          - bedrock_analyzer
+          - pr_creator
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            -r lambda/${{ matrix.lambda }}/requirements.txt \
+            -t lambda/${{ matrix.lambda }}/
+
+      - name: Package Lambda
+        run: |
+          cd lambda/${{ matrix.lambda }}
+          zip -r ../../${{ matrix.lambda }}.zip . \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude "*.dist-info/*"
+          cd ../..
+
+      - name: Get AWS Account ID
+        id: account
+        run: |
+          echo "id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+      - name: Upload to S3
+        run: |
+          aws s3 cp ${{ matrix.lambda }}.zip \
+            s3://drift-detective-deployments-${{ steps.account.outputs.id }}/${{ matrix.lambda }}/${{ matrix.lambda }}-${{ github.sha }}.zip
+
+      - name: Update Lambda function code
+        id: update
+        run: |
+          FUNCTION_NAME="drift-detective-$(echo ${{ matrix.lambda }} | tr '_' '-')"
+          aws lambda update-function-code \
+            --function-name "${FUNCTION_NAME}" \
+            --s3-bucket "drift-detective-deployments-${{ steps.account.outputs.id }}" \
+            --s3-key "${{ matrix.lambda }}/${{ matrix.lambda }}-${{ github.sha }}.zip" \
+            --architectures arm64 \
+            --no-cli-pager
+          echo "function_name=${FUNCTION_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Wait for update completion
+        run: |
+          aws lambda wait function-updated \
+            --function-name "${{ steps.update.outputs.function_name }}"
+
+      - name: Publish Lambda version
+        run: |
+          aws lambda publish-version \
+            --function-name "${{ steps.update.outputs.function_name }}" \
+            --description "deploy: ${{ github.sha }}" \
+            --no-cli-pager
