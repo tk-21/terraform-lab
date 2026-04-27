@@ -1,0 +1,59 @@
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp2
+          resources:
+            requests:
+              storage: 10Gi
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+grafana:
+  enabled: true
+  service:
+    type: LoadBalancer
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+
+alertmanager:
+  enabled: false
+
+additionalServiceMonitors:
+  - name: sample-app
+    selector:
+      matchLabels:
+        app: sample-app
+    namespaceSelector:
+      matchNames:
+        - perf-tuning
+    endpoints:
+      - port: metrics
+        path: /metrics
+        interval: 15s
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true

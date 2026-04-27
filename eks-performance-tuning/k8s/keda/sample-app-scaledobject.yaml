@@ -1,0 +1,20 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sample-app-keda
+  namespace: perf-tuning
+spec:
+  scaleTargetRef:
+    name: sample-app
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://kube-prometheus-stack-prometheus.observability:9090
+        metricName: http_requests_active
+        threshold: "100"
+        query: |
+          sum(rate(http_requests_total{namespace="perf-tuning"}[1m]))

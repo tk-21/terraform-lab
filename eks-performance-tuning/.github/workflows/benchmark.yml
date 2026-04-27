@@ -1,0 +1,82 @@
+name: "Scheduled Benchmark"
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "k6 scenario name to run"
+        required: false
+        default: "baseline"
+      tag:
+        description: "Result tag (e.g. before-tuning, after-tuning)"
+        required: false
+        default: "manual"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  benchmark:
+    name: Run Benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "latest"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ap-northeast-1 \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Verify cluster connectivity
+        run: kubectl get nodes --no-headers | wc -l
+
+      - name: Run Benchmark
+        run: |
+          SCENARIO="${{ github.event.inputs.scenario || 'baseline' }}"
+          TAG="${{ github.event.inputs.tag || 'manual' }}"
+          echo "Running scenario: ${SCENARIO}"
+          chmod +x scripts/run-benchmark.sh
+          bash scripts/run-benchmark.sh "${SCENARIO}" "${TAG}"
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: load-tests/results/
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Benchmark Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scenario**: ${{ github.event.inputs.scenario || 'baseline' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ github.event.inputs.tag || 'manual' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if ls load-tests/results/*.json 1>/dev/null 2>&1; then
+            echo "Results saved. Download the artifact \`benchmark-results-${{ github.run_id }}\` for full JSON output." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No result files found in load-tests/results/" >> $GITHUB_STEP_SUMMARY
+          fi
