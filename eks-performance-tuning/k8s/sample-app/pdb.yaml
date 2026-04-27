@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sample-app-pdb
+  namespace: perf-tuning
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sample-app
