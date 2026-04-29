@@ -1,0 +1,31 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+tfplan
+*.tfplan
+
+# テスト出力
+response.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# 環境変数・シークレット
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp

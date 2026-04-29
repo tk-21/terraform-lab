@@ -1,0 +1,82 @@
+{
+  "Comment": "AWS運用自動化オーケストレーター - Supervisor Agentを呼び出し結果を管理",
+  "StartAt": "RecordExecutionStart",
+  "States": {
+    "RecordExecutionStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${execution_history_table}",
+        "Item": {
+          "execution_id": { "S.$": "$$.Execution.Name" },
+          "timestamp": { "S.$": "$$.Execution.StartTime" },
+          "status": { "S": "RUNNING" },
+          "event_type": { "S.$": "$.event_type" }
+        }
+      },
+      "ResultPath": null,
+      "Next": "InvokeSupervisorAgent"
+    },
+    "InvokeSupervisorAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::bedrock:invokeAgent",
+      "Parameters": {
+        "AgentId": "${supervisor_agent_id}",
+        "AgentAliasId": "${supervisor_agent_alias_id}",
+        "SessionId.$": "$$.Execution.Name",
+        "InputText.$": "States.Format('イベントタイプ: {}, 詳細: {}', $.event_type, States.JsonToString($.event_detail))"
+      },
+      "TimeoutSeconds": 300,
+      "Retry": [
+        {
+          "ErrorEquals": ["Bedrock.ThrottlingException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "ResultPath": "$.agent_output",
+      "Next": "RecordSuccess"
+    },
+    "RecordSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${execution_history_table}",
+        "Key": {
+          "execution_id": { "S.$": "$$.Execution.Name" },
+          "timestamp": { "S.$": "$$.Execution.StartTime" }
+        },
+        "UpdateExpression": "SET #s = :status",
+        "ExpressionAttributeNames": { "#s": "status" },
+        "ExpressionAttributeValues": { ":status": { "S": "SUCCEEDED" } }
+      },
+      "End": true
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${execution_history_table}",
+        "Key": {
+          "execution_id": { "S.$": "$$.Execution.Name" },
+          "timestamp": { "S.$": "$$.Execution.StartTime" }
+        },
+        "UpdateExpression": "SET #s = :status, error_details = :err",
+        "ExpressionAttributeNames": { "#s": "status" },
+        "ExpressionAttributeValues": {
+          ":status": { "S": "FAILED" },
+          ":err": { "S.$": "States.JsonToString($.error)" }
+        }
+      },
+      "End": true
+    }
+  }
+}

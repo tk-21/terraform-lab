@@ -1,0 +1,122 @@
+openapi: "3.0.0"
+info:
+  title: "Remediation API"
+  description: "承認フロー経由のAWS修復実行Action Group"
+  version: "1.0.0"
+paths:
+  /create_approval_request:
+    post:
+      operationId: createApprovalRequest
+      description: "修復操作の人間承認リクエストを作成し、Chatworkに通知する。必ずこれを最初に呼び出す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action_type
+                - resource_id
+                - description
+                - risk_level
+              properties:
+                action_type:
+                  type: string
+                  description: "実行する操作の種別（例: restart_service, apply_patch）"
+                resource_id:
+                  type: string
+                  description: "操作対象のリソースID"
+                description:
+                  type: string
+                  description: "操作内容の詳細説明"
+                risk_level:
+                  type: string
+                  enum: ["low", "medium", "high"]
+                  description: "操作のリスクレベル"
+      responses:
+        "200":
+          description: "承認リクエスト作成結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                    description: "承認リクエストID（以後の操作で使用）"
+                  status:
+                    type: string
+                    enum: ["pending_approval"]
+
+  /check_approval_status:
+    post:
+      operationId: checkApprovalStatus
+      description: "承認リクエストの現在のステータスを確認する。approved になるまでSSMコマンドを実行してはいけない。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - request_id
+              properties:
+                request_id:
+                  type: string
+                  description: "create_approval_request で取得したリクエストID"
+      responses:
+        "200":
+          description: "承認ステータス"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: ["pending_approval", "approved", "rejected", "expired", "not_found"]
+                  approved_by:
+                    type: string
+
+  /execute_ssm_document:
+    post:
+      operationId: executeSsmDocument
+      description: "承認済みリクエストのみSSMドキュメントを実行する。未承認の場合はエラーを返す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - instance_id
+                - document_name
+                - request_id
+              properties:
+                instance_id:
+                  type: string
+                  description: "SSMコマンドを実行するEC2インスタンスID"
+                document_name:
+                  type: string
+                  description: "実行するSSMドキュメント名（例: AWS-RunShellScript）"
+                parameters:
+                  type: object
+                  description: "SSMドキュメントに渡すパラメータ"
+                  default: {}
+                request_id:
+                  type: string
+                  description: "承認済みのrequest_id"
+      responses:
+        "200":
+          description: "SSMコマンド実行結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  command_id:
+                    type: string
+                  status:
+                    type: string

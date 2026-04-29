@@ -1,0 +1,85 @@
+openapi: "3.0.0"
+info:
+  title: "Reporter API"
+  description: "HTMLレポート生成・Chatwork通知Action Group"
+  version: "1.0.0"
+paths:
+  /generate_html_report:
+    post:
+      operationId: generateHtmlReport
+      description: "Agent実行結果をHTMLレポートに変換してS3に保存し、7日間有効なPresigned URLを返す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - execution_id
+                - title
+              properties:
+                execution_id:
+                  type: string
+                  description: "Agent実行セッションID"
+                title:
+                  type: string
+                  description: "レポートタイトル"
+                findings:
+                  type: array
+                  description: "調査結果・検出事項のリスト"
+                  items:
+                    type: object
+                  default: []
+                recommendations:
+                  type: array
+                  description: "推奨アクションのリスト"
+                  items:
+                    type: object
+                  default: []
+      responses:
+        "200":
+          description: "レポート生成結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  s3_key:
+                    type: string
+                    description: "S3オブジェクトキー"
+                  presigned_url:
+                    type: string
+                    description: "7日間有効なPresigned URL"
+
+  /send_chatwork_notification:
+    post:
+      operationId: sendChatworkNotification
+      description: "Chatworkに通知を送信する。必ずChatworkに送信すること（Slackではない）。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+                  description: "Chatworkに送信するメッセージ本文"
+                report_url:
+                  type: string
+                  description: "レポートのPresigned URL（generate_html_report で取得）"
+      responses:
+        "200":
+          description: "通知送信結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: ["sent"]

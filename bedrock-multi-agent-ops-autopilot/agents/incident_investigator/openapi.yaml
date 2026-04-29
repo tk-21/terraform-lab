@@ -1,0 +1,123 @@
+openapi: "3.0.0"
+info:
+  title: "Incident Investigator API"
+  description: "CloudWatch/X-Ray/Config を使ったAWS障害調査Action Group"
+  version: "1.0.0"
+paths:
+  /investigate_cloudwatch_alarms:
+    post:
+      operationId: investigateCloudwatchAlarms
+      description: "CloudWatchアラームの状態と関連メトリクスを調査する。ALARM状態のアラーム一覧と直近のメトリクス値を返す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                time_range_minutes:
+                  type: integer
+                  description: "調査対象の時間範囲（分）"
+                  default: 60
+                namespace:
+                  type: string
+                  description: "フィルタするCloudWatchネームスペース（例: AWS/EC2）。省略時は全ネームスペース"
+      responses:
+        "200":
+          description: "アラーム調査結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alarms:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        alarm_name:
+                          type: string
+                        state:
+                          type: string
+                        reason:
+                          type: string
+                        metric_stats:
+                          type: object
+                  total_count:
+                    type: integer
+
+  /investigate_xray_traces:
+    post:
+      operationId: investigateXrayTraces
+      description: "X-Rayトレースでマイクロサービス間のエラー伝播経路を特定する。エラーレート・レイテンシ・障害サービスを返す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - service_name
+              properties:
+                service_name:
+                  type: string
+                  description: "調査対象サービス名"
+                time_range_minutes:
+                  type: integer
+                  description: "調査対象の時間範囲（分）"
+                  default: 60
+      responses:
+        "200":
+          description: "X-Rayトレース調査結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service_stats:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        service_name:
+                          type: string
+                        error_rate_percent:
+                          type: number
+                        avg_response_time_ms:
+                          type: number
+                  error_trace_count:
+                    type: integer
+
+  /check_config_compliance:
+    post:
+      operationId: checkConfigCompliance
+      description: "AWS Configルールの非準拠リソースを確認する。設定変更が障害原因でないか検証する。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resource_type:
+                  type: string
+                  description: "フィルタするリソースタイプ（例: AWS::EC2::Instance）。省略時は全タイプ"
+      responses:
+        "200":
+          description: "Config準拠確認結果"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  non_compliant_rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rule_name:
+                          type: string
+                        non_compliant_count:
+                          type: integer
+                  total_count:
+                    type: integer
