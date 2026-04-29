@@ -1,0 +1,121 @@
+openapi: "3.0.0"
+info:
+  title: "Cost Optimizer API"
+  description: "AWSコスト異常検出・最適化推奨Action Group"
+  version: "1.0.0"
+paths:
+  /get_cost_anomalies:
+    post:
+      operationId: getCostAnomalies
+      description: "Cost Explorerからコスト異常を取得する。影響金額の大きい順にソートして返す。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lookback_days:
+                  type: integer
+                  description: "過去何日分のコスト異常を取得するか"
+                  default: 7
+      responses:
+        "200":
+          description: "コスト異常一覧"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  anomalies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        anomaly_id:
+                          type: string
+                        service:
+                          type: string
+                        total_impact_usd:
+                          type: number
+                        start_date:
+                          type: string
+                        end_date:
+                          type: string
+                  total_count:
+                    type: integer
+
+  /get_rightsizing_recommendations:
+    post:
+      operationId: getRightsizingRecommendations
+      description: "EC2インスタンスの右サイジング推奨を取得する。推定削減額の大きい順にソートして返す。実際の変更は行わない。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+      responses:
+        "200":
+          description: "右サイジング推奨一覧"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recommendations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        instance_id:
+                          type: string
+                        current_instance_type:
+                          type: string
+                        recommended_instance_type:
+                          type: string
+                        estimated_monthly_savings_usd:
+                          type: number
+                  total_count:
+                    type: integer
+
+  /get_unused_resources:
+    post:
+      operationId: getUnusedResources
+      description: "未使用リソース（未アタッチEBS、未関連付けEIP）を検出する。実際の削除は行わない。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resource_types:
+                  type: array
+                  items:
+                    type: string
+                    enum: ["EBS", "EIP"]
+                  description: "検出対象リソースタイプ"
+                  default: ["EBS", "EIP"]
+      responses:
+        "200":
+          description: "未使用リソース一覧"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unused_resources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        resource_id:
+                          type: string
+                        resource_type:
+                          type: string
+                        estimated_monthly_cost_usd:
+                          type: number
+                  total_count:
+                    type: integer
