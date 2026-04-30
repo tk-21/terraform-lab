@@ -1,0 +1,21 @@
+{
+  "Version": "2020-12-01",
+  "Metadata": {},
+  "Parameters": [
+    {
+      "Name": "AccuracyThreshold",
+      "Type": "Float",
+      "DefaultValue": 0.8
+    },
+    {
+      "Name": "InputDataUri",
+      "Type": "String",
+      "DefaultValue": "s3://REPLACE_WITH_DATA_BUCKET/raw/"
+    }
+  ],
+  "PipelineExperimentConfig": {
+    "ExperimentName": {"Get": "Execution.PipelineName"},
+    "TrialName": {"Get": "Execution.PipelineExecutionId"}
+  },
+  "Steps": []
+}
