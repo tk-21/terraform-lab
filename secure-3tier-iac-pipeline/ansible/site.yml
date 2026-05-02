@@ -1,0 +1,12 @@
+---
+- name: OS ハードニング
+  hosts: role_webserver
+  gather_facts: true
+  roles:
+    - os_hardening
+
+- name: アプリデプロイ
+  hosts: role_webserver
+  gather_facts: true
+  roles:
+    - app_deploy

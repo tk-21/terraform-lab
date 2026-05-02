@@ -1,0 +1,7 @@
+---
+- name: 設定ドリフト検出
+  hosts: role_webserver
+  gather_facts: true
+  check_mode: true
+  roles:
+    - drift_detection

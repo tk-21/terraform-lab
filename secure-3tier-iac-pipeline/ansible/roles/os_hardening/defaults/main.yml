@@ -1,0 +1,4 @@
+---
+# os_hardening ロールのデフォルト値
+hardening_sysctl_file: /etc/sysctl.d/99-hardening.conf
+hardening_audit_rules_file: /etc/audit/rules.d/99-hardening.rules
