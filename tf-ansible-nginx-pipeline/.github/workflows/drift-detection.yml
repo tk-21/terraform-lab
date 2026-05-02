@@ -1,0 +1,92 @@
+# =============================================================================
+# Drift検知: 毎日定期的にterraform planを実行し、手動変更を検出する
+# 設計思想:
+#   IaCで管理しているのに誰かが手動でコンソールを操作した場合、
+#   差分が発生する。これをCIで自動検知し、即座に通知する。
+# =============================================================================
+
+name: Drift Detection
+
+on:
+  schedule:
+    # 毎日午前9時（JST）に実行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write  # Drift検出時にIssueを作成するため
+
+jobs:
+  detect-drift:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS OIDC認証
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: terraform init
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      - name: terraform plan（差分チェック）
+        id: plan
+        working-directory: terraform/environments/dev
+        run: |
+          terraform plan -detailed-exitcode -no-color 2>&1 | tee plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        # exit code:
+        #   0 = 差分なし（正常）
+        #   1 = エラー
+        #   2 = 差分あり（Driftが発生している）
+
+      - name: Drift検出時にGitHub Issueを作成
+        if: steps.plan.outputs.exit_code == '2'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Infrastructure Drift Detected - ${new Date().toISOString().split('T')[0]}`,
+              body: `## Drift検出アラート
+
+            Terraformで管理しているリソースに手動変更が検出されました。
+
+            ### plan差分
+
+            \`\`\`
+            ${planOutput.substring(0, 3000)}
+            \`\`\`
+
+            ### 対応手順
+
+            1. 差分の内容を確認する
+            2. 意図的な変更の場合: terraform importまたはコード修正
+            3. 意図しない変更の場合: terraform applyで状態を戻す
+
+            **注意**: 手動変更は次のapplyで上書きされます。`,
+              labels: ['infrastructure', 'drift', 'urgent']
+            });
+
+      - name: plan結果のサマリー出力
+        run: |
+          if [ "${{ steps.plan.outputs.exit_code }}" = "0" ]; then
+            echo "✅ Drift検出なし: Terraformの管理状態と実インフラが一致しています"
+          elif [ "${{ steps.plan.outputs.exit_code }}" = "2" ]; then
+            echo "🚨 Drift検出: 手動変更が見つかりました。GitHubにIssueを作成しました。"
+            exit 1
+          fi

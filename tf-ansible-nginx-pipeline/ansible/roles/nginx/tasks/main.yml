@@ -1,0 +1,98 @@
+# =============================================================================
+# nginxロール メインタスク
+# 設計思想:
+#   1. changed_when / failed_when で冪等性を明示的に制御する
+#   2. block/rescue/always でエラーハンドリングを構造化する
+#   3. handlerで「変更があったときだけ」サービスを再起動する
+# =============================================================================
+
+---
+- name: SSMパラメータからnginx設定値を取得
+  # 設計思想: 設定値はSSMパラメータから動的に取得し、Ansibleのvarsへの
+  # ハードコードを避ける。Terraformが設定値の信頼できる唯一の情報源となる。
+  amazon.aws.aws_ssm_parameter_facts:
+    names:
+      - "/handson-dev/nginx/port"
+      - "/handson-dev/nginx/worker_processes"
+    region: ap-northeast-1
+  register: ssm_params
+  when: not (skip_ssm_fetch | default(false))
+  # このタスクはSSM APIを読み取るだけなので常にchangedにならない
+  changed_when: false
+
+- name: SSMパラメータ値を変数にセット
+  ansible.builtin.set_fact:
+    nginx_port: "{{ ssm_params.parameters['/handson-dev/nginx/port'] | int }}"
+    nginx_worker_processes: "{{ ssm_params.parameters['/handson-dev/nginx/worker_processes'] }}"
+  when: not (skip_ssm_fetch | default(false))
+
+- name: nginxインストールと設定のブロック
+  block:
+    - name: nginxパッケージのインストール
+      ansible.builtin.dnf:
+        name: "{{ nginx_package }}"
+        state: present
+      # dnfは冪等: すでにインストール済みなら changed=false になる
+
+    - name: ドキュメントルートディレクトリの作成
+      ansible.builtin.file:
+        path: "{{ nginx_document_root }}"
+        state: directory
+        owner: nginx
+        group: nginx
+        mode: "0755"
+
+    - name: nginx設定ファイルのデプロイ
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        owner: root
+        group: root
+        mode: "0644"
+        # validate: 設定ファイルのデプロイ前にnginx -tで構文チェック
+        validate: nginx -t -c %s
+      notify: nginx reload
+      # notifyの設計思想: 設定ファイルが変更されたときだけreloadする
+      # 変更がなければhandlerは実行されない → 不要なサービス再起動を防ぐ
+
+    - name: インデックスページのデプロイ
+      ansible.builtin.template:
+        src: index.html.j2
+        dest: "{{ nginx_document_root }}/index.html"
+        owner: nginx
+        group: nginx
+        mode: "0644"
+
+    - name: nginxサービスの有効化と起動
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: true
+      # systemdモジュールは冪等: 起動済みなら changed=false
+
+  rescue:
+    # エラー発生時: nginxのエラーログを収集してから失敗させる
+    - name: nginxエラーログを収集（デバッグ用）
+      ansible.builtin.command: journalctl -u nginx --no-pager -n 50
+      register: nginx_journal
+      changed_when: false  # ログ取得はシステム状態を変更しない
+
+    - name: エラーログを表示
+      ansible.builtin.debug:
+        msg: "{{ nginx_journal.stdout_lines }}"
+
+    - name: 失敗を明示的に伝播させる
+      ansible.builtin.fail:
+        msg: "nginxのインストール/設定に失敗しました。上記のログを確認してください。"
+
+  always:
+    # 成功・失敗に関わらず: nginx設定の検証結果を記録
+    - name: nginx設定検証ステータスの確認
+      ansible.builtin.command: nginx -t
+      register: nginx_config_test
+      changed_when: false
+      failed_when: false  # alwaysブロック内では失敗しても処理を継続
+
+    - name: nginx設定検証結果をログ出力
+      ansible.builtin.debug:
+        msg: "nginx -t result: {{ nginx_config_test.rc == 0 | ternary('OK', 'FAILED') }}"

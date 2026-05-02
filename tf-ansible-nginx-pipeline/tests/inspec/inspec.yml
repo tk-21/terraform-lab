@@ -1,0 +1,9 @@
+name: handson-security
+title: Handson Infrastructure Security Controls
+maintainer: your-name
+summary: TF×Ansible×AWSハンズオンのセキュリティポリシー準拠確認
+version: 0.1.0
+inspec_version: ">= 6.0"
+depends:
+  - name: inspec-aws
+    url: https://github.com/inspec/inspec-aws/archive/main.tar.gz

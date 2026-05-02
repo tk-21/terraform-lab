@@ -1,0 +1,52 @@
+# =============================================================================
+# Molecule設定: nginxロールの単体テスト
+# 設計思想:
+#   1. Dockerを使いAWS不要でロールをテストする（CI/CDコスト削減）
+#   2. converge → idempotency → verify の3段階で品質を保証する
+#   3. idempotencyチェックで「2回実行してもchanged=0」を自動検証する
+# =============================================================================
+
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+platforms:
+  - name: nginx-test
+    # Amazon Linux 2023に近いイメージを使用
+    image: amazonlinux:2023
+    pre_build_image: true
+    # systemdを使用するための設定
+    command: /usr/sbin/init
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      stdout_callback: yaml
+  # SSMパラメータ取得をモック化するための変数上書き
+  inventory:
+    host_vars:
+      nginx-test:
+        ansible_connection: local
+        # テスト環境ではSSMパラメータ取得をスキップし、defaultsの値を使用
+        skip_ssm_fetch: true
+
+verifier:
+  name: ansible
+
+scenario:
+  test_sequence:
+    - dependency
+    - create
+    - converge
+    - idempotency   # ← 2回目実行でchanged=0を確認する重要なステップ
+    - verify
+    - destroy

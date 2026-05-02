@@ -1,0 +1,44 @@
+# Ansible管理ファイル: 手動編集禁止
+# 生成元: roles/nginx/templates/nginx.conf.j2
+# 変数はSSMパラメータから取得
+
+user nginx;
+worker_processes {{ nginx_worker_processes }};
+error_log {{ nginx_error_log }} warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections {{ nginx_worker_connections }};
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log {{ nginx_access_log }} main;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen       {{ nginx_port }};
+        server_name  _;
+        root         {{ nginx_document_root }};
+        index        index.html;
+
+        location / {
+            try_files $uri $uri/ =404;
+        }
+
+        # ヘルスチェックエンドポイント（ALBターゲットグループ用）
+        location /health {
+            access_log off;
+            return 200 "OK\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}

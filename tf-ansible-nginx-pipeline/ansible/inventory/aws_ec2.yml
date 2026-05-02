@@ -1,0 +1,32 @@
+# =============================================================================
+# AWS EC2 Dynamic Inventory設定
+# 設計思想: IPアドレスやホスト名をハードコードせず、AWSタグで対象を動的に解決する
+# これにより、インスタンスの再作成・スケールアウト時も inventory の修正が不要になる
+# =============================================================================
+
+plugin: aws_ec2
+regions:
+  - ap-northeast-1
+
+# フィルタリング: Terraformで付与したタグで対象を絞り込む
+filters:
+  tag:AnsibleManaged: "true"
+  instance-state-name: running
+
+# ホスト変数: インスタンスの属性をAnsible変数として自動設定
+hostnames:
+  - instance-id  # SSMセッションマネージャーはinstance-idで接続するため
+
+# グループ化: タグ値でグループを自動生成
+keyed_groups:
+  - key: tags.Role        # Role=web → グループ名 "web"
+    prefix: ""
+    separator: ""
+  - key: tags.Environment # Environment=dev → グループ名 "dev"
+    prefix: "env_"
+
+# 接続設定: SSHではなくSSMセッションマネージャーを使用
+compose:
+  ansible_host: instance_id
+  ansible_connection: "aws_ssm"
+  ansible_aws_ssm_region: "ap-northeast-1"

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<head><title>{{ inventory_hostname }}</title></head>
+<body>
+  <h1>Ansible管理によるnginx</h1>
+  <p>ホスト: {{ inventory_hostname }}</p>
+  <p>nginxポート: {{ nginx_port }}</p>
+  <p>デプロイ日時: {{ ansible_date_time.iso8601 }}</p>
+</body>
+</html>
