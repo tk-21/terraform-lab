@@ -1,0 +1,45 @@
+---
+- name: パスワードポリシー設定 (pwquality)
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: "^{{ item.key }}"
+    line: "{{ item.key }} = {{ item.value }}"
+    state: present
+  loop:
+    - { key: "minlen", value: "14" }
+    - { key: "dcredit", value: "-1" }
+    - { key: "ucredit", value: "-1" }
+    - { key: "ocredit", value: "-1" }
+    - { key: "lcredit", value: "-1" }
+  changed_when: true
+
+- name: rootの直接ログイン無効化 (/etc/securetty)
+  ansible.builtin.file:
+    path: /etc/securetty
+    state: touch
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: アプリグループ作成
+  ansible.builtin.group:
+    name: "{{ app_group }}"
+    system: true
+
+- name: アプリ実行ユーザー作成 (ログインシェルなし)
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ app_dir }}"
+    create_home: false
+  changed_when: true
+
+- name: sudoers 設定強化
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: "^Defaults.*requiretty"
+    line: "Defaults requiretty"
+    state: present
+    validate: "visudo -cf %s"

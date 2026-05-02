@@ -1,0 +1,63 @@
+---
+# [設計意図] --check モードで実行し変更が必要なタスクを検出、レポートとしてChatworkに送信
+
+- name: ドリフト検出実行 (check mode)
+  block:
+    - name: Nginx 設定ドリフト確認
+      ansible.builtin.template:
+        src: "{{ role_path }}/../app_deploy/templates/app.conf.j2"
+        dest: /etc/nginx/conf.d/app.conf
+        owner: root
+        group: root
+        mode: "0644"
+      check_mode: true
+      register: nginx_config_drift
+      changed_when: false
+
+    - name: アプリ設定ドリフト確認
+      ansible.builtin.template:
+        src: "{{ role_path }}/../app_deploy/templates/app_config.j2"
+        dest: "{{ app_dir }}/config/app.cfg"
+      check_mode: true
+      register: app_config_drift
+      changed_when: false
+
+    - name: セキュリティグループ設定ドリフト確認 (sysctl)
+      ansible.builtin.command:
+        cmd: sysctl net.ipv4.conf.all.rp_filter
+      register: sysctl_check
+      changed_when: false
+      check_mode: false
+
+    - name: ドリフト結果を集約
+      ansible.builtin.set_fact:
+        drift_results:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          host: "{{ inventory_hostname }}"
+          nginx_config_drifted: "{{ nginx_config_drift.changed }}"
+          app_config_drifted: "{{ app_config_drift.changed }}"
+          sysctl_rp_filter: "{{ sysctl_check.stdout }}"
+          drift_detected: "{{ nginx_config_drift.changed or app_config_drift.changed }}"
+
+    - name: Chatwork にドリフトレポートを送信
+      ansible.builtin.uri:
+        url: "https://api.chatwork.com/v2/rooms/{{ chatwork_room_id }}/messages"
+        method: POST
+        headers:
+          X-ChatWorkToken: "{{ vault_chatwork_token }}"
+        body_format: form-urlencoded
+        body:
+          body: |
+            [info][title]設定ドリフト検出レポート[/title]
+            ホスト: {{ drift_results.host }}
+            検出時刻: {{ drift_results.timestamp }}
+            ドリフト検出: {{ 'あり' if drift_results.drift_detected else 'なし' }}
+
+            Nginx設定: {{ '変更あり' if drift_results.nginx_config_drifted else '正常' }}
+            アプリ設定: {{ '変更あり' if drift_results.app_config_drifted else '正常' }}
+            sysctl rp_filter: {{ drift_results.sysctl_rp_filter }}
+            [/info]
+        status_code: 200
+      when: drift_results.drift_detected or force_notify | default(false)
+      delegate_to: localhost
+      run_once: true

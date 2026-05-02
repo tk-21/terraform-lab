@@ -1,0 +1,14 @@
+---
+- name: nginx再起動
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+
+- name: systemd daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: アプリ再起動
+  ansible.builtin.systemd:
+    name: webapp
+    state: restarted

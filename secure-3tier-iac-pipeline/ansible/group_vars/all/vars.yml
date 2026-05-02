@@ -1,0 +1,19 @@
+# プロジェクト共通変数
+project_name: "secure-3tier-iac-pipeline"
+environment: "prod"
+aws_region: "ap-northeast-1"
+# [注意] SSMバケット名に使用。terraform.tfvars の aws_account_id と合わせること
+aws_account_id: "REPLACE_WITH_YOUR_ACCOUNT_ID"
+
+# アプリケーション設定
+app_user: "appuser"
+app_group: "appgroup"
+app_dir: "/opt/app"
+app_port: 8080
+
+# DB接続情報 (SSM Parameter Storeから取得)
+db_endpoint: "{{ lookup('aws_ssm', '/ata-prod/app/db_endpoint', region=aws_region) }}"
+db_reader_endpoint: "{{ lookup('aws_ssm', '/ata-prod/app/db_reader_endpoint', region=aws_region) }}"
+db_port: "{{ lookup('aws_ssm', '/ata-prod/app/db_port', region=aws_region) }}"
+db_name: "{{ lookup('aws_ssm', '/ata-prod/app/db_name', region=aws_region) }}"
+db_password: "{{ vault_db_password }}"

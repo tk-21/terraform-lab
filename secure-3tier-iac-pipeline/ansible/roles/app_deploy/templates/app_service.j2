@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Web Application ({{ project_name }})
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_dir }}
+ExecStart={{ app_dir }}/venv/bin/gunicorn \
+    --bind 127.0.0.1:{{ app_port }} \
+    --workers 2 \
+    --timeout 60 \
+    --access-logfile {{ app_dir }}/logs/access.log \
+    --error-logfile {{ app_dir }}/logs/error.log \
+    app:create_app()
+
+# [セキュリティ] systemd サービスのサンドボックス設定
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ app_dir }}/logs {{ app_dir }}/config
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# このファイルは ansible-vault encrypt で暗号化すること
+# 実行例: ansible-vault encrypt group_vars/all/vault.yml
+
+# [設計意図] Secrets ManagerのパスワードはAnsible Vault経由で注入
+# 実際のパスワードはデプロイ時に CI/CD から vault パスワードを渡す
+vault_db_password: "{{ lookup('aws_secret', 'ata-prod/rds/master-password', region='ap-northeast-1') }}"
+vault_app_secret_key: "CHANGE_ME_IN_VAULT"
+vault_chatwork_token: "YOUR_CHATWORK_API_TOKEN"
+chatwork_room_id: "YOUR_ROOM_ID"

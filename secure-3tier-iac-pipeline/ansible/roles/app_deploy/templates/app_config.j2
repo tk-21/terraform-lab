@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# [設計意図] DB接続情報はSSM Parameter StoreとSecrets Managerから取得
+[database]
+host = {{ db_endpoint }}
+reader_host = {{ db_reader_endpoint }}
+port = {{ db_port }}
+name = {{ db_name }}
+password = {{ db_password }}
+
+[app]
+secret_key = {{ vault_app_secret_key }}
+port = {{ app_port }}
+environment = {{ environment }}

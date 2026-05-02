@@ -1,0 +1,28 @@
+---
+# [セキュリティ] 不要サービスを無効化して攻撃面を最小化
+
+- name: 不要サービスの無効化と停止
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop:
+    - bluetooth
+    - cups
+    - avahi-daemon
+    - rpcbind
+    - nfs
+  failed_when: false
+  changed_when: true
+
+- name: SELinux ステータス確認
+  ansible.builtin.command: getenforce
+  register: selinux_status
+  changed_when: false
+  check_mode: false
+
+- name: SELinux が Enforcing でない場合に警告
+  ansible.builtin.debug:
+    msg: "[警告] SELinux が Enforcing ではありません: {{ selinux_status.stdout }}. 本番環境では Enforcing を推奨"
+  when: selinux_status.stdout != "Enforcing"

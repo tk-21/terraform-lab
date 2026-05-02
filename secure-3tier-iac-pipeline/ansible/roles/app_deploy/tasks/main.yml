@@ -1,0 +1,12 @@
+---
+- name: Nginx インストールと設定
+  import_tasks: nginx.yml
+  tags: [deploy, nginx]
+
+- name: Python アプリデプロイ
+  import_tasks: python_app.yml
+  tags: [deploy, app]
+
+- name: systemd サービス設定
+  import_tasks: systemd_service.yml
+  tags: [deploy, systemd]

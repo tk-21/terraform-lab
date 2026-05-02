@@ -1,0 +1,40 @@
+# [設計意図] タグベースの動的グループ形成。EC2を追加するだけで自動的にインベントリに追加される
+plugin: amazon.aws.aws_ec2
+regions:
+  - ap-northeast-1
+
+# EC2タグでフィルタリング
+filters:
+  tag:Project: "secure-3tier-iac-pipeline"
+  tag:Environment: "prod"
+  instance-state-name: running
+
+# [上級] タグからグループを自動生成
+keyed_groups:
+  - key: tags.Role
+    prefix: role
+    separator: "_"
+  - key: tags.Environment
+    prefix: env
+    separator: "_"
+  - key: placement.availability_zone
+    prefix: az
+    separator: "_"
+
+# グループ名: role_webserver, env_prod, az_ap-northeast-1a 等が自動生成される
+groups:
+  webservers: "'webserver' in tags.Role"
+  prod: "'prod' in tags.Environment"
+
+# [セキュリティ] SSH不使用。SSM Session Manager経由で接続
+compose:
+  ansible_host: instance_id
+  ansible_connection: "aws_ssm"
+  ansible_aws_ssm_region: "ap-northeast-1"
+  ansible_aws_ssm_bucket_name: "s3t-prod-session-logs-{{ aws_account_id }}"
+
+# キャッシュ設定 (API呼び出し削減)
+cache: true
+cache_plugin: jsonfile
+cache_connection: /tmp/aws_ec2_cache
+cache_timeout: 300

@@ -1,0 +1,35 @@
+---
+# [セキュリティ] auditd でシステムコール・ファイルアクセスを監査ログに記録
+
+- name: auditd インストール
+  ansible.builtin.dnf:
+    name: audit
+    state: present
+
+- name: auditd ルール設定
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/99-hardening.rules
+    content: |
+      # [セキュリティ] 権限昇格の監査
+      -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k privilege_escalation
+      # passwd, shadow ファイルへのアクセス
+      -w /etc/passwd -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/group -p wa -k identity
+      -w /etc/sudoers -p wa -k sudoers_changes
+      # ネットワーク設定変更
+      -a always,exit -F arch=b64 -S sethostname -S setdomainname -k system_locale
+      # ファイル削除の監査
+      -a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=unset -k delete
+      # [注意] -e 2 はルール変更を禁止する。再起動まで auditd ルールを追加変更できなくなる
+      -e 2
+    mode: "0640"
+    owner: root
+    group: root
+  notify: auditd再起動
+
+- name: auditd サービス有効化
+  ansible.builtin.systemd:
+    name: auditd
+    state: started
+    enabled: true

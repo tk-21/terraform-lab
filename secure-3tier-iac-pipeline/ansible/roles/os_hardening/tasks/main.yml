@@ -1,0 +1,18 @@
+---
+# [セキュリティ] CIS Amazon Linux 2023 Benchmark Level 1 準拠
+
+- name: カーネルパラメータのハードニング
+  import_tasks: kernel.yml
+  tags: [hardening, kernel]
+
+- name: ユーザーとアクセス制御のハードニング
+  import_tasks: users.yml
+  tags: [hardening, users]
+
+- name: 不要サービスの無効化
+  import_tasks: services.yml
+  tags: [hardening, services]
+
+- name: auditd 設定
+  import_tasks: audit.yml
+  tags: [hardening, audit]
