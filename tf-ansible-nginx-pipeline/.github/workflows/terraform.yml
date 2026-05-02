@@ -1,0 +1,101 @@
+# =============================================================================
+# Terraform CI/CDワークフロー
+# 設計思想:
+#   PR时: plan結果をPRコメントに自動投稿（レビュー支援）
+#   mainマージ時: applyを自動実行
+#   静的アクセスキー不使用: OIDC認証のみ
+# =============================================================================
+
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+
+permissions:
+  id-token: write   # OIDC認証に必須
+  contents: read
+  pull-requests: write  # PRコメント書き込み用
+
+env:
+  TF_VERSION: "1.7.0"
+  AWS_REGION: ap-northeast-1
+  WORKING_DIR: terraform/environments/dev
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS OIDC認証
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # 静的キー（aws-access-key-id等）を一切指定しない
+
+      - name: Terraform セットアップ
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform fmt チェック
+        run: terraform fmt -check -recursive
+        # fmtが通らないコードはCIで落とす
+
+      - name: terraform plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true
+
+      - name: PRにplanコメントを投稿
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `## Terraform Plan 結果
+
+            **Plan Status**: ${{ steps.plan.outcome == 'success' && '✅ 成功' || '❌ 失敗' }}
+
+            <details><summary>Plan詳細を表示</summary>
+
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *実行者: @${{ github.actor }}, ワークフロー: ${{ github.workflow }}*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: planが失敗した場合はCIを落とす
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: terraform apply（mainブランチのみ）
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve tfplan

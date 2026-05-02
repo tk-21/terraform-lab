@@ -1,0 +1,77 @@
+# =============================================================================
+# Ansible CI/CDワークフロー
+# 設計思想:
+#   1. terraform applyの後に自動実行（インフラ変更後の構成適用）
+#   2. SSMセッションマネージャー経由でSSHキー不要
+#   3. --checkで本番適用前にドライランを実施
+# =============================================================================
+
+name: Ansible
+
+on:
+  # Terraform applyの後に自動実行
+  workflow_run:
+    workflows: ["Terraform"]
+    types: [completed]
+    branches: [main]
+  # 手動実行も可能
+  workflow_dispatch:
+    inputs:
+      check_mode:
+        description: 'ドライラン（--check）で実行するか'
+        required: true
+        default: 'true'
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  ansible:
+    # Terraformが成功した場合のみ実行
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS OIDC認証
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Python・Ansibleセットアップ
+        run: |
+          pip install ansible boto3 botocore amazon.aws
+
+      - name: Ansibleコレクションのインストール
+        run: |
+          ansible-galaxy collection install amazon.aws community.aws
+
+      - name: ansible-lint（コード品質チェック）
+        working-directory: ansible
+        run: ansible-lint site.yml
+
+      - name: Dynamic Inventoryの動作確認
+        working-directory: ansible
+        run: |
+          ansible-inventory --list | jq '.web.hosts'
+          # webグループにホストが存在することを確認
+
+      - name: Ansible ドライラン（--check）
+        working-directory: ansible
+        run: |
+          ansible-playbook site.yml --check --diff
+        # --diff: 設定ファイルの変更差分を表示
+
+      - name: Ansible 本番適用（mainブランチかつdryrun=falseの場合）
+        working-directory: ansible
+        if: >
+          github.ref == 'refs/heads/main' &&
+          (github.event.inputs.check_mode != 'true')
+        run: |
+          ansible-playbook site.yml

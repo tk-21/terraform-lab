@@ -1,0 +1,21 @@
+# =============================================================================
+# デフォルト変数（最低優先度）
+# 設計思想: ここに書いた値は全環境での「デフォルト」
+# 環境ごとの上書きは group_vars/env_dev.yml で行う
+# Ansible変数優先順位: role defaults < group_vars < host_vars < extra_vars
+# =============================================================================
+
+nginx_port: 80
+nginx_worker_processes: "auto"
+nginx_worker_connections: 1024
+
+# nginxバージョン固定しない（最新安定版を使う）
+# 理由: セキュリティパッチを自動的に取得するため
+nginx_package: nginx
+
+# コンテンツルートのパス
+nginx_document_root: /var/www/html
+
+# ログパス
+nginx_access_log: /var/log/nginx/access.log
+nginx_error_log: /var/log/nginx/error.log

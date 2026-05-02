@@ -1,0 +1,40 @@
+# =============================================================================
+# 検証タスク: Roleが期待通りの状態を作っているかを確認する
+# =============================================================================
+
+---
+- name: Verify
+  hosts: all
+  tasks:
+    - name: nginxパッケージがインストールされていること
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: nginxパッケージの存在確認
+      ansible.builtin.assert:
+        that: "'nginx' in ansible_facts.packages"
+        fail_msg: "nginxパッケージがインストールされていません"
+        success_msg: "nginxパッケージのインストール確認OK"
+
+    - name: nginxサービスが起動していること
+      ansible.builtin.service_facts:
+
+    - name: nginxサービスのステータス確認
+      ansible.builtin.assert:
+        that: "ansible_facts.services['nginx.service'].state == 'running'"
+        fail_msg: "nginxサービスが起動していません"
+
+    - name: nginx設定ファイルの構文チェック
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: ポート80でHTTPレスポンスが返ること
+      ansible.builtin.uri:
+        url: "http://localhost:80/health"
+        status_code: 200
+      register: health_check
+
+    - name: ヘルスチェックレスポンス確認
+      ansible.builtin.assert:
+        that: "health_check.status == 200"
+        fail_msg: "ヘルスチェックエンドポイントが応答しません"

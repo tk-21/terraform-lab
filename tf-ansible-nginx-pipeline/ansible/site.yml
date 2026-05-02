@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# サイトPlaybook: インフラ全体のエントリーポイント
+# 設計思想: site.ymlはインポートのみで、実処理はRoleに委譲する
+# =============================================================================
+
+- name: Webサーバー構成
+  hosts: web          # Dynamic Inventoryで生成されるグループ名
+  gather_facts: true
+
+  pre_tasks:
+    - name: 接続確認（SSMセッションマネージャー経由）
+      ansible.builtin.ping:
+
+  roles:
+    - nginx
+
+  post_tasks:
+    - name: デプロイ完了確認
+      ansible.builtin.uri:
+        url: "http://localhost/health"
+        status_code: 200
+      changed_when: false
