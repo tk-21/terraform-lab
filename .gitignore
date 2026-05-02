@@ -83,3 +83,4 @@ dist/
 # Claude
 ################
 .claude/settings.json
+.claude/settings.local.json
