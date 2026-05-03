@@ -1,0 +1,32 @@
+# =============================================================
+# roles/common/tasks/main.yml — 共通初期設定（全ホスト適用）
+# =============================================================
+
+---
+- name: タイムゾーンを JST に設定
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: システムパッケージを最新化
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_cache: true
+
+- name: 必須ユーティリティをインストール
+  ansible.builtin.dnf:
+    name:
+      - rsync   # lsyncd の転送バックエンドとして必須
+      - curl
+      - vim
+      - wget
+    state: present
+
+- name: /var/www/html ディレクトリを作成
+  ansible.builtin.file:
+    path: "{{ web_root }}"
+    state: directory
+    owner: ec2-user
+    group: ec2-user
+    mode: "0755"
+  # ec2-user がオーナー → lsyncd（ec2-user 権限）が書き込み可能
