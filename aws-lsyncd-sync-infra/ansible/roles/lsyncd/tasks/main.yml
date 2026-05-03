@@ -1,0 +1,55 @@
+# =============================================================
+# roles/lsyncd/tasks/main.yml — lsyncd インストール・設定・起動
+# master にのみ適用（slave への配布は不要）。
+#
+# lsyncd の動作原理:
+#   inotify でソースディレクトリの変更を検知
+#   → lsyncd_delay 秒後に rsync over SSH で slave へ転送
+# =============================================================
+
+---
+- name: EPEL リポジトリを有効化
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+  when: inventory_hostname in groups['master']
+
+- name: lsyncd をインストール
+  ansible.builtin.dnf:
+    name: lsyncd
+    state: present
+  when: inventory_hostname in groups['master']
+
+- name: lsyncd 設定ファイルを配置
+  ansible.builtin.template:
+    src: lsyncd.conf.j2
+    dest: /etc/lsyncd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['master']
+  notify: lsyncd を再起動
+
+- name: lsyncd ログファイルを作成
+  ansible.builtin.file:
+    path: "{{ lsyncd_log_file }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['master']
+
+- name: lsyncd を起動・自動起動有効化
+  ansible.builtin.systemd:
+    name: lsyncd
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: inventory_hostname in groups['master']
+
+- name: lsyncd が active であることを確認
+  ansible.builtin.command: systemctl is-active lsyncd
+  register: lsyncd_status
+  failed_when: lsyncd_status.stdout != "active"
+  changed_when: false
+  when: inventory_hostname in groups['master']

@@ -1,0 +1,80 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+
+permissions:
+  id-token: write   # OIDC トークン取得に必要
+  contents: read
+  pull-requests: write
+
+jobs:
+  plan:
+    name: terraform plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true
+
+      - name: PR にプラン結果をコメント
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Plan \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *Triggered by @${{ github.actor }} on \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Plan 失敗時にジョブを失敗させる
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

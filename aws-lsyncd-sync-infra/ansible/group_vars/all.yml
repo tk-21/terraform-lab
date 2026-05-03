@@ -1,0 +1,19 @@
+# =============================================================
+# group_vars/all.yml — 全ホスト共通変数
+# =============================================================
+
+timezone: Asia/Tokyo
+web_root: /var/www/html
+lsyncd_source_dir: /var/www/html/
+lsyncd_log_file: /var/log/lsyncd.log
+lsyncd_status_file: /var/run/lsyncd.status
+
+# rsync オプション: アーカイブ・圧縮・削除同期
+lsyncd_rsync_opts: "-raz --delete"
+
+# 変更検知から同期開始までの遅延（秒）
+# 短すぎると細かい操作ごとに rsync が走り負荷増加
+lsyncd_delay: 5
+
+sync_user: ec2-user
+lsyncd_ssh_key_path: /home/ec2-user/.ssh/lsyncd_rsa

@@ -1,0 +1,56 @@
+# =============================================================
+# roles/ssh_key_dist/tasks/main.yml — lsyncd 用 SSH 鍵配布
+#
+# 処理フロー:
+#   1. master 上で専用 RSA 鍵ペアを生成（パスフレーズなし）
+#   2. 公開鍵を Ansible ファクトとして保存
+#   3. slave の authorized_keys に公開鍵を追加
+#   4. master の known_hosts に slave のホスト鍵を登録
+#
+# ※ hosts: all で実行し、when 条件で master/slave の処理を分岐する。
+#    master と slave を同一プレイで処理しないと hostvars が解決できない。
+# =============================================================
+
+---
+# --- master での処理 ---
+- name: "[master] lsyncd 用 RSA 鍵ペアを生成"
+  community.crypto.openssh_keypair:
+    path: "{{ lsyncd_ssh_key_path }}"
+    type: rsa
+    size: 4096
+    comment: "lsyncd-sync-key"
+    owner: ec2-user
+    group: ec2-user
+    mode: "0600"
+  when: inventory_hostname in groups['master']
+
+- name: "[master] 公開鍵ファイルを読み込む"
+  ansible.builtin.slurp:
+    src: "{{ lsyncd_ssh_key_path }}.pub"
+  when: inventory_hostname in groups['master']
+  register: lsyncd_pubkey
+
+- name: "[master] 公開鍵をファクトとして保存（slave への配布用）"
+  ansible.builtin.set_fact:
+    lsyncd_public_key: "{{ lsyncd_pubkey.content | b64decode | trim }}"
+  when: inventory_hostname in groups['master']
+
+# --- slave での処理 ---
+- name: "[slave] master の公開鍵を authorized_keys に追加"
+  ansible.posix.authorized_key:
+    user: ec2-user
+    state: present
+    key: "{{ hostvars[groups['master'][0]]['lsyncd_public_key'] }}"
+    comment: "lsyncd from master"
+  when: inventory_hostname in groups['slave']
+
+# --- master: known_hosts への事前登録 ---
+- name: "[master] slave のホスト鍵を known_hosts に登録"
+  ansible.builtin.known_hosts:
+    name: "{{ hostvars[item]['ansible_host'] }}"
+    key: "{{ lookup('pipe', 'ssh-keyscan -t rsa ' + hostvars[item]['ansible_host']) }}"
+    path: /home/ec2-user/.ssh/known_hosts
+    state: present
+  loop: "{{ groups['slave'] }}"
+  when: inventory_hostname in groups['master']
+  # known_hosts 未登録だと lsyncd の rsync が StrictHostKeyChecking でブロックされる

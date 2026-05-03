@@ -1,0 +1,22 @@
+# Terraform
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.backup
+terraform.tfvars
+override.tf
+
+# Ansible
+ansible/keys/
+*.retry
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# エディタ
+*.swp
+*.swo
+.vscode/
+.idea/

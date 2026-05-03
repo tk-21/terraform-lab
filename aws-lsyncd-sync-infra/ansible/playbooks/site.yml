@@ -1,0 +1,34 @@
+# =============================================================
+# playbooks/site.yml — メインプレイブック
+# 実行順序が重要:
+#   1. common   → 全ホストの基盤設定
+#   2. nginx    → Web サーバーセットアップ
+#   3. ssh_key_dist → master で鍵生成 → slave に配布
+#      ※ hostvars 解決のため hosts: all で実行する
+#   4. lsyncd   → master のみ設定・起動
+# =============================================================
+
+---
+- name: 共通設定（全ホスト）
+  hosts: all
+  gather_facts: true
+  roles:
+    - common
+
+- name: nginx セットアップ（全ホスト）
+  hosts: all
+  gather_facts: true
+  roles:
+    - nginx
+
+- name: SSH 鍵配布（全ホスト対象・role 内で master/slave を分岐）
+  hosts: all
+  gather_facts: true
+  roles:
+    - ssh_key_dist
+
+- name: lsyncd 設定・起動（master のみ）
+  hosts: master
+  gather_facts: true
+  roles:
+    - lsyncd

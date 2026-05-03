@@ -1,0 +1,5 @@
+---
+- name: lsyncd を再起動
+  ansible.builtin.systemd:
+    name: lsyncd
+    state: restarted

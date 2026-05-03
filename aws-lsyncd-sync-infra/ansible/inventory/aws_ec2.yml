@@ -1,0 +1,25 @@
+# =============================================================
+# aws_ec2.yml — Dynamic Inventory
+# EC2 の Tag: Role 値でグループを自動生成する。
+#   Tag Role=master → グループ "master"
+#   Tag Role=slave  → グループ "slave"
+# =============================================================
+
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - ap-northeast-1
+
+filters:
+  tag:Project: aws-lsyncd-sync-infra
+  instance-state-name: running
+
+# Tag: Role の値をそのままグループ名にする
+keyed_groups:
+  - key: tags.Role
+    prefix: ""
+    separator: ""
+
+# 接続先 IP（パブリック IP を使用）
+hostnames:
+  - public-ip-address
