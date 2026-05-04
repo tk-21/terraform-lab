@@ -1,0 +1,30 @@
+# mail-infra-handson モジュール版
+# このファイルを terraform.tfvars にコピーして実際の値を設定すること
+
+# 構築対象のドメイン名
+domain_name = "your-domain.com"
+
+# AWSリージョン（固定）
+aws_region = "ap-northeast-1"
+
+# アラーム通知先メールアドレス
+admin_email = "admin@your-domain.com"
+
+# SPFポリシー: 学習初期は "~all"、本番移行前に "-all" へ変更
+spf_policy = "-all"
+
+# DMARCポリシー: none → quarantine → reject の順に段階移行
+# 初期: "none"（モニタリングのみ）
+# 中期: "quarantine"（疑わしいメールをスパムフォルダへ）
+# 本番: "reject"（認証失敗メールを完全拒否）
+dmarc_policy = "quarantine"
+
+# DMARCポリシー適用割合（%）: 段階移行時は 10 → 50 → 100 と増やす
+dmarc_pct = 100
+
+# Lambda Powertoolsレイヤーバージョン
+powertools_layer_version = 13
+
+# EC2のIAMロールARN（VPCエンドポイントポリシー制限用。空の場合は制限なし）
+# 例: "arn:aws:iam::123456789012:role/mail-handson-ec2-postfix-role"
+ec2_iam_role_arn = ""
