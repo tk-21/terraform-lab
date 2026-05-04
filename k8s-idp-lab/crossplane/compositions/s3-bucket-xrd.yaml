@@ -1,0 +1,54 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xstorages.idp.example.com
+  labels:
+    app: crossplane
+    managed-by: crossplane
+spec:
+  group: idp.example.com
+  names:
+    kind: XStorage
+    plural: xstorages
+  # Claim はチーム namespace に作成するため claimNames を定義
+  claimNames:
+    kind: Storage
+    plural: storages
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - parameters
+              properties:
+                parameters:
+                  type: object
+                  required:
+                    - environment
+                    - appName
+                  properties:
+                    environment:
+                      type: string
+                      description: "デプロイ環境 (dev / staging / prod)"
+                      enum:
+                        - dev
+                        - staging
+                        - prod
+                    appName:
+                      type: string
+                      description: "アプリケーション名（S3バケット名のプレフィックスになる）"
+                      pattern: "^[a-z][a-z0-9-]{2,30}$"
+                    region:
+                      type: string
+                      description: "AWS リージョン（省略時は ap-northeast-1）"
+                      default: "ap-northeast-1"
+                    versioning:
+                      type: boolean
+                      description: "S3 バージョニングを有効にするか"
+                      default: false

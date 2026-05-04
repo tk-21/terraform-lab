@@ -1,0 +1,225 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: app-environment
+  labels:
+    app: crossplane
+    managed-by: crossplane
+    provider: aws
+    # s3-storage Composition との違い: S3 バケット + アクセス用 IAM ロールをセットで作る
+    service: app-environment
+spec:
+  compositeTypeRef:
+    apiVersion: idp.example.com/v1alpha1
+    kind: XStorage
+
+  resources:
+    # ─────────────────────────────────────────────
+    # S3 バケット（s3-storage Composition と同じ）
+    # ─────────────────────────────────────────────
+    - name: s3-bucket
+      base:
+        apiVersion: s3.aws.upbound.io/v1beta1
+        kind: Bucket
+        metadata:
+          labels:
+            app: crossplane
+            managed-by: crossplane
+          annotations:
+            crossplane.io/external-name: placeholder
+        spec:
+          forProvider:
+            region: ap-northeast-1
+            tags:
+              ManagedBy: crossplane
+              Project: k8s-idp-lab
+      patches:
+        - type: CombineFromComposite
+          combine:
+            variables:
+              - fromFieldPath: spec.parameters.appName
+              - fromFieldPath: spec.parameters.environment
+            strategy: string
+            string:
+              fmt: "idp-%s-%s"
+          toFieldPath: metadata.annotations[crossplane.io/external-name]
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.region
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.environment
+          toFieldPath: spec.forProvider.tags.Environment
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.appName
+          toFieldPath: spec.forProvider.tags.AppName
+
+    - name: s3-bucket-versioning
+      base:
+        apiVersion: s3.aws.upbound.io/v1beta1
+        kind: BucketVersioning
+        spec:
+          forProvider:
+            region: ap-northeast-1
+            bucketSelector:
+              matchControllerRef: true
+            versioningConfiguration:
+              - status: Suspended
+      patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.region
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.versioning
+          toFieldPath: spec.forProvider.versioningConfiguration[0].status
+          transforms:
+            - type: convert
+              convert:
+                toType: string
+            - type: map
+              map:
+                "true": Enabled
+                "false": Suspended
+
+    # ─────────────────────────────────────────────
+    # IAM ロール: アプリが S3 バケットにアクセスするためのロール
+    # /crossplane/ パス配下に作成して権限を絞る
+    # ─────────────────────────────────────────────
+    - name: app-iam-role
+      base:
+        apiVersion: iam.aws.upbound.io/v1beta1
+        kind: Role
+        metadata:
+          labels:
+            app: crossplane
+            managed-by: crossplane
+          annotations:
+            crossplane.io/external-name: placeholder
+        spec:
+          forProvider:
+            path: /crossplane/
+            # EC2 と Lambda どちらからでも Assume できる汎用トラストポリシー
+            assumeRolePolicy: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": {
+                      "Service": ["ec2.amazonaws.com", "lambda.amazonaws.com"]
+                    },
+                    "Action": "sts:AssumeRole"
+                  }
+                ]
+              }
+            tags:
+              - key: ManagedBy
+                value: crossplane
+              - key: Project
+                value: k8s-idp-lab
+      patches:
+        # ロール名 = idp-<appName>-<environment>-role
+        - type: CombineFromComposite
+          combine:
+            variables:
+              - fromFieldPath: spec.parameters.appName
+              - fromFieldPath: spec.parameters.environment
+            strategy: string
+            string:
+              fmt: "idp-%s-%s-role"
+          toFieldPath: metadata.annotations[crossplane.io/external-name]
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.environment
+          toFieldPath: spec.forProvider.tags[1].value
+          transforms:
+            - type: string
+              string:
+                type: Format
+                fmt: "%s"
+
+    # ─────────────────────────────────────────────
+    # IAM ポリシー: 上のロールに S3 バケットへのアクセス権を付与する
+    # ─────────────────────────────────────────────
+    - name: app-iam-policy
+      base:
+        apiVersion: iam.aws.upbound.io/v1beta1
+        kind: Policy
+        metadata:
+          labels:
+            app: crossplane
+            managed-by: crossplane
+          annotations:
+            crossplane.io/external-name: placeholder
+        spec:
+          forProvider:
+            path: /crossplane/
+            # バケット名は patches で動的に埋め込まれる
+            policy: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "s3:GetObject",
+                      "s3:PutObject",
+                      "s3:DeleteObject",
+                      "s3:ListBucket"
+                    ],
+                    "Resource": [
+                      "arn:aws:s3:::idp-PLACEHOLDER-*",
+                      "arn:aws:s3:::idp-PLACEHOLDER-*/*"
+                    ]
+                  }
+                ]
+              }
+      patches:
+        - type: CombineFromComposite
+          combine:
+            variables:
+              - fromFieldPath: spec.parameters.appName
+              - fromFieldPath: spec.parameters.environment
+            strategy: string
+            string:
+              fmt: "idp-%s-%s-policy"
+          toFieldPath: metadata.annotations[crossplane.io/external-name]
+        # ポリシーの Resource ARN にバケット名を埋め込む
+        - type: CombineFromComposite
+          combine:
+            variables:
+              - fromFieldPath: spec.parameters.appName
+              - fromFieldPath: spec.parameters.environment
+            strategy: string
+            string:
+              fmt: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Action": ["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],
+                      "Resource": [
+                        "arn:aws:s3:::idp-%s-%s",
+                        "arn:aws:s3:::idp-%s-%s/*"
+                      ]
+                    }
+                  ]
+                }
+          toFieldPath: spec.forProvider.policy
+
+    # ─────────────────────────────────────────────
+    # IAM RolePolicyAttachment: ロールにポリシーをアタッチする
+    # ─────────────────────────────────────────────
+    - name: app-role-policy-attachment
+      base:
+        apiVersion: iam.aws.upbound.io/v1beta1
+        kind: RolePolicyAttachment
+        metadata:
+          labels:
+            app: crossplane
+            managed-by: crossplane
+        spec:
+          forProvider:
+            roleSelector:
+              matchControllerRef: true
+            policyArnSelector:
+              matchControllerRef: true
