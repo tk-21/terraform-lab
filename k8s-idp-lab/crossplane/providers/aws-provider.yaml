@@ -1,0 +1,21 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-s3
+  labels:
+    app: crossplane
+    managed-by: crossplane
+spec:
+  # S3 操作に特化した公式 Upbound プロバイダー
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v1.1.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-iam
+  labels:
+    app: crossplane
+    managed-by: crossplane
+spec:
+  # IAM ポリシー・ロール操作用プロバイダー
+  package: xpkg.upbound.io/upbound/provider-aws-iam:v1.1.0

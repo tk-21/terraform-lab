@@ -1,0 +1,50 @@
+app:
+  title: IDP Lab - 内部開発者ポータル
+  baseUrl: http://localhost:3000
+
+organization:
+  name: k8s-idp-lab
+
+backend:
+  baseUrl: http://localhost:7007
+  listen:
+    port: 7007
+  cors:
+    origin: http://localhost:3000
+    methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+    credentials: true
+  database:
+    # ローカルハンズオン用に SQLite を使う（本番は PostgreSQL を推奨）
+    client: better-sqlite3
+    connection: ':memory:'
+
+integrations:
+  github:
+    - host: github.com
+      # GitHub Personal Access Token を環境変数で渡す
+      # export GITHUB_TOKEN=ghp_xxxx してから backstage を起動すること
+      token: ${GITHUB_TOKEN}
+
+# Scaffolder: GitHub への commit・push を有効にする
+scaffolder:
+  defaultAuthor:
+    name: IDP Bot
+    email: idp-bot@example.com
+  defaultCommitMessage: "feat: add crossplane claim via backstage"
+
+catalog:
+  rules:
+    - allow: [Component, System, API, Group, User, Resource, Location, Template]
+  locations:
+    # Backstage Scaffolder テンプレートを読み込む
+    - type: file
+      target: ../../backstage/templates/aws-environment/template.yaml
+      rules:
+        - allow: [Template]
+
+techdocs:
+  builder: local
+  generator:
+    runIn: local
+  publisher:
+    type: local

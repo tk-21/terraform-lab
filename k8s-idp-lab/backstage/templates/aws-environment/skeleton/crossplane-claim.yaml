@@ -1,0 +1,18 @@
+apiVersion: idp.example.com/v1alpha1
+kind: Storage
+metadata:
+  # Backstage Scaffolder がフォーム値を埋め込む（${{ values.xxx }} の形式）
+  name: ${{ values.appName }}-storage
+  namespace: team-alpha
+  labels:
+    app: ${{ values.appName }}
+    managed-by: crossplane
+    environment: ${{ values.environment }}
+spec:
+  compositionRef:
+    name: s3-storage
+  parameters:
+    appName: ${{ values.appName }}
+    environment: ${{ values.environment }}
+    region: ${{ values.region }}
+    versioning: ${{ values.versioning }}

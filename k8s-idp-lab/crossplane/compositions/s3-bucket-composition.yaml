@@ -1,0 +1,81 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: s3-storage
+  labels:
+    app: crossplane
+    managed-by: crossplane
+    provider: aws
+    service: s3
+spec:
+  compositeTypeRef:
+    apiVersion: idp.example.com/v1alpha1
+    kind: XStorage
+  resources:
+    - name: s3-bucket
+      base:
+        apiVersion: s3.aws.upbound.io/v1beta1
+        kind: Bucket
+        metadata:
+          labels:
+            app: crossplane
+            managed-by: crossplane
+          annotations:
+            # external-name が実際の S3 バケット名になる。パッチで上書きする
+            crossplane.io/external-name: placeholder
+        spec:
+          forProvider:
+            region: ap-northeast-1
+            tags:
+              ManagedBy: crossplane
+              Project: k8s-idp-lab
+      patches:
+        # S3 バケット名 = idp-<appName>-<environment>
+        # ※ external-name が AWS 上の実際のバケット名になる
+        - type: CombineFromComposite
+          combine:
+            variables:
+              - fromFieldPath: spec.parameters.appName
+              - fromFieldPath: spec.parameters.environment
+            strategy: string
+            string:
+              fmt: "idp-%s-%s"
+          toFieldPath: metadata.annotations[crossplane.io/external-name]
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.region
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.environment
+          toFieldPath: spec.forProvider.tags.Environment
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.appName
+          toFieldPath: spec.forProvider.tags.AppName
+
+    - name: s3-bucket-versioning
+      base:
+        apiVersion: s3.aws.upbound.io/v1beta1
+        kind: BucketVersioning
+        spec:
+          forProvider:
+            region: ap-northeast-1
+            bucketSelector:
+              matchControllerRef: true
+            versioningConfiguration:
+              - status: Suspended
+      patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.region
+        # versioning: true → Enabled、false → Suspended
+        # bool → string 変換してから map で置換する
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.versioning
+          toFieldPath: spec.forProvider.versioningConfiguration[0].status
+          transforms:
+            - type: convert
+              convert:
+                toType: string
+            - type: map
+              map:
+                "true": Enabled
+                "false": Suspended

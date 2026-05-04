@@ -1,0 +1,19 @@
+apiVersion: idp.example.com/v1alpha1
+kind: Storage
+metadata:
+  name: myapp-storage
+  namespace: team-alpha
+  labels:
+    app: myapp
+    managed-by: crossplane
+spec:
+  compositionRef:
+    name: s3-storage
+  parameters:
+    # appName は S3 バケット名 "idp-<appName>-<environment>" の一部になる
+    # S3 はグローバルネームスペースのため、他ユーザーと衝突しない名前に変えること
+    # 例: myapp-takuya、myapp-20260426 など
+    appName: myapp
+    environment: dev
+    region: ap-northeast-1
+    versioning: false

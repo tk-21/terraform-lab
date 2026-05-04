@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane-platform
+  namespace: argocd
+  labels:
+    app: crossplane-platform
+    managed-by: argocd
+  # ArgoCD が削除したとき下位リソースも消えるようにする
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # 自分の GitHub リポジトリ URL に書き換えること
+    # 例: https://github.com/takuya/k8s-idp-lab.git
+    repoURL: https://github.com/YOUR_GITHUB_USERNAME/k8s-idp-lab.git
+    targetRevision: main
+    path: crossplane/claims
+  destination:
+    server: https://kubernetes.default.svc
+    # Claim は namespace スコープ: team-alpha に同期する
+    namespace: team-alpha
+  syncPolicy:
+    automated:
+      prune: true      # Git から消えたリソースを K8s からも削除
+      selfHeal: true   # 手動変更を検知したら自動で戻す（ドリフト修復）
+    syncOptions:
+      - CreateNamespace=true
