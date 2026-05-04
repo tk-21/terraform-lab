@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+terraform.tfvars
+
+# Lambda ZIPアーカイブ（terraform apply時に自動生成される）
+terraform/*/lambda/*.zip
+
+# IDE
+.idea/
+.vscode/
+*.swp
