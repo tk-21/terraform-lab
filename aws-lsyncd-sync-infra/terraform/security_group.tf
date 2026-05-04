@@ -1,8 +1,9 @@
 # =============================================================
 # security_group.tf — EC2 セキュリティグループ
 # master/slave 共用。
-# lsyncd の rsync over SSH は VPC 内プライベート IP で通信するため
-# VPC CIDR からの SSH も許可する。
+# 運用者アクセスは SSM Session Manager 経由のため、
+# インターネットからのポート22を開けない。
+# lsyncd の rsync over SSH は VPC 内プライベート IP のみ許可。
 # =============================================================
 
 resource "aws_security_group" "ec2" {
@@ -10,16 +11,8 @@ resource "aws_security_group" "ec2" {
   description = "lsyncd web sync - master and slave shared SG"
   vpc_id      = aws_vpc.main.id
 
-  # 運用者からの SSH
-  ingress {
-    description = "SSH from operator"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
-  }
-
-  # VPC 内 master→slave の lsyncd rsync 用 SSH
+  # VPC 内 master→slave の lsyncd rsync 用 SSH のみ許可
+  # （インターネットからのポート22は開けない）
   ingress {
     description = "SSH from VPC for lsyncd rsync"
     from_port   = 22

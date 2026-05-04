@@ -48,9 +48,3 @@ variable "slave_count" {
   type        = number
   default     = 2
 }
-
-variable "allowed_ssh_cidr" {
-  description = "SSH を許可する CIDR（★ 自宅 IP/32 に変更すること）"
-  type        = string
-  default     = "0.0.0.0/0"
-}
