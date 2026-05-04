@@ -1,0 +1,17 @@
+# このファイルをコピーして terraform.tfvars を作成してください
+# cp terraform.tfvars.example terraform.tfvars
+#
+# ⚠️  terraform.tfvars は .gitignore に含まれています
+#     パスワードなどの機密情報を Git に含めないようにするためです
+
+# VPC ID (01_vpc の output から取得)
+# vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
+
+# プライベートサブネット ID リスト (01_vpc の output から取得)
+# private_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-yyyyyyyyyyyyyyyyy"]
+
+# EC2 の Security Group ID (02_ec2 の output から取得)
+# ec2_security_group_id = "sg-xxxxxxxxxxxxxxxxx"
+
+# DB パスワード（8文字以上、英大文字・小文字・数字・記号を含めること）
+db_password = "YourSecurePassword123!"

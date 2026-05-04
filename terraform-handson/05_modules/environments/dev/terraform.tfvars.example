@@ -1,0 +1,5 @@
+prefix = "handson"
+env    = "dev"
+
+# curl ifconfig.me で自分のIPを確認して設定する
+allowed_ssh_cidrs = ["YOUR_IP/32"]
