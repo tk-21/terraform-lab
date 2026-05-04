@@ -1,0 +1,17 @@
+# Terraform state（絶対に Git に含めない）
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfstate.d/
+
+# 機密情報（絶対に Git に含めない）
+**/terraform.tfvars
+**/*.auto.tfvars
+!**/terraform.tfvars.example
+
+# その他
+.DS_Store
+*.log
+override.tf
+override.tf.json
