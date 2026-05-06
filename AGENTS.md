@@ -8,7 +8,10 @@
 
 ## Python Environment
 
-**必須**: 各プロジェクトディレクトリで必ず venv を使用すること。
+Python スクリプト、pytest、Ansible module、補助ツールなど、
+Python を利用する作業では必ず `.venv` を使用すること。
+
+システム Python への直接 `pip install` は禁止。
 
 ### venv セットアップ手順
 
