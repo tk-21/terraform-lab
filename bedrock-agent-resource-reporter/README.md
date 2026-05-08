@@ -2,6 +2,14 @@
 
 Amazon Bedrock Agent を使い、AWSリソースの自律調査・Markdownレポート生成・S3保存・SNS通知を行うエージェントを Terraform でゼロから構築する個人検証プロジェクト。
 
+## このハンズオンで得られること
+
+- Bedrock Agent が Lambda ベースの複数ツールをどうオーケストレーションするかを体験できる
+- Terraform で Bedrock Agent / Lambda / S3 / SNS / KMS をまとめて構築する流れを学べる
+- 自然言語の指示から AWS リソース調査レポートを生成し、S3 保存と通知までつなげる実装例を確認できる
+- 「Agent 向きの処理」と「通常のワークフロー実装向きの処理」の違いを具体例で理解できる
+- 検証後にどのリソースを確認し、どこにコストがかかるかまで一通り把握できる
+
 ## 概要
 
 「東京リージョンのEC2一覧を調べてS3にレポートを保存して」という1文を入力するだけで、エージェントが複数ステップを自律的に実行します。
@@ -235,87 +243,328 @@ bedrock-agent-resource-reporter/
 | Lambda メモリ | 256 MB（上限 512 MB） |
 | 月額目安 | ~$7（軽量テスト時） |
 
-## 使い方
+## ハンズオン実行手順
 
-### 前提条件
+このハンズオンは、以下の流れで進めると迷いません。
 
-- Terraform >= 1.7
-- AWS CLI 設定済み（IAM ユーザー or ロール。root アカウント不要）
-- Bedrock の Claude 3 Haiku モデルアクセスを有効化済み
-  - AWS コンソール → Amazon Bedrock → Model access → Claude 3 Haiku を有効化
+| フェーズ | やること | 目安時間 |
+|---|---|---|
+| 1. 事前準備 | ツール確認、AWS認証、Bedrockモデルアクセス有効化 | 10〜15分 |
+| 2. 設定確認 | `terraform.tfvars` の確認、必要なら値を変更 | 5分 |
+| 3. デプロイ | `terraform init` → `terraform plan` → `terraform apply` | 10分前後 |
+| 4. 動作確認 | Bedrock Agent を実行し、S3 と SNS の結果を確認 | 10分 |
+| 5. 後片付け | 検証終了後に `terraform destroy` | 5分 |
 
-### 1. デプロイ
+> 注意: `terraform apply` と `terraform destroy` はこのリポジトリの運用ポリシー上、ユーザー自身が実行してください。
+
+### 0. まずゴールを確認する
+
+この README の手順を最後まで実施すると、次の状態になります。
+
+- Bedrock Agent が東京リージョンの EC2 / Cost Explorer / CloudWatch を調査できる
+- 調査結果を Markdown レポートとして S3 に保存できる
+- 必要に応じて SNS で通知できる
+- Bedrock コンソールまたは AWS CLI から Agent を試せる
+
+### 1. 前提条件を確認する
+
+以下が揃っていることを確認してください。
+
+| 項目 | 確認コマンド | 必要バージョン・状態 |
+|---|---|---|
+| Terraform | `terraform version` | `>= 1.7` |
+| AWS CLI | `aws --version` | v2 推奨 |
+| Python | `python3 --version` | 3.11 以上 |
+| AWS 認証情報 | `aws sts get-caller-identity` | 正常応答すること |
+
+```bash
+terraform version
+aws --version
+python3 --version
+aws sts get-caller-identity
+```
+
+`aws sts get-caller-identity` が失敗する場合は、先に AWS 認証設定を済ませてください。
+
+### 2. リポジトリに移動する
+
+```bash
+cd /path/to/terraform-lab/bedrock-agent-resource-reporter
+ls -la
+```
+
+`README.md`、`environments/`、`modules/` が見えていれば問題ありません。
+
+### 3. AWS 認証情報を設定する
+
+IAM ユーザーまたは IAM ロールを利用してください。root アカウントは使いません。
+
+#### 必要な IAM 権限
+
+手早く検証する場合は、少なくとも以下に相当する権限が必要です。
+
+```text
+AmazonBedrockFullAccess
+AmazonS3FullAccess
+AWSLambda_FullAccess
+AmazonSNSFullAccess
+AmazonVPCFullAccess
+AWSKeyManagementServicePowerUser
+IAMFullAccess
+CloudWatchFullAccess
+```
+
+#### 設定方法
+
+```bash
+# 推奨: AWS CLI プロファイルを使用
+aws configure --profile handson
+
+export AWS_PROFILE=handson
+export AWS_DEFAULT_REGION=ap-northeast-1
+
+# 確認
+aws sts get-caller-identity
+```
+
+環境変数で直接指定する場合は、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_DEFAULT_REGION` を設定してください。
+
+### 4. Bedrock のモデルアクセスを有効化する
+
+Claude 3 Haiku のモデルアクセスがないと、Terraform で Agent を作成しても利用できません。デプロイ前に必ず確認します。
+
+1. AWS コンソールでリージョンを `ap-northeast-1` に切り替える
+2. `Amazon Bedrock` を開く
+3. 左メニューの `Model access` を開く
+4. `Manage model access` を押す
+5. `Anthropic` の `Claude 3 Haiku` を選択する
+6. `Request model access` を実行する
+7. ステータスが `Access granted` になることを確認する
+
+> モデルアクセスはリージョン単位です。東京リージョン `ap-northeast-1` で有効になっていることが重要です。
+
+### 5. `terraform.tfvars` を確認する
+
+まずはデフォルト値のままで問題ありません。変更したい場合だけ編集してください。
+
+```bash
+sed -n '1,120p' environments/dev/terraform.tfvars
+```
+
+主に確認する値は以下です。
+
+```hcl
+region           = "ap-northeast-1"
+bedrock_model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+vpc_cidr         = "10.0.0.0/16"
+```
+
+コストを抑えて試すなら、`bedrock_model_id` は既定の Claude 3 Haiku のままにするのがおすすめです。
+
+### 6. Terraform でデプロイ準備をする
 
 ```bash
 cd environments/dev
-
 terraform init
 terraform plan
+```
+
+確認ポイントは次のとおりです。
+
+- `terraform init` が `Terraform has been successfully initialized!` で終わる
+- `terraform plan` の末尾に `Plan: XX to add, 0 to change, 0 to destroy.` が表示される
+- 予期しないリージョンやリソース名になっていない
+
+ここまで問題なければ、実際の作成コマンドはユーザー自身で実行してください。
+
+```bash
 terraform apply
 ```
 
-### 2. SNS通知の受信設定（メール通知を受け取る場合）
+完了後は、少なくとも以下の出力が得られることを確認します。
+
+```text
+agent_alias_id
+agent_arn
+agent_id
+reports_bucket_name
+sns_topic_arn
+```
+
+### 7. デプロイ後の出力値を確認する
+
+あとでテストや確認に使うため、出力値を控えておくとスムーズです。
 
 ```bash
-# デプロイ後、SNS トピック ARN を確認
 terraform output
 ```
 
-AWS コンソール → SNS → トピック `bedrock-agent-reporter-notifications` → サブスクリプションの作成 → メールアドレスを登録 → 届いた確認メールのリンクをクリック
+個別に見る場合は以下を使います。
 
-### 3. エージェントへの質問
-
-#### 方法A: AWS コンソール（推奨）
-
-1. AWS コンソール → **Amazon Bedrock** → 左メニュー **Agents**
-2. `bedrock-agent-resource-reporter` をクリック
-3. 画面右側の **Test** パネルにプロンプトを入力して **Run**
-
+```bash
+terraform output -raw agent_id
+terraform output -raw agent_alias_id
+terraform output -raw reports_bucket_name
+terraform output -raw sns_topic_arn
 ```
+
+### 8. SNS 通知を受け取りたい場合は購読設定をする
+
+メール通知を試したい場合のみ実施してください。
+
+#### コンソールで設定する方法
+
+1. `Amazon SNS` を開く
+2. `トピック` から `bedrock-agent-reporter-notifications` を開く
+3. `サブスクリプションの作成` を押す
+4. プロトコルに `Eメール` を選ぶ
+5. 自分のメールアドレスを入力して作成する
+6. 届いた確認メールの `Confirm subscription` を開く
+
+#### CLI で設定する方法
+
+```bash
+SNS_ARN=$(terraform output -raw sns_topic_arn)
+
+aws sns subscribe \
+  --topic-arn "$SNS_ARN" \
+  --protocol email \
+  --notification-endpoint your-email@example.com \
+  --region ap-northeast-1
+```
+
+CLI で作成した場合も、確認メールのリンクをクリックしないと通知は届きません。
+
+### 9. Bedrock Agent をテストする
+
+最初の動作確認は、ステップ実行の様子が見えるコンソール実行がおすすめです。
+
+#### 方法 A: AWS コンソールから試す
+
+1. `Amazon Bedrock` を開く
+2. `Agents` を開く
+3. `bedrock-agent-resource-reporter` を選ぶ
+4. `Test` パネルまたは `Test agent` を開く
+5. エイリアスに `TestAlias` を選ぶ
+6. 次のプロンプトを入力して実行する
+
+```text
 東京リージョンのEC2一覧を調べてS3にレポートを保存して、SNSで通知してください。
 ```
 
-エージェントが `aws-inspector` → `report-writer` → `notifier` の順で自律的に動きます。
+期待する動きは以下です。
 
-#### 方法B: AWS CLI
+- `aws-inspector` 系のアクションが呼ばれる
+- `report-writer` が Markdown レポートを生成し、S3 に保存する
+- `notifier` が SNS 通知を送る
+
+#### 方法 B: AWS CLI から試す
 
 ```bash
-# デプロイ後に Agent ID / Alias ID を取得
 AGENT_ID=$(terraform output -raw agent_id)
 ALIAS_ID=$(terraform output -raw agent_alias_id)
 
-# エージェントに質問を送る
 aws bedrock-agent-runtime invoke-agent \
-  --agent-id $AGENT_ID \
-  --agent-alias-id $ALIAS_ID \
+  --agent-id "$AGENT_ID" \
+  --agent-alias-id "$ALIAS_ID" \
   --session-id "session-$(date +%s)" \
   --input-text "東京リージョンのEC2一覧を調べてS3にレポートを保存して" \
   --region ap-northeast-1 \
-  response.json
+  /tmp/response.json
 
-cat response.json
+cat /tmp/response.json
 ```
 
-### 4. レポートの確認
+#### 試しやすい追加プロンプト
 
-保存されたレポートは S3 バケットで確認できます。
-
-```bash
-# バケット名を確認
-terraform output -raw reports_bucket_name
-
-# レポート一覧を表示
-aws s3 ls s3://<バケット名>/reports/ --region ap-northeast-1
+```text
+今月のAWSコストをサービス別に教えてください。
+CloudWatchアラームで問題が起きているものはありますか？
+これまでに保存したレポートの一覧を見せてください。
 ```
 
-### 5. 削除
+### 10. 結果を確認する
+
+#### S3 にレポートが保存されたか確認する
 
 ```bash
-# S3 バケット内のオブジェクトを先に削除
-aws s3 rm s3://<バケット名> --recursive --region ap-northeast-1
+BUCKET=$(terraform output -raw reports_bucket_name)
 
+aws s3 ls "s3://${BUCKET}/reports/" \
+  --recursive \
+  --region ap-northeast-1
+```
+
+一覧に Markdown ファイルが見えたら保存成功です。中身を見る場合は、実際のキーを指定して取得します。
+
+```bash
+aws s3 cp "s3://${BUCKET}/reports/<YYYY-MM-DD>/<ファイル名>.md" - \
+  --region ap-northeast-1
+```
+
+#### Lambda ログを確認する
+
+期待した結果にならないときは、どの関数で止まったかを先に見るのが近道です。
+
+```bash
+aws logs tail /aws/lambda/bedrock-agent-aws-inspector \
+  --since 30m \
+  --region ap-northeast-1
+
+aws logs tail /aws/lambda/bedrock-agent-report-writer \
+  --since 30m \
+  --region ap-northeast-1
+
+aws logs tail /aws/lambda/bedrock-agent-notifier \
+  --since 30m \
+  --region ap-northeast-1
+```
+
+### 11. 検証が終わったら削除する
+
+NAT Gateway と KMS キーは放置すると課金が続きます。検証が終わったら、必ずリソースを片付けてください。
+
+```bash
+BUCKET=$(terraform output -raw reports_bucket_name)
+aws s3 rm "s3://${BUCKET}" --recursive --region ap-northeast-1
+```
+
+その後、ユーザー自身で以下を実行してください。
+
+```bash
 terraform destroy
 ```
+
+### よくあるつまずき
+
+#### `Error: Error creating Bedrock Agent`
+
+Bedrock のモデルアクセスが有効になっていない可能性があります。まず Step 4 を見直してください。
+
+```bash
+aws bedrock list-foundation-models \
+  --by-provider Anthropic \
+  --region ap-northeast-1 \
+  --query 'modelSummaries[?modelId==`anthropic.claude-3-haiku-20240307-v1:0`]'
+```
+
+#### `AccessDeniedException`
+
+AWS 認証情報か IAM 権限不足の可能性が高いです。
+
+```bash
+aws sts get-caller-identity
+```
+
+#### Agent が Lambda を呼び出せない
+
+デプロイ直後は Agent の準備完了まで少し時間がかかることがあります。
+
+```bash
+aws bedrock list-agents --region ap-northeast-1
+```
+
+ステータスが `PREPARED` になってから再試行してください。
 
 ## コスト試算
 
