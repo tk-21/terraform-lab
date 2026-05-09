@@ -12,10 +12,9 @@ Model Monitorによるドリフト検知までを一気通貫で自動化するM
 sagemaker-mlops-pipeline/
 ├── CLAUDE.md
 ├── README.md
+├── ARCHITECTURE.md            # 設計本編
 ├── docs/
-│   ├── architecture.md        # Mermaidアーキテクチャ図
-│   ├── adr/                   # Architecture Decision Records
-│   └── runbook.md
+│   └── adr/                   # Architecture Decision Records
 ├── terraform/
 │   ├── main.tf
 │   ├── variables.tf
