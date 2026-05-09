@@ -1,20 +1,6 @@
-terraform {
-  required_providers {
-    archive = {
-      source = "hashicorp/archive"
-    }
-  }
-}
-
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/aws/lambda/${var.name_prefix}-generator"
   retention_in_days = 7
-}
-
-data "archive_file" "generator" {
-  type        = "zip"
-  source_dir  = "${path.module}/src"
-  output_path = "${path.module}/generator.zip"
 }
 
 resource "aws_lambda_function" "this" {
@@ -25,8 +11,8 @@ resource "aws_lambda_function" "this" {
   timeout          = 120
   memory_size      = 128
   role             = var.generator_role_arn
-  filename         = data.archive_file.generator.output_path
-  source_code_hash = data.archive_file.generator.output_base64sha256
+  filename         = "${path.module}/generator.zip"
+  source_code_hash = filebase64sha256("${path.module}/generator.zip")
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
