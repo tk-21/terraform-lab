@@ -96,7 +96,7 @@ resource "aws_secretsmanager_secret" "chatwork_api_key" {
 
 ### 2. ドキュメント整備
 
-#### docs/architecture.md
+#### ARCHITECTURE.md
 
 以下のセクションを含む：
 
@@ -135,7 +135,7 @@ graph TD
     J --> M[S3 HTMLレポート]
 ```
 
-#### docs/runbook.md
+#### README.md に統合する運用手順
 
 以下のセクションを含む：
 
@@ -239,9 +239,8 @@ graph TD
 
 - [ ] lambda/notifier/main.py, requirements.txt
 - [ ] terraform/modules/lambda/main.tf にSecrets Managerリソースが追加されている
-- [ ] docs/architecture.md（Mermaidダイアグラム含む）
-- [ ] docs/runbook.md
-- [ ] README.md
+- [ ] ARCHITECTURE.md（Mermaidダイアグラム含む）
+- [ ] README.md にハンズオン手順が統合されている
 - [ ] CloudWatch Dashboardが定義されている
 - [ ] 全ファイルの命名・タグ・セキュリティチェック完了
 
