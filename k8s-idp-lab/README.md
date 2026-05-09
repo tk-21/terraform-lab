@@ -1,841 +1,796 @@
 # k8s-idp-lab
 
-Crossplane × ArgoCD × Backstage で構築する **内部開発者プラットフォーム（IDP）** のハンズオン。
+Crossplane × ArgoCD × Backstage で、AWS リソースをセルフサービス提供する内部開発者プラットフォーム（IDP）を体験するハンズオンです。
 
----
+このリポジトリでは、開発者が `Storage` Claim を宣言し、それを ArgoCD が GitOps で同期し、Crossplane が AWS の S3 バケットや IAM リソースへ変換する流れを段階的に確認できます。
 
-## このハンズオンで何を学ぶか
+## このハンズオンで得られること
 
-従来のインフラ依頼フローはこうだった:
+- Crossplane・ArgoCD・Backstage が IDP の中でどう役割分担するかを、手を動かしながら理解できます。
+- `Claim -> Composition -> Managed Resource -> AWS` という変換の流れを、自分で確認できます。
+- GitOps によって「Git の宣言が Kubernetes と AWS に反映される」運用イメージを掴めます。
+- 開発者向けセルフサービス基盤を、どのように標準化して提供するかの基本パターンを学べます。
+- 実務でも応用しやすい、`kind + Crossplane + ArgoCD + Backstage` の最小構成サンプルとして使えます。
 
+## このハンズオンで到達するゴール
+
+最終的に次の流れが動く状態を目指します。
+
+```text
+Backstage でフォーム入力
+  ↓
+GitHub に Claim YAML が commit される
+  ↓
+ArgoCD が crossplane/claims/ を同期
+  ↓
+Crossplane が Storage Claim を解釈
+  ↓
+AWS に S3 バケットが自動作成される
 ```
-開発者 → Jira でチケット起票 → インフラチームが手動で AWS コンソール操作 → 数日後に環境が届く
-```
 
-このハンズオンでは、その全体を自動化する IDP を構築する:
+Backstage は任意フェーズです。Phase 5 まで進めれば、Backstage を使わずに `Claim -> Crossplane -> AWS` の自動化まで確認できます。
 
-```
-開発者が Backstage の UI でフォームを入力（appName・環境を選ぶだけ）
-    ↓
-Backstage Scaffolder: crossplane/claims/{app}-storage.yaml を Git に commit
-    ↓
-ArgoCD: Git の変更を検知して Kubernetes に Claim を apply
-    ↓
-Crossplane: Claim の内容を解釈して AWS S3 バケットを自動作成
-    ↓
-開発者: 数分後にバケットが使える状態になる（チケット・承認フロー不要）
-```
+## 登場するコンポーネント
 
-**キーコンセプト: "Platform as Code"**  
-インフラの仕様を YAML として Git に置くことで、「何が作られているか」が常にコードで可視化され、ドリフト（手動変更によるズレ）が自動修復される。
+| コンポーネント | 役割 |
+|---|---|
+| `kind` | ローカル Kubernetes クラスター |
+| `Crossplane` | Kubernetes API から AWS リソースを宣言的に管理 |
+| `ArgoCD` | Git の状態を Kubernetes に同期 |
+| `Backstage` | 開発者向けセルフサービスポータル |
+| `Terraform` | Crossplane 用 AWS IAM ユーザーを初期セットアップ |
 
----
+## 先に読んでおくと理解しやすい資料
 
-## 登場するツールの役割
+- [ARCHITECTURE.md](/home/takuya/terraform-lab/k8s-idp-lab/ARCHITECTURE.md)
+- [docs/crossplane-guide.md](/home/takuya/terraform-lab/k8s-idp-lab/docs/crossplane-guide.md)
+- [docs/troubleshooting.md](/home/takuya/terraform-lab/k8s-idp-lab/docs/troubleshooting.md)
 
-| ツール | 役割 | 例えると |
+## フェーズ一覧
+
+| Phase | 内容 | 必須 |
 |---|---|---|
-| **Crossplane** | Kubernetes から AWS リソースを宣言的に管理する | Terraform の Kubernetes 版 |
-| **ArgoCD** | Git の状態を Kubernetes に継続的に同期する | "Git が唯一の真実" を実現する番人 |
-| **Backstage** | 開発者向けの操作 UI・セルフサービスポータル | AWS コンソールの社内版 |
-| **kind** | ローカルで動く Kubernetes クラスター | EKS の代わりに使うローカル環境 |
-| **Terraform** | IAM ユーザーなど AWS 側の初期設定を管理 | Crossplane 自体が使う AWS 権限の管理 |
+| 0 | AWS IAM の初期セットアップ | AWS を使う場合は必須 |
+| 1 | kind クラスター作成 | 必須 |
+| 2 | Crossplane インストール | 必須 |
+| 3 | AWS 認証と Provider 設定 | AWS を使う場合は必須 |
+| 4 | XRD / Composition 適用 | 必須 |
+| 5 | Claim から S3 バケット作成 | 必須 |
+| 6 | ArgoCD で GitOps 化 | 推奨 |
+| 7 | ドリフト修復の確認 | 推奨 |
+| 8 | Backstage でセルフサービス化 | 任意 |
+| 9 | クリーンアップ | 必須 |
 
----
+## 0. 前提条件
 
-## Crossplane とは
+### 推奨スペック
 
-### 一言で言うと
+- CPU 4 コア以上
+- メモリ 8 GB 以上
+- Docker が十分なメモリを使えること
 
-「Kubernetes の YAML で AWS リソースを管理できる仕組み」。  
-Terraform と似ているが、**Kubernetes の中で動き続けて状態を監視・修復する**点が異なる。
-
-### Terraform との違い
-
-| | Terraform | Crossplane |
-|---|---|---|
-| 動作方式 | 手動で `apply` を叩く | Kubernetes の中で常時動く |
-| ドリフト検出 | `plan` で手動確認 | 常時監視して自動修復 |
-| 状態管理 | `.tfstate` ファイル | Kubernetes の etcd（クラスター内） |
-| 使う人 | インフラエンジニア | 開発者も（Claim を書くだけ） |
-| CI/CD との統合 | 別途パイプラインが必要 | ArgoCD と組み合わせると Git push だけで完結 |
-
-このハンズオンで Terraform を使うのは「Crossplane 自体が使う IAM ユーザーの作成（一度きりの初期設定）」のみ。  
-それ以降の AWS リソース管理はすべて Crossplane が担う。
-
-### Crossplane のコアコンセプト
-
-**Provider**  
-AWS・GCP・Azure などのクラウドと通信するプラグイン。  
-`provider-aws-s3` を入れると `Bucket` という Kubernetes リソースが使えるようになる。
-
-```
-provider-aws-s3  →  kubectl apply で S3 バケットを作れるようになる
-provider-aws-iam →  kubectl apply で IAM ロールを作れるようになる
-```
-
-**Managed Resource**  
-Provider が管理する AWS リソースそのもの。`kubectl get managed` で一覧できる。  
-Kubernetes のオブジェクトと AWS のリソースが 1:1 で対応している。
-
-```yaml
-# これが Managed Resource（Crossplane が直接 AWS API を叩く）
-apiVersion: s3.aws.upbound.io/v1beta1
-kind: Bucket
-spec:
-  forProvider:
-    region: ap-northeast-1
-```
-
-**XRD（CompositeResourceDefinition）と Composition**  
-開発者向けに「簡単な API」を作る仕組み。  
-XRD で「どんな入力を受け付けるか」を定義し、Composition で「その入力から何を作るか」を実装する。
-
-```
-XRD      →  Storage という kind を定義（appName・environment を受け取る）
-Composition →  Storage が来たら S3 Bucket + BucketVersioning を作ると実装する
-```
-
-**Claim**  
-開発者が実際に書く YAML。XRD で定義した API に沿って書くだけでよい。  
-S3 の作り方・バケット命名規則・タグ設定などの詳細を知らなくてよい。
-
-### 3 層の抽象化
-
-```
-┌─────────────────────────────────────────────────────┐
-│ 開発者が触る層                                         │
-│   Claim（Storage）                                    │
-│   → "myapp の dev 環境用ストレージが欲しい" という宣言   │
-└─────────────────────┬───────────────────────────────┘
-                      │ compositionRef で紐付け
-┌─────────────────────▼───────────────────────────────┐
-│ プラットフォームチームが定義する層                        │
-│   XRD → Claim の API スキーマ定義                     │
-│   Composition → Claim から何を作るかの実装              │
-└─────────────────────┬───────────────────────────────┘
-                      │ Composition が展開
-┌─────────────────────▼───────────────────────────────┐
-│ AWS リソース層                                         │
-│   Managed Resource（Bucket / BucketVersioning）      │
-│   → 実際に AWS 上に作られるリソース                     │
-└─────────────────────────────────────────────────────┘
-```
-
-### Crossplane の自動修復（ドリフト検出）
-
-Crossplane のコントローラーは定期的に「Kubernetes の望ましい状態」と「実際の AWS の状態」を比較する。  
-AWS コンソールで手動変更されても、**次の reconcile サイクルで元に戻す**。
-
-```
-Kubernetes: Bucket "idp-myapp-dev" の versioning=Suspended であるべき
-AWS: 誰かが手動で versioning=Enabled に変えた
-           ↓ Crossplane が検出
-Crossplane: PutBucketVersioning を呼んで Suspended に戻す
-```
-
----
-
-## データフロー: Claim が S3 バケットになるまで
-
-```
-example-storage.yaml（Claim）
-  spec.parameters.appName: "myapp-takuya"
-  spec.parameters.environment: "dev"
-       ↓ Composition の patches が変換
-  metadata.annotations[crossplane.io/external-name]: "idp-myapp-takuya-dev"
-       ↓ Managed Resource として展開
-  Bucket.s3.aws.upbound.io
-    spec.forProvider.region: ap-northeast-1
-    tags: { ManagedBy: crossplane, Environment: dev, AppName: myapp-takuya }
-       ↓ Crossplane provider-aws-s3 が AWS API を呼ぶ
-  AWS S3: バケット "idp-myapp-takuya-dev" が作成される
-```
-
----
-
-## ArgoCD とは
-
-### 一言で言うと
-
-「Git リポジトリの内容を Kubernetes クラスターに自動で同期し続けるツール」。  
-**GitOps** というアプローチを実現するための CD（継続的デリバリー）ツール。
-
-### GitOps とは何か
-
-従来の CD（CI/CD パイプライン方式）:
-
-```
-コードを push → CI が kubectl apply を実行 → クラスターに反映
-                 ↑ パイプラインが壊れると誰も apply できなくなる
-                 ↑ 「今クラスターに何が入っているか」が Git と乖離しやすい
-```
-
-GitOps（ArgoCD 方式）:
-
-```
-コードを push → Git リポジトリの状態が変わる
-                      ↓
-               ArgoCD が差分を検出（クラスター側からプル）
-                      ↓
-               ArgoCD が自動で kubectl apply を実行
-```
-
-**Git が唯一の真実（Single Source of Truth）**。  
-クラスターの状態は常に Git の内容と一致する。誰かが `kubectl apply` や `kubectl delete` を手動実行しても、ArgoCD が Git の状態に戻す。
-
-### ArgoCD のコアコンセプト
-
-**Application**  
-「どの Git リポジトリのどのパスを、どのクラスターに同期するか」を定義するリソース。
-
-```yaml
-# このハンズオンでの Application 設定（概略）
-spec:
-  source:
-    repoURL: https://github.com/your-name/k8s-idp-lab
-    path: crossplane/claims          # ← ここを監視する
-  destination:
-    server: https://kubernetes.default.svc
-  syncPolicy:
-    automated:
-      selfHeal: true   # 手動変更を自動修復
-      prune: true      # Git から消えたリソースをクラスターからも削除
-```
-
-**Sync（同期）**  
-Git の状態とクラスターの状態を一致させる操作。  
-`automated` を設定すると変更を検知するたびに自動実行される。
-
-**Health（ヘルス）**  
-リソースが正常に動いているかの状態。`Healthy` / `Degraded` / `Progressing` などがある。
-
-**selfHeal**  
-`kubectl delete` などで手動削除されたリソースを Git の状態に基づいて自動再作成する機能。  
-Phase 7 で実際に体験する。
-
-### このプロジェクトでの ArgoCD の役割
-
-```
-開発者が crossplane/claims/ に YAML を追加して Git push
-           ↓
-ArgoCD が変更を検知（デフォルトで 3 分ごとにポーリング）
-           ↓
-ArgoCD が kubectl apply -f crossplane/claims/ を実行
-           ↓
-Crossplane が Claim を受け取って AWS にリソースを作る
-```
-
-ArgoCD がいないと「誰かが手動で `kubectl apply` しないと Crossplane が動かない」状態になる。  
-ArgoCD を挟むことで、**Git push だけで AWS リソースが作られる**フローが完成する。
-
----
-
-## Backstage とは
-
-### 一言で言うと
-
-「開発者が必要なツール・情報・セルフサービス操作を一箇所でできる社内ポータル」。  
-Spotify が作り、CNCF に寄贈した OSS。
-
-### 何が嬉しいのか
-
-大きな組織では「どのマイクロサービスが誰の担当で、どのリポジトリにあって、どのインフラを使っているか」が把握しにくくなる。  
-Backstage はこれを解決する:
-
-```
-Service Catalog  → 全サービスの一覧・担当者・依存関係を可視化
-Scaffolder       → 新しいサービスや環境を "フォームを埋めるだけ" で作れる
-TechDocs         → ドキュメントをコードと同じリポジトリで管理・表示する
-```
-
-### Scaffolder（このハンズオンで使う機能）
-
-Backstage の **Scaffolder** は「フォームの入力値を YAML テンプレートに埋め込んで Git に commit する」ツール。
-
-```
-開発者が Backstage の UI でフォームを入力:
-  アプリ名: myapp-takuya
-  環境: dev
-  バージョニング: off
-           ↓ backstage/templates/aws-environment/template.yaml に従い
-           ↓ skeleton/crossplane-claim.yaml に値を埋め込む
-           ↓ Git に commit & push
-  crossplane/claims/myapp-takuya-dev.yaml が作成される
-           ↓ ArgoCD が検知
-  Crossplane が S3 バケットを作成
-```
-
-開発者は **kubectl も AWS コンソールも触らない**。フォームを埋めて Submit するだけ。
-
-### テンプレートの仕組み（概略）
-
-```yaml
-# backstage/templates/aws-environment/template.yaml（概略）
-spec:
-  parameters:
-    - title: アプリケーション情報
-      properties:
-        appName:
-          type: string
-          title: アプリ名
-        environment:
-          type: string
-          enum: [dev, staging, prod]
-
-  steps:
-    - id: fetch
-      action: fetch:template         # skeleton/ の YAML にパラメーターを埋め込む
-    - id: publish
-      action: publish:github         # 埋め込んだ YAML を Git に commit する
-```
-
-### このハンズオンでの位置づけ
-
-Backstage は **Phase 8（任意）** での扱い。  
-Phase 5 まで完了すれば「YAML を手書きして kubectl apply」で同じことができるため、  
-Backstage はあくまで「開発者体験を改善するフロントエンド」として位置づける。
-
-```
-Phase 5 まで: 手書き YAML → kubectl apply → AWS リソース作成  ✅ 動く
-Phase 8 完了: Backstage UI → Git push → ArgoCD → Crossplane → AWS  ✅ 動く（より実践的）
-```
-
----
-
-## 前提条件
-
-**推奨スペック: CPU 4コア以上、RAM 8GB 以上**（kind ノード 3 台分を起動するため）
+### 必要ツール
 
 ```bash
-docker version                  # Docker が動いているか
-kind version                    # v0.22.0 以上推奨
-kubectl version --client        # v1.28 以上推奨
-helm version                    # v3.12 以上推奨
-terraform version               # v1.5 以上推奨
-aws --version                   # v2 系
-aws sts get-caller-identity     # AWS 認証が通っているか
-node --version                  # v18 以上（Phase 8 Backstage のみ必要）
+docker version
+kind version
+kubectl version --client
+helm version
+terraform version
+aws --version
+aws sts get-caller-identity
+git --version
+node --version
+npm --version
 ```
 
-エラーが出たツールはインストールしてから進む。
+目安:
 
----
+- `kind >= 0.22`
+- `kubectl >= 1.28`
+- `helm >= 3.12`
+- `terraform >= 1.5`
+- `node >= 18`（Phase 8 のみ）
 
-## フェーズ構成
+### このリポジトリで使うローカルポート
 
-| Phase | 内容 | AWS 必要 |
-|---|---|---|
-| 0 | IAM 最小権限セットアップ（Terraform） | **あり** |
-| 1 | kind クラスター起動 | なし |
-| 2 | Crossplane インストール | なし |
-| 3 | AWS 認証設定・Provider 登録 | **あり** |
-| 4 | XRD・Composition 適用 | なし |
-| 5 | Claim を作って S3 バケット自動生成 | **あり** |
-| 6 | ArgoCD で GitOps 設定 | なし |
-| 7 | ドリフト体験（自動修復の確認） | **あり** |
-| 8 | Backstage セットアップ（任意） | なし |
-| 9 | クリーンアップ | **あり** |
+| ポート | 用途 |
+|---|---|
+| `30080` | ArgoCD UI |
+| `30000` | kind で Backstage を公開する場合の予約 |
+| `3000` | ローカル起動した Backstage フロントエンド |
+| `7007` | ローカル起動した Backstage バックエンド |
 
-Phase 1〜2 は AWS 不要でローカルだけで進められる。  
-Phase 0 は最初に一度だけ実行する。
+### 作業ディレクトリ
 
----
+以降はすべてリポジトリルートで作業します。
 
-## Phase 0: IAM 最小権限セットアップ
+```bash
+cd /home/takuya/terraform-lab/k8s-idp-lab
+pwd
+```
 
-Crossplane が AWS を操作するための IAM ユーザーを Terraform で作成する。  
-`Resource: "*"` を避け、バケット名パターン・IAM パスでスコープを絞った最小権限設計になっている。
+## 1. 最短で全体像を掴む実行順
 
-### 0-1. Terraform 実行
+時間がないときは次の順で進めると、最小構成で価値が見えます。
+
+1. Phase 0: Terraform で Crossplane 用 IAM を作る
+2. Phase 1: kind を起動する
+3. Phase 2: Crossplane を入れる
+4. Phase 3: AWS 認証と Provider を設定する
+5. Phase 4: XRD / Composition を入れる
+6. Phase 5: Claim から S3 バケットを作る
+7. Phase 9: 片付ける
+
+GitOps まで見たい場合は Phase 6-7、開発者体験まで見たい場合は Phase 8 へ進んでください。
+
+## 2. Phase 0: Crossplane 用 AWS IAM の初期セットアップ
+
+このフェーズでは、Crossplane が AWS API を呼ぶための IAM ユーザーとアクセスキーを作ります。Terraform の `apply` はユーザー自身が実行してください。
+
+### 2-1. Terraform ディレクトリへ移動
 
 ```bash
 cd terraform/crossplane-iam
-
-terraform init
-terraform plan   # 変更内容を確認してから
+ls
 ```
 
-問題なければユーザー自身が apply を実行する。
+主要ファイル:
+
+- `main.tf`: IAM ユーザーとアクセスキー
+- `iam.tf`: S3 / IAM の最小権限ポリシー
+- `outputs.tf`: Kubernetes Secret 登録用の出力
+
+### 2-2. 初期化と計画確認
+
+```bash
+terraform init
+terraform plan
+```
+
+確認ポイント:
+
+- IAM ユーザー `idp-lab-crossplane`
+- `/crossplane/` パス配下の IAM 権限
+- `idp-*` バケットに対する S3 権限
+
+### 2-3. `apply` はユーザー自身で実行
 
 ```bash
 terraform apply
 ```
 
-作成されるリソース:
-- IAM ユーザー `idp-lab-crossplane`（パス `/crossplane/`）
-- S3 ポリシー: `idp-*` バケットのみ操作可能
-- IAM ポリシー: `/crossplane/` パス配下のロール・ポリシーのみ操作可能
-- アクセスキー（outputs で取得）
-
-### 0-2. 認証情報を確認
+### 2-4. 出力値を確認
 
 ```bash
-# アクセスキー ID（画面に表示される）
-terraform output access_key_id
-
-# シークレットキー（sensitive のため -raw で取得）
+terraform output
+terraform output -raw access_key_id
 terraform output -raw secret_access_key
+terraform output -raw k8s_secret_command
 ```
 
-この値を Phase 3 で使う。**画面に出した後はスクリーンショットを撮らないこと。**
+このあと使うのは:
 
----
+- `access_key_id`
+- `secret_access_key`
+- `k8s_secret_command`
 
-## Phase 1: kind クラスター起動
+### 2-5. ここで成功していれば
 
-### 1-1. クラスター作成
+- Crossplane 用 IAM ユーザーが AWS に存在する
+- Kubernetes Secret 登録用のコマンドを取得できる
+
+## 3. Phase 1: kind クラスター作成
+
+リポジトリルートへ戻って kind クラスターを作ります。
 
 ```bash
-cd ~/terraform-lab/k8s-idp-lab
-
+cd /home/takuya/terraform-lab/k8s-idp-lab
 kind create cluster --config kind-cluster.yaml
 ```
 
-作成には 1〜2 分かかる。完了したら以下で確認する。
+### 3-1. 状態確認
 
 ```bash
+kubectl config current-context
 kubectl cluster-info --context kind-idp-lab
 kubectl get nodes
 ```
 
-期待する出力:
+期待値:
 
-```
+- コンテキストが `kind-idp-lab`
+- ノード 3 台が `Ready`
+
+例:
+
+```text
 NAME                     STATUS   ROLES           AGE
 idp-lab-control-plane    Ready    control-plane   1m
 idp-lab-worker           Ready    <none>          1m
 idp-lab-worker2          Ready    <none>          1m
 ```
 
-3 ノード全部 `Ready` になればOK。
+### 3-2. ここで成功していれば
 
-### 1-2. コンテキスト確認
+- ローカル Kubernetes 基盤が使える
+- `30080` などのポートマッピングが有効
 
-```bash
-kubectl config current-context
-# → kind-idp-lab になっていること
-```
+## 4. Phase 2: Crossplane をインストール
 
----
-
-## Phase 2: Crossplane インストール
-
-### 2-1. Helm リポジトリ追加 & インストール
+### 4-1. Helm リポジトリ追加
 
 ```bash
 helm repo add crossplane-stable https://charts.crossplane.io/stable
 helm repo update
+```
 
+### 4-2. Crossplane 本体のインストール
+
+```bash
 helm install crossplane crossplane-stable/crossplane \
   --namespace crossplane-system \
   --create-namespace \
   --version 1.15.0
 ```
 
-### 2-2. 起動確認
+### 4-3. 起動待ち
 
 ```bash
-# Running になるまでウォッチ（1〜2 分）
 kubectl get pods -n crossplane-system -w
 ```
 
-`crossplane-*` と `crossplane-rbac-manager-*` の 2 つが `Running` になれば次へ。
+確認ポイント:
 
----
+- `crossplane-*` が `Running`
+- `crossplane-rbac-manager-*` が `Running`
 
-## Phase 3: AWS 認証設定
+### 4-4. ここで成功していれば
 
-### 3-1. K8s Secret に登録
+- Crossplane コントローラーが kind 上で動いている
+- まだ AWS には触れないが、Provider を受け入れる準備ができた
 
-Phase 0 で取得したアクセスキーを使って Kubernetes Secret を作成する。
+## 5. Phase 3: AWS 認証情報と Provider 設定
+
+### 5-1. Terraform 出力から Kubernetes Secret を登録
+
+`terraform output -raw k8s_secret_command` を使うのが一番簡単です。
 
 ```bash
-# terraform output -raw k8s_secret_command でコマンドを生成して実行
 cd terraform/crossplane-iam
 terraform output -raw k8s_secret_command | bash
+cd /home/takuya/terraform-lab/k8s-idp-lab
 ```
 
-手動で登録する場合:
-
-```bash
-kubectl create secret generic aws-credentials \
-  -n crossplane-system \
-  --from-literal=credentials="[default]
-aws_access_key_id=<Phase 0 で取得したキー ID>
-aws_secret_access_key=<Phase 0 で取得したシークレット>"
-```
-
-Secret が作成されたか確認:
+### 5-2. Secret 確認
 
 ```bash
 kubectl get secret aws-credentials -n crossplane-system
+kubectl describe secret aws-credentials -n crossplane-system
 ```
 
-### 3-2. AWS Provider インストール
+### 5-3. AWS Provider を適用
 
 ```bash
 kubectl apply -f crossplane/providers/aws-provider.yaml
 ```
 
-Provider が HEALTHY になるまで待つ（イメージ取得で 3〜5 分かかる）。
+### 5-4. Provider が Healthy になるまで待つ
 
 ```bash
 kubectl get providers -w
-# NAME                  INSTALLED   HEALTHY   AGE
-# provider-aws-s3       True        True      5m
-# provider-aws-iam      True        True      5m
 ```
 
-> **ハマりポイント**: `HEALTHY=False` のまま止まる場合は `kubectl describe provider provider-aws-s3` でイベントを確認する。イメージ Pull 失敗なら Docker のネットワーク設定を見直す。
+期待値:
 
-### 3-3. ProviderConfig を適用
+```text
+NAME               INSTALLED   HEALTHY
+provider-aws-s3    True        True
+provider-aws-iam   True        True
+```
 
-**Provider が両方 `HEALTHY=True` になってから**実行する。  
-Provider Pod が起動前に適用しても CRD が存在せず無視される。
+`HEALTHY=False` のまま止まる場合:
+
+```bash
+kubectl describe provider provider-aws-s3
+kubectl describe provider provider-aws-iam
+kubectl get pods -n crossplane-system
+```
+
+### 5-5. ProviderConfig を適用
+
+Provider が両方 `HEALTHY=True` になってから実行します。
 
 ```bash
 kubectl apply -f crossplane/providers/provider-config.yaml
+kubectl get providerconfig
 ```
 
----
+### 5-6. ここで成功していれば
 
-## Phase 4: XRD と Composition を適用
+- Crossplane が AWS 認証情報を参照できる
+- S3 / IAM の Managed Resource を作成できる状態になっている
 
-### 4-1. CompositeResourceDefinition (XRD)
+## 6. Phase 4: XRD と Composition を適用
+
+このフェーズでは、開発者向け API と、その API を AWS リソースへ変換する実装をクラスターへ登録します。
+
+### 6-1. XRD を適用
 
 ```bash
 kubectl apply -f crossplane/compositions/s3-bucket-xrd.yaml
-
-# CRD が登録されるまで待つ
 kubectl get xrd xstorages.idp.example.com
-# ESTABLISHED=True になればOK
 ```
 
-### 4-2. Composition
+確認ポイント:
+
+- `ESTABLISHED=True`
+
+### 6-2. Composition を適用
+
+このリポジトリには 2 種類の Composition があります。両方入れておくと後で比較しやすいです。
 
 ```bash
 kubectl apply -f crossplane/compositions/s3-bucket-composition.yaml
-
-kubectl get composition s3-storage
-# READY=True になればOK
+kubectl apply -f crossplane/compositions/app-environment-composition.yaml
+kubectl get composition
 ```
 
----
+期待値:
 
-## Phase 5: Claim を作って AWS リソースを生成
+- `s3-storage`
+- `app-environment`
 
-### 5-1. 開発者用 Namespace を作成
+### 6-3. Storage API が使えることを確認
+
+```bash
+kubectl api-resources | grep -E "storage|xstorage"
+```
+
+### 6-4. ここで成功していれば
+
+- 開発者は `kind: Storage` を使える
+- Crossplane は `Storage` を `Bucket` などへ展開できる
+
+## 7. Phase 5: Claim から S3 バケットを作成
+
+まずは最小構成の `s3-storage` Composition を使います。
+
+### 7-1. 開発者用 namespace を作成
 
 ```bash
 kubectl create namespace team-alpha
 ```
 
-### 5-2. appName を変更してから Claim を適用
+すでに存在する場合はそのままで構いません。
 
-> **重要**: `crossplane/claims/example-storage.yaml` の `appName` を変更すること。  
-> S3 バケット名（`idp-<appName>-dev`）は AWS グローバルで一意であり、  
-> `myapp` のような汎用名はすでに他ユーザーに取られている可能性がある。  
-> 例: `myapp-takuya`、`myapp-20260504` など個人を識別できる名前を使う。
+### 7-2. サンプル Claim を編集
+
+[crossplane/claims/example-storage.yaml](/home/takuya/terraform-lab/k8s-idp-lab/crossplane/claims/example-storage.yaml) の `appName` を必ず変更してください。
+
+理由:
+
+- S3 バケット名は AWS 全体で一意
+- `myapp` はほぼ確実に衝突しやすい
+
+推奨例:
+
+- `myapp-takuya`
+- `myapp-takuya-20260508`
+
+編集後のイメージ:
+
+```yaml
+spec:
+  compositionRef:
+    name: s3-storage
+  parameters:
+    appName: myapp-takuya
+    environment: dev
+    region: ap-northeast-1
+    versioning: false
+```
+
+### 7-3. Claim を適用
 
 ```bash
-# appName を書き換えてから適用
 kubectl apply -f crossplane/claims/example-storage.yaml
 ```
 
-### 5-3. リソースの状態確認
+### 7-4. Claim / Composite / Managed Resource の状態確認
 
 ```bash
-# Claim の状態（READY=True になれば AWS にバケットが作成済み）
 kubectl get storage -n team-alpha
-
-# Composite Resource の状態
 kubectl get xstorages
-
-# Managed Resource（実際の AWS S3 バケット・バージョニング設定）
 kubectl get managed -A
 ```
 
-### 5-4. AWS 側で確認
+期待値:
+
+- `storage` の `READY=True`
+- `Bucket` と `BucketVersioning` が作成されている
+
+### 7-5. AWS 側で確認
+
+`appName: myapp-takuya` にしたなら:
 
 ```bash
-# appName を myapp-takuya にした場合
-aws s3 ls | grep idp-myapp
+aws s3 ls | grep idp-myapp-takuya
 ```
 
-`idp-<appName>-dev` というバケットが表示されれば成功。
+期待値:
 
-> **ハマりポイント**: `READY=False` が続く場合:
-> ```bash
-> kubectl describe storage myapp-storage -n team-alpha
-> kubectl get events -n team-alpha --sort-by='.lastTimestamp'
-> kubectl logs -n crossplane-system -l pkg.crossplane.io/revision --tail=50
-> ```
+- `idp-myapp-takuya-dev` が見える
 
----
+### 7-6. `READY=False` のときの確認手順
 
-## Phase 6: ArgoCD インストール & GitOps 設定
+```bash
+kubectl describe storage myapp-storage -n team-alpha
+kubectl get events -n team-alpha --sort-by='.lastTimestamp'
+kubectl logs -n crossplane-system -l pkg.crossplane.io/revision --tail=100
+```
 
-### 6-1. ArgoCD インストール
+よくある原因:
+
+- S3 バケット名の衝突
+- ProviderConfig 未適用
+- AWS 認証 Secret の不備
+- IAM 権限不足
+
+### 7-7. `app-environment` Composition も試す場合
+
+同じ `Storage` API で IAM Role / Policy まで作らせたい場合は `compositionRef.name` を `app-environment` に変えます。
+
+```yaml
+spec:
+  compositionRef:
+    name: app-environment
+```
+
+その場合、作成対象は次になります。
+
+- S3 Bucket
+- BucketVersioning
+- IAM Role
+- IAM Policy
+- RolePolicyAttachment
+
+## 8. Phase 6: ArgoCD で GitOps 化
+
+このフェーズからは、`kubectl apply` の代わりに Git を通して Claim をクラスターへ届ける流れを作ります。
+
+### 8-1. ArgoCD をインストール
+
+このリポジトリでは [argocd/install/install.sh](/home/takuya/terraform-lab/k8s-idp-lab/argocd/install/install.sh) を使います。README の説明よりもスクリプトの挙動を優先してください。
 
 ```bash
 bash argocd/install/install.sh
 ```
 
-スクリプト内で全 Pod の Ready を待つため、完了まで 3〜5 分かかる。
+このスクリプトは:
 
-### 6-2. NodePort で UI を公開
+1. `argocd` namespace を作成
+2. 公式マニフェストを `kubectl apply`
+3. Pod が Ready になるまで待機
+4. 初期管理者パスワードを表示
+
+### 8-2. ArgoCD UI を公開
 
 ```bash
 kubectl apply -f argocd/apps/argocd-nodeport.yaml
+kubectl get svc -n argocd argocd-server-nodeport
 ```
 
-ブラウザで http://localhost:30080 を開く。
+その後、ブラウザで `http://localhost:30080` を開きます。
 
-### 6-3. 初期パスワード取得
+### 8-3. 初期ログイン情報の取得
+
+`install.sh` の最後でも表示されますが、再確認したい場合は次です。
 
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath="{.data.password}" | base64 -d && echo
 ```
 
-ユーザー名 `admin`、上記パスワードでログイン。
+ログイン情報:
 
-### 6-4. GitHub リポジトリと接続
+- Username: `admin`
+- Password: 上記コマンドの出力
 
-`argocd/apps/platform-app.yaml` の `repoURL` を自分のリポジトリ URL に書き換えてから適用する。
+### 8-4. `platform-app.yaml` の `repoURL` を自分の GitHub に変更
+
+[argocd/apps/platform-app.yaml](/home/takuya/terraform-lab/k8s-idp-lab/argocd/apps/platform-app.yaml) の次の行を編集します。
+
+```yaml
+repoURL: https://github.com/YOUR_GITHUB_USERNAME/k8s-idp-lab.git
+```
+
+自分の fork または自分の管理するリポジトリ URL に変更してください。
+
+### 8-5. ArgoCD Application を作成
 
 ```bash
-# YOUR_GITHUB_USERNAME を自分のアカウント名に変えて編集
-vim argocd/apps/platform-app.yaml
-
 kubectl apply -f argocd/apps/platform-app.yaml
-```
-
-### 6-5. 同期確認
-
-```bash
 kubectl get application -n argocd
-# STATUS=Synced, HEALTH=Healthy になればOK
 ```
 
----
+期待値:
 
-## Phase 7: ドリフト体験（自動修復の確認）
+- `crossplane-platform` が作成される
+- `SYNC STATUS=Synced`
+- `HEALTH STATUS=Healthy`
 
-ArgoCD の `selfHeal: true` が効いているか確認する。
+### 8-6. GitOps で Claim を管理する
+
+ここからは `crossplane/claims/` に置いた YAML を GitHub に push すると、ArgoCD が `team-alpha` namespace へ自動同期します。
+
+確認例:
 
 ```bash
-# Claim を手動で削除してみる
-kubectl delete storage myapp-storage -n team-alpha
-
-# 数秒後に復活しているか確認
+kubectl get application -n argocd -w
 kubectl get storage -n team-alpha -w
 ```
 
-Git に存在するリソースを手動削除しても、ArgoCD が自動で再作成する。
+## 9. Phase 7: ドリフト修復を体験
 
----
+ArgoCD の `selfHeal: true` が効いていることを確認します。
 
-## Phase 8: Backstage セットアップ（任意）
+### 9-1. Git に存在する Claim を手動削除
 
-Backstage を起動して「フォームを埋めるだけで S3 バケットが作られる」UI フローを体験する。
+```bash
+kubectl delete storage myapp-storage -n team-alpha
+```
 
-### 8-1. 前提: GitHub Personal Access Token を取得
+### 9-2. 自動復旧を監視
 
-Backstage が Git に commit するために必要。
+```bash
+kubectl get storage -n team-alpha -w
+```
 
-1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. 権限: `Contents: Read and write`（対象リポジトリを指定）
-3. 取得したトークンを環境変数にセット:
+期待値:
+
+- 数秒から数分で Claim が再作成される
+
+理由:
+
+- Git にはまだ Claim が存在している
+- ArgoCD が差分を検知して再適用する
+
+### 9-3. さらに理解したい場合
+
+次の 2 つの修復の違いを見ると理解が深まります。
+
+1. Claim を消す
+2. AWS 側で S3 バージョニングを手動変更する
+
+前者は ArgoCD が修復し、後者は Crossplane が修復します。
+
+## 10. Phase 8: Backstage でセルフサービス化
+
+このフェーズは任意です。完成形の開発者体験を見たいときに進めてください。
+
+### 10-1. GitHub Personal Access Token を用意
+
+Backstage から GitHub へ commit するために必要です。
+
+必要権限:
+
+- `Contents: Read and write`
+
+環境変数へ設定:
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 ```
 
-### 8-2. Backstage をインストールして起動
+### 10-2. Backstage アプリを新規作成
 
 ```bash
-# Backstage アプリを作成（初回のみ、10〜15 分かかる）
+cd /home/takuya/terraform-lab/k8s-idp-lab
 npx @backstage/create-app@latest --path backstage-app
-
 cd backstage-app
+```
 
-# このプロジェクトの app-config.yaml をコピー
-cp ../backstage/app-config.yaml app-config.yaml
+### 10-3. このリポジトリの設定とテンプレートを取り込む
 
-# テンプレートディレクトリをコピー
-cp -r ../backstage/templates ./
+```bash
+cp ../backstage/app-config.yaml ./app-config.yaml
+cp -r ../backstage/templates ./templates
+```
 
-# 起動
+### 10-4. `app-config.yaml` のテンプレート参照先を直す
+
+このリポジトリの `backstage/app-config.yaml` は、元のリポジトリ構成前提の相対パスになっています。`backstage-app` 直下にコピーして使う場合は、次のように変更してください。
+
+変更前:
+
+```yaml
+target: ../../backstage/templates/aws-environment/template.yaml
+```
+
+変更後:
+
+```yaml
+target: ./templates/aws-environment/template.yaml
+```
+
+### 10-5. Backstage を起動
+
+```bash
 yarn dev
 ```
 
-ブラウザで http://localhost:3000 を開く。
+ブラウザで次を開きます。
 
-### 8-3. Scaffolder テンプレートを登録
+- `http://localhost:3000`
 
-Backstage の管理画面からテンプレートを読み込む:
+### 10-6. Scaffolder テンプレートを確認
 
-1. ブラウザで http://localhost:3000/catalog-import を開く
-2. `backstage/templates/aws-environment/template.yaml` のパスを入力
-3. "Analyze" → "Import" をクリック
+起動後、`Create...` 画面または `Catalog Import` から `AWS アプリ環境作成` テンプレートが見えることを確認します。
 
-### 8-4. フォームから S3 バケットを作成
+見えない場合は:
 
-1. http://localhost:3000/create を開く
-2. "AWS アプリ環境作成" テンプレートを選択
-3. フォームを入力:
-   - アプリ名: `myapp-takuya`（他ユーザーと重複しない名前）
-   - 環境: `dev`
-   - S3 バージョニング: オフ
-   - リポジトリ: 自分の `k8s-idp-lab` リポジトリを指定
-4. "Create" をクリック
+- `app-config.yaml` の `catalog.locations.target`
+- `GITHUB_TOKEN`
+- 起動ログ
 
-### 8-5. フローの確認
+を確認してください。
+
+### 10-7. フォームから Claim を作る
+
+入力例:
+
+- `appName`: `myapp-takuya`
+- `environment`: `dev`
+- `versioning`: `false`
+- `region`: `ap-northeast-1`
+- `repoUrl`: 自分の `k8s-idp-lab` リポジトリ
+
+### 10-8. 期待する結果
+
+1. GitHub に `crossplane/claims/` 配下の YAML が commit される
+2. ArgoCD が変更を検知して同期する
+3. Crossplane が S3 バケットを作る
+
+確認コマンド:
 
 ```bash
-# GitHub に YAML が commit されたか確認
-# → crossplane/claims/myapp-takuya-storage.yaml が追加されているはず
-
-# ArgoCD が検知して Sync したか確認（最大 3 分）
 kubectl get application -n argocd -w
-
-# Crossplane が S3 バケットを作ったか確認
 kubectl get storage -n team-alpha
 aws s3 ls | grep idp-myapp-takuya
 ```
 
-Backstage UI から始まって AWS にバケットができれば、一気通貫フローの完成。
+補足:
 
----
+- `catalog:register` は optional です
+- `catalog-info.yaml` が無くても、Claim の Git 反映自体は確認できます
 
-## Phase 9: クリーンアップ
+## 11. Phase 9: クリーンアップ
 
-**ハンズオン終了後は必ず実行する。放置すると S3 の費用が発生する。**
+ハンズオン後は AWS リソースを消しておきます。
+
+### 11-1. まず Claim から削除
 
 ```bash
-# 1. Claim を削除（→ Crossplane が Managed Resource も削除する）
 kubectl delete storage myapp-storage -n team-alpha
-
-# Crossplane が AWS バケットを削除するまで 1〜2 分待つ
 kubectl get managed -A -w
-aws s3 ls | grep idp-
-
-# 2. kind クラスター削除
-kind delete cluster --name idp-lab
-
-# 3. AWS 側の最終確認
-aws s3 ls | grep idp-
-# 何も表示されなければOK
 ```
 
-> **注意**: `kubectl delete managed` ではなく `kubectl delete storage`（Claim）から削除すること。  
-> Managed Resource を直接削除すると Crossplane が再作成しようとする場合がある。
+重要:
 
----
+- `Managed Resource` を直接削除しない
+- `Claim -> Composite -> Managed Resource` の順で消させる
 
-## ディレクトリ構成
-
-```
-k8s-idp-lab/
-├── kind-cluster.yaml              # kind クラスター定義
-│                                  # control-plane × 1 + worker × 2 の 3 ノード構成
-│                                  # ArgoCD UI(30080)・Backstage UI(30000) のポートを事前に開放
-│
-├── crossplane/                    # Crossplane の設定ファイル群
-│   │
-│   ├── providers/
-│   │   ├── aws-provider.yaml      # 使用する Provider を宣言する
-│   │   │                          # provider-aws-s3: S3 Bucket / BucketVersioning を管理
-│   │   │                          # provider-aws-iam: IAM Role / Policy を管理（将来拡張用）
-│   │   └── provider-config.yaml   # Provider が使う AWS 認証情報の参照先を指定する
-│   │                              # → crossplane-system/aws-credentials Secret を参照
-│   │
-│   ├── compositions/              # プラットフォームチームが定義する抽象化レイヤー
-│   │   ├── s3-bucket-xrd.yaml     # XRD: 開発者が使う Claim の API スキーマを定義
-│   │   │                          # kind: Storage / XStorage
-│   │   │                          # 入力: appName・environment・region・versioning
-│   │   └── s3-bucket-composition.yaml
-│   │                              # Composition: Claim → Managed Resource の変換ロジック
-│   │                              # バケット名を "idp-<appName>-<env>" に組み立てる
-│   │                              # versioning bool → "Enabled"/"Suspended" 文字列に変換
-│   │
-│   └── claims/                    # 開発者が作成する Claim YAML を置く場所
-│       └── example-storage.yaml   # 動作確認用サンプル（appName を変えてから使う）
-│
-├── argocd/
-│   ├── install/
-│   │   └── install.sh             # ArgoCD を Helm でインストールするスクリプト
-│   └── apps/
-│       ├── platform-app.yaml      # ArgoCD Application リソース
-│       │                          # crossplane/claims/ を監視して自動 Sync する
-│       │                          # selfHeal: true でドリフトを自動修復
-│       └── argocd-nodeport.yaml   # ArgoCD Server を NodePort(30080) で公開する設定
-│
-├── backstage/
-│   └── templates/
-│       └── aws-environment/       # Scaffolder テンプレート（Phase 8 で使用）
-│           ├── template.yaml      # Backstage がフォームから呼び出すテンプレート定義
-│           └── skeleton/
-│               └── crossplane-claim.yaml  # フォーム入力値を埋め込む Claim の雛形
-│
-├── terraform/
-│   └── crossplane-iam/            # Phase 0 で一度だけ実行する IAM セットアップ
-│       ├── main.tf                # IAM ユーザー・アクセスキーの作成
-│       ├── iam.tf                 # 最小権限ポリシー（S3 は idp-* バケット、IAM は /crossplane/ パスに限定）
-│       ├── variables.tf
-│       ├── locals.tf
-│       ├── outputs.tf             # アクセスキーを sensitive output として出力
-│       └── terraform.tfvars       # prefix=idp / env=lab / region=ap-northeast-1
-│
-└── docs/                          # 追加ドキュメント置き場
-```
-
-### 各ディレクトリの責務
-
-| ディレクトリ | 誰が管理するか | 変更頻度 |
-|---|---|---|
-| `crossplane/providers/` | プラットフォームチーム | 低（Provider バージョンアップ時のみ） |
-| `crossplane/compositions/` | プラットフォームチーム | 中（新しいリソース種別を追加する時） |
-| `crossplane/claims/` | **開発者** | 高（新しい環境を作るたびに追加） |
-| `argocd/apps/` | プラットフォームチーム | 低 |
-| `backstage/templates/` | プラットフォームチーム | 中 |
-| `terraform/crossplane-iam/` | インフラ管理者 | 低（初回セットアップのみ） |
-
----
-
-## AWS の費用について
-
-S3 バケットの作成のみなので、ほぼ無料（数円以下）。  
-ただし放置すると蓄積するため、**終了後は必ず Phase 9 のクリーンアップを実行すること。**
-
----
-
-## トラブルシューティング早見表
-
-| 症状 | 確認コマンド | よくある原因 |
-|---|---|---|
-| Provider が HEALTHY にならない | `kubectl describe provider <name>` | イメージ取得失敗 / Docker ネットワーク |
-| Claim が READY にならない | `kubectl describe storage <name> -n <ns>` | IAM 権限不足 / ProviderConfig 未適用 |
-| S3 バケット名の重複エラー | `aws s3 ls` | 同名バケットが既に存在する → appName を変える |
-| ArgoCD が Sync しない | `kubectl get application -n argocd` | repoURL 間違い / Git 認証情報なし |
-| kind のポートにアクセスできない | `docker ps` で kind コンテナ確認 | kind-cluster.yaml のポート設定ミス |
+### 11-2. AWS 側で消えたことを確認
 
 ```bash
-# まとめてデバッグ情報を取得するワンライナー
-kubectl get xstorages && echo "---" && kubectl get managed -A && echo "---" && kubectl get events --sort-by='.lastTimestamp' | tail -20
+aws s3 ls | grep idp-
 ```
 
----
+何も出なければ OK です。
 
-## よくある質問
+### 11-3. kind クラスターを削除
 
-**Q: EKS は使わない？**  
-このハンズオンでは kind（ローカル K8s）を使う。`terraform/eks-cluster/` は本番移行時の参考用。
+```bash
+kind delete cluster --name idp-lab
+```
 
-**Q: Backstage は必須？**  
-Phase 8 は任意。Phase 5 まで完了すれば「YAML → AWS リソース」の自動化フローは動く。
+### 11-4. Terraform の IAM を不要なら削除
 
-**Q: Crossplane リソースが READY=False のまま止まる？**  
-上のトラブルシューティング早見表を参照。
+Terraform で作った IAM ユーザーも不要なら、ユーザー自身で Terraform の `destroy` を実行してください。
+
+## 12. 途中で詰まりやすいポイント
+
+### Provider が `HEALTHY=True` にならない
+
+```bash
+kubectl describe provider provider-aws-s3
+kubectl describe provider provider-aws-iam
+kubectl get pods -n crossplane-system
+```
+
+よくある原因:
+
+- Docker ネットワーク
+- イメージ pull 中
+- ローカルメモリ不足
+
+### Claim が `READY=True` にならない
+
+```bash
+kubectl describe storage myapp-storage -n team-alpha
+kubectl describe xstorage
+kubectl get managed -A
+kubectl logs -n crossplane-system -l pkg.crossplane.io/revision --tail=100
+```
+
+よくある原因:
+
+- S3 バケット名の競合
+- ProviderConfig 未適用
+- AWS Secret 不備
+- IAM 権限不足
+
+### ArgoCD が `OutOfSync` のまま
+
+```bash
+kubectl describe application crossplane-platform -n argocd
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50
+```
+
+よくある原因:
+
+- `repoURL` の書き換え漏れ
+- private repo なのに認証未設定
+- `team-alpha` namespace 周りの不整合
+
+### Backstage でテンプレートが見えない
+
+確認ポイント:
+
+- `GITHUB_TOKEN` が設定されているか
+- `app-config.yaml` の `catalog.locations.target` が `./templates/...` になっているか
+- `yarn dev` 起動ログにエラーがないか
+
+## 13. ディレクトリ構成
+
+```text
+k8s-idp-lab/
+├── README.md
+├── ARCHITECTURE.md
+├── kind-cluster.yaml
+├── argocd/
+│   ├── apps/
+│   └── install/
+├── backstage/
+│   ├── app-config.yaml
+│   └── templates/
+├── crossplane/
+│   ├── claims/
+│   ├── compositions/
+│   └── providers/
+├── docs/
+└── terraform/
+    ├── crossplane-iam/
+    └── eks-cluster/
+```
+
+責務の要約:
+
+- `terraform/crossplane-iam/`: Crossplane 用 AWS 権限
+- `crossplane/compositions/`: 開発者 API と実装
+- `crossplane/claims/`: 開発者が追加する宣言
+- `argocd/apps/`: GitOps 同期設定
+- `backstage/templates/`: セルフサービス UI の雛形
+
+## 14. このハンズオンの理解ポイント
+
+このリポジトリの本質は、責務が 3 段に分かれていることです。
+
+1. 開発者は `Storage` Claim だけを書く
+2. ArgoCD が Git の宣言をクラスターへ同期する
+3. Crossplane がその宣言を AWS リソースへ変換する
+
+Terraform はその前段で、Crossplane が AWS を触るための土台だけを用意します。
+
+この分離が見えると、なぜ IDP が「セルフサービス」と「標準化」を両立できるのかが掴みやすくなります。
