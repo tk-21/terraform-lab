@@ -1,20 +1,6 @@
-terraform {
-  required_providers {
-    archive = {
-      source = "hashicorp/archive"
-    }
-  }
-}
-
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/aws/lambda/${var.name_prefix}-receiver"
   retention_in_days = 7
-}
-
-data "archive_file" "receiver" {
-  type        = "zip"
-  source_dir  = "${path.module}/src"
-  output_path = "${path.module}/receiver.zip"
 }
 
 resource "aws_lambda_function" "this" {
@@ -25,8 +11,8 @@ resource "aws_lambda_function" "this" {
   timeout          = 30
   memory_size      = 256
   role             = var.receiver_role_arn
-  filename         = data.archive_file.receiver.output_path
-  source_code_hash = data.archive_file.receiver.output_base64sha256
+  filename         = "${path.module}/receiver.zip"
+  source_code_hash = filebase64sha256("${path.module}/receiver.zip")
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
