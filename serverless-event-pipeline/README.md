@@ -172,463 +172,443 @@ serverless-event-pipeline/
 
 ---
 
-## セットアップ手順
+## ハンズオン実行手順
 
-### 前提条件の確認
+このセクションは、**今のリポジトリ実装に沿って dev 環境を立ち上げ、S3 と Kinesis の両方からイベントを流し、DynamoDB / 集計 / ログ / 統合テストまで確認する**ための手順です。
 
-以下のツールが必要です。バージョンが合わない場合は動作しないことがあるため、必ず確認してください。
+> 注意 1: このリポジトリでは `terraform apply` / `terraform destroy` はユーザー自身が実行してください。  
+> 注意 2: 現時点では `API Gateway` と `transformer` の `S3 Parquet 出力` は未実装です。ハンズオンは **S3 -> ingestor** と **Kinesis -> transformer** の 2 経路を対象にしています。
 
-```bash
-terraform -version   # 1.7.x 以上であること（~> 1.7）
-aws --version        # AWS CLI v2（v1 は非推奨）
-python3 --version    # 3.12 以上であること
-make --version       # GNU Make が使えること
-```
+### ハンズオンで確認できること
 
-**AWS 認証の確認**: 操作対象の AWS アカウントに接続できているか確認します。
-
-```bash
-aws sts get-caller-identity
-# 出力例:
-# {
-#     "UserId": "AIXXXXXXXXXXXXXXXX",
-#     "Account": "123456789012",    ← このアカウントにリソースが作成されます
-#     "Arn": "arn:aws:iam::123456789012:user/your-name"
-# }
-```
-
-> プロファイルを使い分ける場合は `export AWS_PROFILE=your-profile` を先に実行してください。
+1. ローカルの Python テストが通る
+2. Terraform で dev 環境を作成できる
+3. S3 に JSON / CSV を置くと `ingestor` が起動する
+4. Kinesis にイベントを流すと `transformer` が起動する
+5. `events` テーブルの更新で `aggregator` が集計を作る
+6. 統合テストを実 AWS 上で流せる
 
 ---
 
-### Step 1: リポジトリのクローン
+### Step 0: 前提条件の確認
+
+必要なツール:
+
+```bash
+terraform -version
+aws --version
+python3 --version
+make --version
+```
+
+期待値:
+
+- Terraform: `1.7.x`
+- AWS CLI: `v2`
+- Python: `3.12`
+
+AWS 認証の確認:
+
+```bash
+aws sts get-caller-identity
+```
+
+出力に 12 桁の `Account` が出れば OK です。  
+複数プロファイルを使い分ける場合は先に `export AWS_PROFILE=your-profile` を実行してください。
+
+---
+
+### Step 1: リポジトリを開く
 
 ```bash
 git clone https://github.com/your-username/serverless-event-pipeline.git
 cd serverless-event-pipeline
 ```
 
-クローン後、以下の構成になっていることを確認します。
+構成確認:
 
 ```bash
 ls
-# CLAUDE.md  Makefile  README.md  docs/  scripts/  src/  terraform/  tests/
-```
-
-主要なディレクトリの役割:
-- `terraform/` — インフラ定義（Terraform）
-- `src/` — Lambda 関数のソースコード（Python）
-- `tests/` — テストコード（pytest + moto）
-- `scripts/` — 初期セットアップ用スクリプト
-- `docs/` — 設計ドキュメント・ADR・障害対応手順
-
----
-
-### Step 2: Terraform リモートステートバックエンドの初期化（初回のみ）
-
-#### なぜこの手順が必要か？
-
-Terraform は「どのリソースを作ったか」を **State ファイル**（`.tfstate`）で管理します。
-State ファイルをローカルに置くとチーム共有が難しく、複数人が同時に `terraform apply` すると壊れます。
-そのため以下の 3 つのリソースを事前に手動で作成し、State をクラウド管理します。
-
-| リソース | 役割 |
-|---|---|
-| S3 バケット | State ファイルの保存先（バージョニング有効） |
-| DynamoDB テーブル | 同時実行ロック（2人が同時に apply するのを防ぐ） |
-| KMS キー | State ファイルの暗号化（秘匿情報を平文保存しない） |
-
-#### 実行
-
-```bash
-# bootstrap スクリプトを実行（べき等設計のため既存リソースはスキップされます）
-chmod +x scripts/bootstrap.sh
-bash scripts/bootstrap.sh
-```
-
-実行後の出力例（Account ID は自動取得されます）:
-
-```
-===================================================
- serverless-event-pipeline tfstate bootstrap
-===================================================
-  Region     : ap-northeast-1
-  Account ID : 123456789012
-  S3 Bucket  : sep-tfstate-123456789012
-  DynamoDB   : sep-tfstate-lock
-===================================================
-[1/4] KMS キーを作成します...
-[2/4] S3 バケットを作成します...
-[3/4] DynamoDB テーブルを作成します...
-[4/4] backend.tf を更新します...
- bootstrap 完了！
-```
-
-#### 成功確認
-
-```bash
-# S3 バケットが作成されたか
-aws s3 ls | grep sep-tfstate
-# sep-tfstate-123456789012
-
-# DynamoDB テーブルが作成されたか
-aws dynamodb describe-table --table-name sep-tfstate-lock \
-  --query "Table.TableStatus" --output text
-# ACTIVE
-```
-
-> **よくあるエラー**: `BucketAlreadyOwnedByYou` — すでに存在するバケットです。スキップされるので問題ありません。
-> **よくあるエラー**: `AccessDeniedException` — IAM 権限が不足しています。`s3:CreateBucket`, `dynamodb:CreateTable`, `kms:CreateKey` が必要です。
-
----
-
-### Step 3: GitHub Actions OIDC ロールの作成（CI/CD を使う場合）
-
-#### なぜ OIDC か？
-
-GitHub Actions から AWS を操作するには認証が必要です。
-従来は IAM ユーザーのアクセスキーを GitHub Secrets に保存する方法が一般的でしたが、
-**キーの漏洩リスク**と**ローテーション管理の手間**がありました。
-
-OIDC（OpenID Connect）を使うと、GitHub Actions が一時的なトークンを取得して AWS に認証できます。
-**長期有効なアクセスキーをどこにも保存しない**のがメリットです。
-
-#### 実行
-
-Terraform で OIDC ロールを作成します（`github-oidc.tf` に定義済み）。
-まず一度だけ**ローカルの IAM 権限で**デプロイが必要です。
-
-```bash
-# GitHub リポジトリ名を変数として渡す
-terraform -chdir=terraform/environments/dev apply \
-  -target=aws_iam_openid_connect_provider.github \
-  -target=aws_iam_role.github_actions \
-  -var="account_id=$(aws sts get-caller-identity --query Account --output text)" \
-  -var="github_repo=your-username/serverless-event-pipeline"
-```
-
-#### GitHub Secrets の設定
-
-GitHub リポジトリの **Settings → Secrets and variables → Actions** で以下を設定してください。
-
-| 種別 | 名前 | 値 |
-|---|---|---|
-| Secret | `AWS_ACCOUNT_ID` | AWS アカウント ID（12桁の数字）|
-| Variable | `ALERT_EMAIL` | アラート通知先メールアドレス |
-
-> CI/CD を使わずローカルのみで検証する場合はこの Step をスキップできます。
-
----
-
-### Step 4: Terraform 初期化
-
-#### `terraform init` が何をするか
-
-`init` コマンドは以下を行います。
-1. `required_providers` に書かれた AWS プロバイダをダウンロード（`.terraform/` に保存）
-2. S3 バックエンドに接続して State を読み込む準備
-3. 子モジュール（`modules/` 以下）の参照を解決
-
-```bash
-make init
-```
-
-成功時の出力例:
-
-```
-Initializing the backend...
-Successfully configured the backend "s3"!   ← S3 バックエンドに接続成功
-
-Initializing provider plugins...
-- Finding hashicorp/aws versions matching "~> 5.50"...
-- Installing hashicorp/aws v5.50.0...
-
-Terraform has been successfully initialized!
-```
-
-> **よくあるエラー**: `Failed to get existing workspaces: S3 bucket does not exist` → Step 2 が完了していません。先に `bash scripts/bootstrap.sh` を実行してください。
-
-#### 現在の State 状況を確認
-
-```bash
-terraform -chdir=terraform/environments/dev state list
-# 初回は何も出力されません（State が空）
-# デプロイ後は管理対象リソースが一覧表示されます
+# CLAUDE.md  Makefile  README.md  src/  terraform/  tests/  scripts/  docs/
 ```
 
 ---
 
-### Step 5: Python テスト環境のセットアップ
+### Step 2: Python 仮想環境を作る
 
-#### moto とは？
-
-テストコードは **moto** という AWS モックライブラリを使います。
-moto を使うと、**実際の AWS にアクセスせずに** DynamoDB・SQS・Kinesis・S3 などを
-Python プロセス内で完全シミュレートできます。
-→ テストが高速（秒単位）・コストゼロ・インターネット不要
+このプロジェクトでは `.venv` の利用が前提です。
 
 ```bash
-# .venv（仮想環境）を作成して依存パッケージをインストール
-make setup-python
-
-# 仮想環境を有効化（以降のコマンドはこれが必要）
+python3 -m venv .venv
 source .venv/bin/activate
-
-# プロンプトの先頭に (.venv) が付いていれば有効化されています
-# (.venv) $ ...
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 ```
 
-#### テスト実行
+確認:
 
 ```bash
+which python
+# .../serverless-event-pipeline/.venv/bin/python
+```
+
+---
+
+### Step 3: Terraform 変数ファイルを用意する
+
+`terraform/environments/dev` では少なくとも以下の 3 つが必要です。
+
+- `account_id`
+- `github_repository`
+- `alert_email`
+
+`.gitignore` により `terraform.tfvars` はコミットされません。ローカルだけに置いて大丈夫です。
+
+```bash
+cat > terraform/environments/dev/terraform.tfvars <<'EOF'
+account_id        = "123456789012"
+github_repository = "your-username/serverless-event-pipeline"
+alert_email       = "you@example.com"
+EOF
+```
+
+`account_id` には `aws sts get-caller-identity` で確認した値を入れてください。
+
+---
+
+### Step 4: Terraform バックエンドを bootstrap する
+
+初回のみ、tfstate 保存先の S3 バケットとロック用 DynamoDB を作成します。
+
+```bash
+chmod +x scripts/bootstrap.sh
+./scripts/bootstrap.sh
+```
+
+このスクリプトが行うこと:
+
+- `sep-tfstate-<account_id>` バケットの作成
+- `sep-tfstate-lock` テーブルの作成
+- `alias/sep-tfstate-key` KMS キーの作成
+- `terraform/environments/dev/backend.tf` の bucket 名差し替え
+
+確認:
+
+```bash
+aws s3 ls | grep sep-tfstate
+aws dynamodb describe-table --table-name sep-tfstate-lock --query "Table.TableStatus" --output text
+```
+
+---
+
+### Step 5: Terraform 初期化・静的チェック・ユニットテスト
+
+まず Terraform を初期化します。
+
+```bash
+make init ENV=dev
+```
+
+次に、任意ですが実行前にフォーマットとユニットテストを通すのがおすすめです。
+
+```bash
+make fmt
 make test
 ```
 
-出力例（全テスト合格・カバレッジ 80% 以上）:
+補足:
 
-```
-tests/unit/test_ingestor.py::test_valid_event_stored_to_dynamodb PASSED
-tests/unit/test_ingestor.py::test_invalid_event_returns_batch_failure PASSED
-tests/unit/test_transformer.py::test_transform_writes_parquet_to_s3 PASSED
-tests/unit/test_aggregator.py::test_aggregation_increments_count PASSED
-
----------- coverage: platform linux, python 3.12 ----------
-Name                          Stmts   Miss  Cover
--------------------------------------------------
-src/ingestor/handler.py          42      4    90%
-src/transformer/handler.py       55      8    85%
-src/aggregator/handler.py        38      5    87%
-src/shared/models.py             28      0   100%
--------------------------------------------------
-TOTAL                           163     17    90%
-
-Required test coverage of 80% reached. Total coverage: 90.00%
-```
-
-> **よくあるエラー**: `ModuleNotFoundError: No module named 'aws_lambda_powertools'` → `source .venv/bin/activate` を忘れています。
-> **よくあるエラー**: `FAILED - Coverage 75% < 80%` → テストが足りません。`tests/unit/` を確認してください。
+- `make test` は `tests/unit/` を実行します
+- AWS 実リソースにはアクセスしません
+- `moto` を使うため、ローカルで高速に回せます
 
 ---
 
-### Step 6: インフラのデプロイ
+### Step 6: Terraform plan を確認する
 
-#### まず plan で変更内容を確認する（必須）
-
-`terraform plan` は**実際には何も変更しません**。
-「これから何を作成・変更・削除するか」を事前に確認するためのコマンドです。
-本番環境でも必ず plan を確認してから apply するのが鉄則です。
+ここから先の Terraform 実行はユーザー自身が行ってください。
 
 ```bash
-make plan
+make plan ENV=dev
 ```
 
-出力の見方:
+確認ポイント:
 
+- `sep-dev-ingestor`
+- `sep-dev-transformer`
+- `sep-dev-aggregator`
+- `sep-dev-dlq-handler`
+- `sep-dev-events-stream`
+- `sep-dev-events`
+- `sep-dev-aggregations`
+- `sep-dev-ingest-queue`
+- `sep-dev-ingest-dlq`
+
+が作成対象に含まれていることを確認します。
+
+---
+
+### Step 7: Terraform apply を実行する
+
+以下はユーザー自身で実行してください。
+
+```bash
+make apply ENV=dev
 ```
-Terraform will perform the following actions:
 
-  # module.kinesis_pipeline.aws_kinesis_stream.events will be created
-  + resource "aws_kinesis_stream" "events" {
-      + name        = "sep-dev-events-stream"
-      + shard_count = 1
-      ...
+apply 完了後、output を確認します。
+
+```bash
+terraform -chdir=terraform/environments/dev output
+```
+
+特に後続で使うもの:
+
+- `ingestor_function_name`
+- `raw_input_bucket_name`
+- `ingest_queue_url`
+- `ingest_dlq_url`
+- `events_table_name`
+- `aggregations_table_name`
+
+---
+
+### Step 8: ハンズオン用の環境変数を export する
+
+以降の確認コマンドと統合テストで使うため、Terraform output から値を流し込みます。
+
+```bash
+export AWS_DEFAULT_REGION=ap-northeast-1
+export EVENTS_TABLE_NAME=$(terraform -chdir=terraform/environments/dev output -raw events_table_name)
+export AGGREGATIONS_TABLE_NAME=$(terraform -chdir=terraform/environments/dev output -raw aggregations_table_name)
+export RAW_INPUT_BUCKET=$(terraform -chdir=terraform/environments/dev output -raw raw_input_bucket_name)
+export INGEST_QUEUE_URL=$(terraform -chdir=terraform/environments/dev output -raw ingest_queue_url)
+export INGEST_DLQ_URL=$(terraform -chdir=terraform/environments/dev output -raw ingest_dlq_url)
+export INGESTOR_FUNCTION_NAME=$(terraform -chdir=terraform/environments/dev output -raw ingestor_function_name)
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+```
+
+確認:
+
+```bash
+echo "$EVENTS_TABLE_NAME"
+echo "$RAW_INPUT_BUCKET"
+echo "$INGEST_QUEUE_URL"
+```
+
+---
+
+### Step 9: S3 -> ingestor -> DynamoDB を確認する
+
+まず、`ingestor` が期待する形式の JSON を作ります。  
+ここで重要なのは、**`payload` ではなく `event_time` / `value` / `metadata` をトップレベルに置くこと**です。
+
+```bash
+cat > /tmp/ingestor-event.json <<'EOF'
+[
+  {
+    "entity_id": "USER#u1001",
+    "event_type": "purchase",
+    "event_time": "2026-05-06T12:00:00Z",
+    "value": 1500,
+    "metadata": {
+      "product_id": "P001",
+      "category": "book"
     }
-
-Plan: 47 to add, 0 to change, 0 to destroy.
-# ↑ 47 個のリソースを新規作成する（変更・削除はなし）
+  }
+]
+EOF
 ```
 
-記号の意味:
-- `+` — 新規作成される
-- `~` — 変更される（インプレース更新）
-- `-` — 削除される ⚠️ 削除が含まれる場合は慎重に確認
-- `-/+` — 一度削除して再作成される（ダウンタイムが発生する場合あり）
-
-#### デプロイ実行
+S3 にアップロード:
 
 ```bash
-make apply
-# 内部では: terraform apply -var="account_id=..." -auto-approve は使わないので確認プロンプトが出ます
+aws s3 cp /tmp/ingestor-event.json "s3://${RAW_INPUT_BUCKET}/hands-on/ingestor-event.json"
 ```
 
-```
-Do you want to perform these actions?
-  Terraform will perform the actions described above.
-  Only 'yes' will be accepted to approve.
-
-  Enter a value: yes   ← "yes" と入力して Enter
-```
-
-完了メッセージ:
-
-```
-Apply complete! Resources: 47 added, 0 changed, 0 destroyed.
-
-Outputs:
-
-kinesis_stream_name    = "sep-dev-events-stream"
-ingestor_function_name = "sep-dev-ingestor"
-events_table_name      = "sep-dev-events"
-api_gateway_url        = "https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/dev"
-```
-
-#### デプロイ後の確認
+数秒待ってから、DynamoDB を確認します。
 
 ```bash
-# 作成されたリソースの一覧（State で管理中のリソース）
-terraform -chdir=terraform/environments/dev state list | head -20
-
-# Lambda 関数が作成されたか
-aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'sep-dev')].[FunctionName]" --output table
-
-# Kinesis Stream の状態確認
-aws kinesis describe-stream-summary --stream-name sep-dev-events-stream \
-  --query "StreamDescriptionSummary.StreamStatus" --output text
-# ACTIVE と表示されれば正常
+aws dynamodb query \
+  --table-name "$EVENTS_TABLE_NAME" \
+  --key-condition-expression "entity_id = :eid" \
+  --expression-attribute-values '{":eid":{"S":"USER#u1001"}}'
 ```
+
+期待する見え方:
+
+- `entity_id = USER#u1001`
+- `event_ts = EVENT#2026-05-06T12:00:00Z`
+- `status = PENDING`
+- `source_bucket`
+- `source_key`
 
 ---
 
-### Step 7: 動作確認
+### Step 10: 集計テーブルを確認する
 
-デプロイ完了後、実際にイベントを投入してパイプラインを動作させます。
+`purchase` イベントが `events` に書き込まれると、DynamoDB Streams 経由で `aggregator` が集計を更新します。
 
 ```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws dynamodb get-item \
+  --table-name "$AGGREGATIONS_TABLE_NAME" \
+  --key '{"aggregate_key":{"S":"USER#u1001#2026-05-06"},"metric_type":{"S":"TOTAL_AMOUNT"}}'
 ```
 
-#### 7-1. Kinesis 経由（リアルタイムストリーム処理）
+期待する見え方:
+
+- `value = 1500`
+- `count = 1`
+- `updated_at` が入っている
+
+もしすぐ見えない場合は 10〜20 秒ほど待って再実行してください。
+
+---
+
+### Step 11: Kinesis -> transformer -> DynamoDB を確認する
+
+次は `transformer` 側の実行確認です。  
+こちらも `payload` ではなくトップレベル JSON を使います。
 
 ```bash
-# テストイベントを Kinesis に投入
-# --partition-key: 同一ユーザーのイベントを同一シャードに割り当てる（順序保証）
-# --data: JSON を base64 エンコードして渡す
 aws kinesis put-record \
   --stream-name sep-dev-events-stream \
-  --partition-key "USER#u001" \
-  --data "$(echo '{"entity_id":"USER#u001","event_type":"click","payload":{"page":"top"}}' | base64)"
-
-# 成功時の出力例:
-# {
-#     "ShardId": "shardId-000000000000",
-#     "SequenceNumber": "49653..."
-# }
+  --partition-key "USER#u2001" \
+  --data "$(printf '%s' '{"entity_id":"USER#u2001","event_type":"click","event_time":"2026-05-06T12:10:00Z","metadata":{"element_id":"hero-button","page_path":"/top","click_x":120,"click_y":240}}' | base64 -w 0)"
 ```
 
-transformer Lambda が 5〜10 秒後に起動します。DynamoDB に書き込まれたか確認します。
+書き込み後、`events` テーブルを確認します。
 
 ```bash
-# DynamoDB から該当ユーザーのイベントを取得
 aws dynamodb query \
-  --table-name sep-dev-events \
+  --table-name "$EVENTS_TABLE_NAME" \
   --key-condition-expression "entity_id = :eid" \
-  --expression-attribute-values '{":eid": {"S": "USER#u001"}}' \
-  --query "Items"
+  --expression-attribute-values '{":eid":{"S":"USER#u2001"}}'
 ```
 
-#### 7-2. SQS 経由（S3 ファイル投入）
+期待する見え方:
+
+- `entity_id = USER#u2001`
+- `event_type = CLICK`
+- `payload.element_id = hero-button`
+- `payload.page_path = /top`
+
+補足:
+
+- `transformer` は `event_type` を大文字に正規化します
+- `CLICK` / `VIEW` / `PURCHASE` のみ対応です
+
+---
+
+### Step 12: CloudWatch Logs で Lambda の動作を見る
+
+`ingestor` と `transformer` のログを直接見ると、どこまで処理が進んだかが把握しやすいです。
 
 ```bash
-# テスト用 JSON ファイルを S3 に PUT（S3 イベント通知 → SQS → ingestor Lambda が起動）
-echo '{"entity_id":"USER#u002","event_type":"purchase","payload":{"item_id":"P001","amount":1500}}' \
-  > /tmp/test-event.json
-
-aws s3 cp /tmp/test-event.json \
-  s3://sep-dev-raw-input-${ACCOUNT_ID}/events/test-event.json
-
-# ingestor Lambda が 5〜10 秒後に起動して DynamoDB に書き込む
-aws dynamodb query \
-  --table-name sep-dev-events \
-  --key-condition-expression "entity_id = :eid" \
-  --expression-attribute-values '{":eid": {"S": "USER#u002"}}' \
-  --query "Items"
+aws logs tail /aws/lambda/sep-dev-ingestor --since 10m
+aws logs tail /aws/lambda/sep-dev-transformer --since 10m
+aws logs tail /aws/lambda/sep-dev-aggregator --since 10m
 ```
 
-#### 7-3. Lambda ログの確認（CloudWatch Logs）
-
-Lambda の実行ログは CloudWatch Logs に構造化 JSON 形式で出力されます。
+継続監視したい場合:
 
 ```bash
-# transformer の最新ログを確認（PowertoolsのJSONログ）
-aws logs tail /aws/lambda/sep-dev-transformer --follow
-# Ctrl+C で終了
-
-# ingestor の最新ログを確認
 aws logs tail /aws/lambda/sep-dev-ingestor --follow
 ```
 
-ログ出力例（Powertools の構造化 JSON）:
+見るポイント:
 
-```json
-{
-  "level": "INFO",
-  "location": "handler:42",
-  "message": "Event processed successfully",
-  "entity_id": "USER#u001",
-  "event_type": "click",
-  "correlation_id": "abc-123",
-  "cold_start": true,
-  "function_name": "sep-dev-transformer",
-  "timestamp": "2024-01-15T12:00:00.000Z"
-}
-```
-
-#### 7-4. S3 Parquet 出力の確認
-
-transformer Lambda は DynamoDB 書き込みと同時に S3 に Parquet 形式でデータを保存します。
-
-```bash
-aws s3 ls s3://sep-dev-archive-${ACCOUNT_ID}/ --recursive
-# 出力例:
-# 2024-01-15 12:00:05    1234 events/year=2024/month=01/day=15/part-00001.parquet
-```
-
-#### 7-5. X-Ray トレースの確認
-
-```bash
-# 過去 5 分のトレースを取得
-aws xray get-trace-summaries \
-  --start-time $(date -d '5 minutes ago' +%s) \
-  --end-time $(date +%s) \
-  --filter-expression 'service("sep-dev-transformer")' \
-  --query "TraceSummaries[0].{Duration:Duration,Status:ResponseTime}"
-```
-
-AWS コンソールの **X-Ray → サービスマップ** でパイプライン全体の依存関係と遅延をグラフィカルに確認できます。
+- `ProcessedRecords`
+- `ValidationErrors`
+- `TransformedRecords`
+- `AggregatedEvents`
 
 ---
 
-### Step 8: リソースの削除
+### Step 13: 統合テストを流す
 
-検証が終わったら必ずリソースを削除してコストを止めてください。
-Kinesis Data Streams は 1 シャードで **月額 ~$15** 発生するため、使わない期間は必ず削除します。
-
-```bash
-make destroy
-```
-
-```
-Do you really want to destroy all resources?
-  Terraform will destroy all your managed infrastructure, as shown above.
-  There is no undo. Only 'yes' will be accepted to confirm.
-
-  Enter a value: yes   ← "yes" と入力
-```
-
-```
-Destroy complete! Resources: 47 destroyed.
-```
-
-> **注意**: `terraform destroy` は **tfstate バックエンド**（S3 バケット・DynamoDB テーブル・KMS キー）は削除しません。
-> これらは Terraform の管理外（bootstrap スクリプトで作成）のため、不要になったら手動で削除してください。
+環境変数を export 済みなら、そのまま統合テストを実行できます。
 
 ```bash
-# 削除確認（Lambda 関数が残っていないか）
+make test-integration
+```
+
+このテストが確認すること:
+
+- S3 -> SQS -> ingestor -> events
+- events -> DynamoDB Streams -> aggregator -> aggregations
+- CloudWatch カスタムメトリクスの記録
+
+注意:
+
+- 実 AWS リソースを使います
+- 数十秒かかることがあります
+- `DLQ` の E2E テストは skip されます
+
+---
+
+### Step 14: 監視リソースを確認する
+
+ダッシュボード名は固定ルールで作られます。コンソールでも確認できますが、CLI なら次のように存在確認できます。
+
+```bash
+aws cloudwatch list-dashboards --query "DashboardEntries[?contains(DashboardName, 'sep-dev-pipeline-dashboard')].DashboardName"
+```
+
+アラーム確認:
+
+```bash
+aws cloudwatch describe-alarms --alarm-name-prefix sep-dev
+```
+
+X-Ray はコンソールのほうが見やすいです。
+
+- AWS Console
+- CloudWatch / X-Ray
+- グループ `sep-dev-pipeline`
+
+---
+
+### Step 15: 後片付け
+
+検証が終わったら、コストを止めるためにユーザー自身で破棄してください。
+
+```bash
+make destroy ENV=dev
+```
+
+destroy 後の確認:
+
+```bash
 aws lambda list-functions \
   --query "Functions[?starts_with(FunctionName, 'sep-dev')].[FunctionName]" \
   --output table
-# 何も表示されなければ削除完了
 ```
+
+補足:
+
+- `bootstrap.sh` で作成した tfstate 用 S3 / DynamoDB / KMS は destroy では消えません
+- 不要なら手動削除してください
+
+---
+
+### つまずきやすいポイント
+
+| 症状 | 原因 | 対処 |
+|---|---|---|
+| `make plan` で変数エラー | `terraform.tfvars` 未作成 | Step 3 を実施する |
+| `terraform init` が失敗 | backend 用バケット未作成 | Step 4 を実施する |
+| `make test` で import error | `.venv` 未有効化 | `source .venv/bin/activate` |
+| S3 アップロードしても反応しない | JSON 形式が `payload` ベースになっている | Step 9 の形式に合わせる |
+| `transformer` が失敗 | `event_time` や `event_type` が不足 | Step 11 の JSON をそのまま使う |
+| 集計が見えない | Streams 反映待ち | 10〜20 秒待って再確認する |
+
+---
+
+### CI/CD を使いたい場合の追加セットアップ
+
+ハンズオン自体には不要ですが、GitHub Actions の OIDC を有効にする場合は別途 `github-oidc.tf` の適用と GitHub Secrets 設定が必要です。  
+この部分はローカル検証とは独立しているため、まずは上の dev ハンズオンを完走してから着手するのがおすすめです。
 
 ---
 
