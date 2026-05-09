@@ -5,6 +5,20 @@
 
 ---
 
+## このハンズオンで得られること
+
+このハンズオンを最後まで実施すると、次の内容を一通り体験できます。
+
+- GitHub Actions と Amazon Bedrock を組み合わせた AI レビュー基盤の構築
+- Terraform を使った API Gateway / Lambda / IAM / SSM のサーバーレス構成のデプロイ
+- Ansible Playbook を PR 上で自動レビューし、コメントとラベルでフィードバックする仕組みの実装
+- API Key と追加 secret を組み合わせたシンプルな二重認証の設計
+- Bedrock を使ったレビュー処理を GitHub の開発フローへ組み込む実践パターン
+
+この README の手順を終えるころには、「Ansible Playbook の AI レビューを GitHub PR に返す仕組み」を自分の AWS 環境で動かせる状態になります。
+
+---
+
 ## デモ
 
 ```
@@ -82,91 +96,312 @@ sequenceDiagram
 
 ---
 
-## クイックスタート
+## ハンズオン
+
+このリポジトリは「AWS 上に Reviewer API を構築する側」のプロジェクトです。実際に試すときは、次の 2 つを順番に進めます。
+
+1. このリポジトリを使って Reviewer API をデプロイする
+2. Ansible Playbook を持つ別リポジトリから、その API を呼び出す
 
 ### 前提条件
 
 - Terraform >= 1.9
-- AWS CLI（`ap-northeast-1` へのアクセス権）
-- GitHub Actions OIDC設定（AWSへのキーレス認証）
-- Amazon Bedrock `us-east-1` で Claude Sonnet 3.5 が有効化済み
+- AWS CLI 設定済み
+- GitHub アカウントとレビュー対象リポジトリ
+- `us-east-1` で Amazon Bedrock の Claude Sonnet が有効化済み
+- GitHub Actions から AWS へ接続するための OIDC ロールを作成できる権限
 
-### 1. インフラデプロイ
+### ハンズオン全体像
+
+1. AWS 側の前提を整える
+2. Terraform で API Gateway / Lambda / IAM / SSM を作る
+3. GitHub Token と API secret を SSM に登録する
+4. Lambda の実コードをデプロイする
+5. レビュー対象リポジトリに GitHub Secrets と workflow を設定する
+6. API 単体テストを行う
+7. PR を作ってレビュー結果を確認する
+
+---
+
+## Step 0. リポジトリを準備する
+
+```bash
+git clone https://github.com/your-org/ansible-playbook-ai-reviewer.git
+cd ansible-playbook-ai-reviewer
+
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Terraform を実行する作業ディレクトリは `terraform/environments/dev` です。
+
+---
+
+## Step 1. AWS 側の前提を整える
+
+### 1-1. Bedrock モデルアクセスを有効化する
+
+AWS Console で `us-east-1` を開き、Amazon Bedrock の Model access から Claude Sonnet を有効化してください。
+
+このプロジェクトでは次のリージョン構成です。
+
+- Lambda / API Gateway / SSM / IAM: `ap-northeast-1`
+- Bedrock: `us-east-1`
+
+### 1-2. GitHub Actions 用 OIDC ロールを用意する
+
+このリポジトリの `.github/workflows/deploy.yml` は OIDC 前提です。少なくとも次を扱えるロールを GitHub Actions から引き受けられるようにしておくと、後のデプロイがスムーズです。
+
+- Terraform に必要な作成・更新権限
+- Lambda 更新権限
+- API Gateway 管理権限
+- SSM パラメータの読み書き権限
+- IAM ロール作成権限
+
+後で GitHub Secrets に `AWS_ROLE_ARN` として登録します。
+
+---
+
+## Step 2. Terraform でインフラを作成する
+
+### 2-1. 環境ディレクトリへ移動する
 
 ```bash
 cd terraform/environments/dev
-cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars を編集してプロジェクト設定を入力
+```
 
+### 2-2. `terraform.tfvars` を確認する
+
+このリポジトリには [terraform.tfvars](/home/takuya/terraform-lab/ansible-playbook-ai-reviewer/terraform/environments/dev/terraform.tfvars) が含まれています。まず次の値を確認してください。
+
+- `environment`
+- `aws_region`
+- `bedrock_region`
+- `lambda_timeout`
+- `lambda_memory`
+- `api_gateway_stage`
+- `github_token_ssm_path`
+
+### 2-3. 初期化と Plan
+
+```bash
 terraform init
 terraform plan
+```
+
+### 2-4. Apply
+
+```bash
 terraform apply
 ```
 
-デプロイ後、以下のOutputが表示されます:
+作成される主なリソース:
 
-```
-api_endpoint = "https://xxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod"
-api_key_id   = "xxxxxxxxxx"
+- Lambda `ansible-ai-reviewer`
+- API Gateway `ansible-ai-reviewer-api`
+- IAM Role `ansible-ai-reviewer-role`
+- SSM パラメータ
+  - `/ansible-ai-reviewer/github-token`
+  - `/ansible-ai-reviewer/api-key-secret`
+  - `/ansible-ai-reviewer/api-gateway-key`
+
+Apply 後に次の output を控えてください。
+
+```text
+api_endpoint         = "https://xxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/v1/review"
+lambda_function_name = "ansible-ai-reviewer"
 ```
 
-### 2. SSMパラメータへのSecretsを設定
+`api_endpoint` はすでに `/review` を含んだ完全 URL です。
+
+---
+
+## Step 3. SSM に秘密情報を登録する
+
+Terraform で SSM パラメータの箱は作られますが、値は `PLACEHOLDER` のままです。ここで本物の値に更新します。
+
+### 3-1. GitHub Token を登録する
+
+PR コメント投稿とラベル操作ができる GitHub Token を用意し、SSM に登録します。
 
 ```bash
-# GitHubトークン（repo + pull_requests スコープが必要）
 aws ssm put-parameter \
   --name "/ansible-ai-reviewer/github-token" \
-  --value "ghp_xxxxxxxxxxxx" \
+  --value "ghp_xxxxxxxxxxxxxxxxxxxx" \
   --type SecureString \
-  --region ap-northeast-1
-
-# API追加認証シークレット（任意のランダム文字列）
-aws ssm put-parameter \
-  --name "/ansible-ai-reviewer/api-key-secret" \
-  --value "$(openssl rand -hex 32)" \
-  --type SecureString \
+  --overwrite \
   --region ap-northeast-1
 ```
 
-### 3. GitHub Secretsの設定
-
-レビュー対象リポジトリの `Settings → Secrets and variables → Actions` に追加:
-
-| Secret名 | 値 |
-|---|---|
-| `AI_REVIEWER_API_ENDPOINT` | Terraformの `api_endpoint` output |
-| `AI_REVIEWER_API_KEY` | AWS ConsoleのAPI Gatewayキー |
-| `AI_REVIEWER_API_SECRET` | SSMに設定した `api-key-secret` の値 |
-
-### 4. ワークフローをコピー
+### 3-2. API 追加認証用 secret を登録する
 
 ```bash
-cp .github/workflows/example_ansible_review.yml /path/to/your-repo/.github/workflows/
+export AI_REVIEWER_API_SECRET="$(openssl rand -hex 32)"
+
+aws ssm put-parameter \
+  --name "/ansible-ai-reviewer/api-key-secret" \
+  --value "$AI_REVIEWER_API_SECRET" \
+  --type SecureString \
+  --overwrite \
+  --region ap-northeast-1
 ```
 
-または、カスタムActionとして使用:
+### 3-3. API Gateway Key の値を確認する
 
-```yaml
-# .github/workflows/ansible-review.yml
-- uses: your-org/ansible-playbook-ai-reviewer/github_actions/ansible-ai-review@main
-  with:
-    api_endpoint: ${{ secrets.AI_REVIEWER_API_ENDPOINT }}
-    api_key: ${{ secrets.AI_REVIEWER_API_KEY }}
-    api_secret: ${{ secrets.AI_REVIEWER_API_SECRET }}
-    fail_on_critical: 'true'
+```bash
+aws ssm get-parameter \
+  --name "/ansible-ai-reviewer/api-gateway-key" \
+  --with-decryption \
+  --region ap-northeast-1 \
+  --query 'Parameter.Value' \
+  --output text
+```
+
+この値はあとで `AI_REVIEWER_API_KEY` として GitHub Secrets に登録します。
+
+---
+
+## Step 4. Lambda の実コードをデプロイする
+
+Terraform で作られる Lambda は最初 placeholder ZIP です。レビューを実際に動かすには Python コードをデプロイする必要があります。
+
+### 方法A. GitHub Actions でデプロイする
+
+このリポジトリの GitHub Secrets に `AWS_ROLE_ARN` を登録し、`main` に push すると `.github/workflows/deploy.yml` が実行されます。
+
+必要な GitHub Secret:
+
+| Secret名 | 用途 |
+|---|---|
+| `AWS_ROLE_ARN` | GitHub Actions から AWS に OIDC で接続するため |
+
+### 方法B. 手元から手動デプロイする
+
+```bash
+cd /path/to/ansible-playbook-ai-reviewer
+source .venv/bin/activate
+rm -f lambda_package.zip
+rm -rf lambda/playbook_reviewer/package
+mkdir -p lambda/playbook_reviewer/package
+
+.venv/bin/pip install -r lambda/playbook_reviewer/requirements.txt \
+  -t lambda/playbook_reviewer/package \
+  --platform manylinux2014_aarch64 \
+  --only-binary=:all:
+
+cp lambda/playbook_reviewer/*.py lambda/playbook_reviewer/package/
+
+cd lambda/playbook_reviewer/package
+zip -r ../../../lambda_package.zip .
+
+cd ../../..
+aws lambda update-function-code \
+  --function-name ansible-ai-reviewer \
+  --zip-file fileb://lambda_package.zip \
+  --region ap-northeast-1
+```
+
+反映待ち:
+
+```bash
+aws lambda wait function-updated \
+  --function-name ansible-ai-reviewer \
+  --region ap-northeast-1
 ```
 
 ---
 
-## 動作確認（サンプルPlaybookでテスト）
+## Step 5. レビュー対象リポジトリに GitHub Secrets を登録する
+
+ここからは、Ansible Playbook を持つ側のリポジトリで作業します。
+
+`Settings → Secrets and variables → Actions` に次を追加してください。
+
+| Secret名 | 値 |
+|---|---|
+| `AI_REVIEWER_API_ENDPOINT` | Terraform output の `api_endpoint` |
+| `AI_REVIEWER_API_KEY` | `/ansible-ai-reviewer/api-gateway-key` の値 |
+| `AI_REVIEWER_API_SECRET` | `/ansible-ai-reviewer/api-key-secret` に登録した値 |
+
+---
+
+## Step 6. レビュー workflow を設定する
+
+### 6-1. サンプル workflow を配置する
+
+このリポジトリの [example_ansible_review.yml](/home/takuya/terraform-lab/ansible-playbook-ai-reviewer/.github/workflows/example_ansible_review.yml) をベースに、レビュー対象リポジトリの `.github/workflows/` に配置します。
+
+### 6-2. 最小構成の例
+
+```yaml
+name: Ansible Playbook AI Review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.yml'
+      - '**.yaml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ansible Playbook AI Review
+        id: ai-review
+        uses: your-org/ansible-playbook-ai-reviewer/github_actions/ansible-ai-review@main
+        with:
+          api_endpoint: ${{ secrets.AI_REVIEWER_API_ENDPOINT }}
+          api_key: ${{ secrets.AI_REVIEWER_API_KEY }}
+          api_secret: ${{ secrets.AI_REVIEWER_API_SECRET }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          playbook_paths: 'playbooks/**/*.yml,roles/**/*.yml'
+          fail_on_critical: 'true'
+```
+
+---
+
+## Step 7. API 単体テストを行う
+
+GitHub Actions に入る前に API 単体で疎通確認しておくと、切り分けが楽です。
+
+### 7-1. 環境変数を入れる
 
 ```bash
-# 意図的に問題を含むPlaybookでレビューAPIを手動呼び出し
-curl -X POST "$AI_REVIEWER_API_ENDPOINT/review" \
+export AI_REVIEWER_API_ENDPOINT="https://xxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/v1/review"
+export AI_REVIEWER_API_KEY="$(aws ssm get-parameter \
+  --name "/ansible-ai-reviewer/api-gateway-key" \
+  --with-decryption \
+  --region ap-northeast-1 \
+  --query 'Parameter.Value' \
+  --output text)"
+export AI_REVIEWER_API_SECRET="$(aws ssm get-parameter \
+  --name "/ansible-ai-reviewer/api-key-secret" \
+  --with-decryption \
+  --region ap-northeast-1 \
+  --query 'Parameter.Value' \
+  --output text)"
+```
+
+### 7-2. サンプル Playbook で呼び出す
+
+```bash
+curl -X POST "$AI_REVIEWER_API_ENDPOINT" \
   -H "Content-Type: application/json" \
   -H "x-api-key: $AI_REVIEWER_API_KEY" \
   -d "{
-    \"playbook_content\": \"$(base64 -w 0 examples/sample_playbook_bad.yml)\",
+    \"playbook_content\": \"$(python3 - <<'PY'
+from pathlib import Path
+import json
+print(json.dumps(Path('examples/sample_playbook_bad.yml').read_text())[1:-1])
+PY
+)\",
     \"playbook_filename\": \"sample_playbook_bad.yml\",
     \"github_repo_owner\": \"your-org\",
     \"github_repo_name\": \"your-repo\",
@@ -175,18 +410,52 @@ curl -X POST "$AI_REVIEWER_API_ENDPOINT/review" \
   }" | jq .
 ```
 
-期待されるレスポンス:
+期待されるレスポンス例:
 
 ```json
 {
   "status": "success",
   "overall_score": 35,
-  "risk_level": "CRITICAL",
+  "risk_level": "HIGH",
   "issues_count": 9,
   "comment_url": "https://github.com/your-org/your-repo/pull/1#issuecomment-...",
   "message": "レビュー完了: 9件の問題を検出しました（スコア: 35/100）"
 }
 ```
+
+---
+
+## Step 8. PR ベースで動作確認する
+
+### 8-1. テスト用 Playbook を作る
+
+[sample_playbook_bad.yml](/home/takuya/terraform-lab/ansible-playbook-ai-reviewer/examples/sample_playbook_bad.yml) を参考に、レビュー対象リポジトリへ問題を含む Playbook を追加します。
+
+### 8-2. PR を作成する
+
+PR 作成後、workflow が正常に動けば次を確認できます。
+
+- PR コメントにレビュー結果が投稿される
+- `ai-review:*` ラベルが付与される
+- CRITICAL 問題がある場合は workflow が fail する
+
+### 8-3. 再実行してコメント更新を確認する
+
+同じ PR に追加 commit を push すると、新しいコメントが増えるのではなく既存レビューコメントが更新されます。
+
+---
+
+## ハンズオンで詰まりやすいポイント
+
+| 症状 | 確認ポイント |
+|---|---|
+| `403 Forbidden` | `AI_REVIEWER_API_SECRET` と SSM の secret 値が一致しているか |
+| `500` エラー | Lambda が placeholder のままで実コード未配備ではないか |
+| GitHub にコメントされない | GitHub Token の権限、owner/repo/PR番号が正しいか |
+| Bedrock 呼び出し失敗 | `us-east-1` で Claude Sonnet の access が有効か |
+| CI でだけ失敗する | workflow の `permissions.pull-requests: write` があるか |
+
+詳細なトラブルシュートは [docs/runbook.md](docs/runbook.md) を参照してください。
 
 ---
 
