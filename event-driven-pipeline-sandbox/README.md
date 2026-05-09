@@ -45,7 +45,7 @@ graph TB
         end
 
         subgraph Messaging["Messaging Layer"]
-            SQS["SQS Input Queue\n可視性タイムアウト 180s"]
+            SQS["SQS Input Queue\n可視性タイムアウト 30s（dev 現行値）"]
             DLQ["SQS Dead Letter Queue\n最大受信 3回"]
             SNS["SNS notifications\njob.completed / job.failed"]
         end
@@ -104,6 +104,43 @@ graph TB
 
 ---
 
+## ハンズオン実行ガイド
+
+この README は情報量が多いため、まずは次の順番で進めると迷いにくいです。
+
+1. ローカル環境と AWS 権限を確認する
+2. Terraform バックエンド用の S3 / DynamoDB を作る
+3. `environments/dev` で `terraform init` → `plan` を実行する
+4. `terraform apply` を自分で実行する
+5. `POST /jobs` でジョブ投入し、`GET /jobs/{jobId}` で完了を確認する
+6. CloudWatch / Step Functions / DynamoDB を見て内部の流れを確認する
+
+### 所要時間の目安
+
+- 事前準備: 10〜20 分
+- `terraform apply`: 5〜10 分
+- E2E 動作確認: 10 分
+- 全体: 30〜45 分
+
+### このハンズオンで実際に確認すること
+
+- API Gateway が Lambda なしで SQS に直接送信できること
+- Dispatcher Lambda が SQS メッセージをジョブに変換すること
+- Step Functions が Bedrock / DynamoDB / SNS を Lambda なしで直接呼ぶこと
+- DynamoDB Streams と EventBridge が後続処理と障害補完を担うこと
+
+### 最短で進めるためのおすすめルート
+
+時間がない場合は、まずこの順に実行してください。
+
+1. `前提条件`
+2. `事前準備`
+3. `デプロイ手順`
+4. `動作確認`
+5. `トラブルシューティング`
+
+---
+
 ## 成功の定義
 
 以下がすべて確認できたら、このプロジェクトは完了とみなす。
@@ -115,12 +152,12 @@ graph TB
 ### パイプライン疎通（E2E）
 - [ ] `POST /jobs` でジョブが投入でき、レスポンスに `job_id` が含まれる
 - [ ] 数十秒後に `GET /jobs/{job_id}` を叩くと `"status": "COMPLETED"` と `result`（Bedrock の回答テキスト）が返ってくる
-- [ ] `complexity: "light"` のジョブは `model_used: "claude-3-haiku"`、`"complex"` は `"claude-3-5-sonnet"` になっている
+- [ ] `complexity: "light"` のジョブは `model_used: "haiku"`、`"complex"` は `"sonnet"` になっている
 - [ ] API Key なしで叩くと `403 Forbidden` が返る（認証が機能している）
 
 ### 耐障害性
 - [ ] Step Functions が失敗すると（例: Bedrock のスロットリング）、EventBridge 経由で DLQ Handler Lambda が起動し、DynamoDB の `status` が `FAILED` に更新される
-- [ ] 停滞した `PENDING` ジョブは 1 時間ごとのスケジュールで自動的に `FAILED` に更新される
+- [ ] 停滞した `PENDING` ジョブは 1 時間ごとのスケジュールで自動的に `TIMEOUT` に更新される
 - [ ] DLQ にメッセージが溜まったとき、CloudWatch アラームが発火する
 
 ### 可観測性
@@ -236,6 +273,35 @@ networking
 
 ## 前提条件
 
+### 0. ローカルワークスペースの準備
+
+このリポジトリでは、作業前に Python の仮想環境を用意しておく前提です。
+
+```bash
+# リポジトリルートで実行
+cd event-driven-pipeline-sandbox
+
+# .venv を作成
+python3 -m venv .venv
+
+# 有効化
+source .venv/bin/activate
+
+# 確認
+which python
+ls .venv
+```
+
+期待値:
+
+- `which python` が `.venv/bin/python` を指す
+- `.venv` ディレクトリが存在する
+
+補足:
+
+- このプロジェクトは Terraform の `archive_file` で Lambda パッケージを作るため、README 内のハンズオンでは追加の Python パッケージインストールは必須ではありません
+- 将来的に `requirements.txt` が追加された場合は `pip install -r requirements.txt` を実行してください
+
 ### ローカル環境
 
 | ツール | バージョン | 確認コマンド |
@@ -243,6 +309,17 @@ networking
 | Terraform | >= 1.5.0 | `terraform -version` |
 | AWS CLI | >= 2.x | `aws --version` |
 | jq | any | `jq --version` |
+
+### 動作確認しておくと安心なコマンド
+
+```bash
+terraform -version
+aws --version
+jq --version
+aws sts get-caller-identity
+```
+
+`aws sts get-caller-identity` が成功しない場合は、Terraform 実行前に AWS 認証の設定を見直してください。
 
 ### AWS 権限
 
@@ -278,6 +355,8 @@ aws bedrock list-foundation-models \
 
 ### 1. Terraform バックエンド用リソースを作成
 
+このプロジェクトは `environments/dev/backend.tf` で、S3 に tfstate、DynamoDB に state lock を保存します。先にこの 2 つを手動作成しておかないと `terraform init` が失敗します。
+
 ```bash
 # S3 バケット（tfstate 保存先）
 aws s3 mb s3://tfstate-event-driven-pipeline --region ap-northeast-1
@@ -294,6 +373,17 @@ aws dynamodb create-table \
   --key-schema AttributeName=LockID,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST \
   --region ap-northeast-1
+```
+
+作成後は次も確認してください。
+
+```bash
+aws s3 ls s3://tfstate-event-driven-pipeline
+
+aws dynamodb describe-table \
+  --table-name tfstate-lock-event-pipeline \
+  --region ap-northeast-1 \
+  --query "Table.TableStatus"
 ```
 
 ### 2. GitHub Actions 用 OIDC ロールを作成（CI/CD を使う場合）
@@ -353,11 +443,22 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 | `AWS_ROLE_ARN` | 上で作成したロールの ARN |
 | `ALERT_EMAIL` | アラート通知先メールアドレス（省略可） |
 
+> 補足: 現在の Terraform コードでは `alert_email` 変数は定義されていますが、`messaging` モジュールへの受け渡しが未接続のため、この値だけではメール購読は自動作成されません。
+
 ---
 
 ## デプロイ手順
 
 ### ローカルから手動デプロイ
+
+このプロジェクトでは、Terraform の実行は次の流れで進めるのが安全です。
+
+1. `init` でバックエンド接続と provider 取得
+2. `fmt` と `validate` で静的チェック
+3. `plan` で差分確認
+4. `apply` を自分で実行
+
+以降のコマンドは `environments/dev` ディレクトリで実行します。
 
 ```bash
 # リポジトリのルートから操作
@@ -375,7 +476,7 @@ terraform validate
 # 4. 差分確認（owner は自分の名前に変更）
 terraform plan -var="owner=your-name"
 
-# アラートメールも設定する場合
+# alert_email 変数も渡したい場合（現行コードでは通知購読作成には未接続）
 terraform plan \
   -var="owner=your-name" \
   -var="alert_email=your@example.com"
@@ -385,6 +486,36 @@ terraform apply -var="owner=your-name"
 
 # 所要時間: 約 5〜10 分
 ```
+
+### `terraform plan` で見るべきポイント
+
+`plan` の出力では、特に次を確認すると理解が深まります。
+
+- `aws_api_gateway_*`: API Gateway の直接統合リソース
+- `aws_sqs_queue.*`: input queue と DLQ
+- `aws_lambda_function.*`: 3 つの Lambda
+- `aws_sfn_state_machine.ai_pipeline`: Step Functions 本体
+- `aws_dynamodb_table.*`: `jobs` と `metrics`
+- `aws_cloudwatch_dashboard.pipeline`: 監視ダッシュボード
+
+### `terraform apply` 実行後に確認すること
+
+apply 完了後は、そのまま次の 3 つを確認してください。
+
+```bash
+terraform output
+terraform output api_endpoint
+terraform output state_machine_arn
+```
+
+期待値:
+
+- `api_endpoint` が出力される
+- `api_key_id` が出力される
+- `state_machine_arn` が出力される
+- エラーなく `Apply complete!` が表示される
+
+> 注意: `terraform apply` はこの README を読んでいる本人が実行してください。
 
 ### GitHub Actions による自動デプロイ
 
@@ -417,6 +548,8 @@ terraform output vpc_id             # VPC ID
 
 ## 動作確認
 
+ここからがハンズオン本番です。まず API Key を取得し、軽量ジョブと複雑ジョブを 1 件ずつ流して、最後に内部状態を確認します。
+
 ### Step 1: API Key を取得
 
 ```bash
@@ -434,6 +567,11 @@ echo "API_URL : ${API_URL}"
 echo "API_KEY : ${API_KEY}"
 ```
 
+期待値:
+
+- `API_URL` が `https://...amazonaws.com/v1` の形式で出る
+- `API_KEY` が空文字ではない
+
 ### Step 2: ジョブを投入（POST /jobs）
 
 ```bash
@@ -450,6 +588,12 @@ JOB_ID=$(curl -s -X POST "${API_URL}/jobs" \
 echo "job_id: ${JOB_ID}"
 ```
 
+期待値:
+
+- `JOB_ID` に UUID 風の文字列が入る
+- `POST /jobs` は数秒以内に `200` を返す
+- この時点では処理完了を待たず、SQS に受け付けたことだけが保証される
+
 ```bash
 # 複雑タスク（Claude 3.5 Sonnet で処理）
 JOB_ID_COMPLEX=$(curl -s -X POST "${API_URL}/jobs" \
@@ -460,6 +604,8 @@ JOB_ID_COMPLEX=$(curl -s -X POST "${API_URL}/jobs" \
     "prompt": "イベント駆動アーキテクチャのメリット・デメリットを詳しく説明し、採用すべきユースケースを挙げてください。",
     "complexity": "complex"
   }' | jq -r '.job_id')
+
+echo "job_id_complex: ${JOB_ID_COMPLEX}"
 ```
 
 ### Step 3: ジョブの状態を確認（GET /jobs/{jobId}）
@@ -476,7 +622,7 @@ curl -s \
 #   "tenant_id":  "tenant-a",
 #   "status":     "COMPLETED",
 #   "complexity": "light",
-#   "model_used": "claude-3-haiku",
+#   "model_used": "haiku",
 #   "result":     "Step Functionsは...",
 #   "created_at": "2024-01-15T10:00:00+00:00"
 # }
@@ -487,7 +633,7 @@ curl -s \
 for i in $(seq 1 20); do
   STATUS=$(curl -s -H "x-api-key: ${API_KEY}" "${API_URL}/jobs/${JOB_ID}" | jq -r '.status')
   echo "[${i}] status: ${STATUS}"
-  if [[ "${STATUS}" == "COMPLETED" || "${STATUS}" == "FAILED" ]]; then
+  if [[ "${STATUS}" == "COMPLETED" || "${STATUS}" == "FAILED" || "${STATUS}" == "TIMEOUT" ]]; then
     break
   fi
   sleep 5
@@ -496,6 +642,18 @@ done
 # 完了後に結果を取得
 curl -s -H "x-api-key: ${API_KEY}" "${API_URL}/jobs/${JOB_ID}" | jq -r '.result'
 ```
+
+### Step 3.5: `light` と `complex` の違いを確認
+
+```bash
+curl -s -H "x-api-key: ${API_KEY}" "${API_URL}/jobs/${JOB_ID}" | jq '{job_id,status,complexity,model_used}'
+curl -s -H "x-api-key: ${API_KEY}" "${API_URL}/jobs/${JOB_ID_COMPLEX}" | jq '{job_id,status,complexity,model_used}'
+```
+
+期待値:
+
+- `complexity: "light"` のジョブは `model_used: "haiku"`
+- `complexity: "complex"` のジョブは `model_used: "sonnet"`
 
 ### Step 4: Step Functions の実行を確認
 
@@ -516,6 +674,14 @@ aws stepfunctions get-execution-history \
   --output table
 ```
 
+見るべきポイント:
+
+- `ExecutionStarted`
+- `TaskStateEntered` / `TaskStateExited`
+- `ExecutionSucceeded` または `ExecutionFailed`
+
+`light` ジョブでは `InvokeHaiku`、`complex` ジョブでは `InvokeSonnet` に対応するイベントが見えるはずです。
+
 ### Step 5: CloudWatch ダッシュボードで監視
 
 ```bash
@@ -531,7 +697,13 @@ echo "https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#
 - Step Functions の成功/失敗数と実行時間
 - Lambda の呼び出し数・エラー数
 
-### Step 6: DLQ の動作確認（意図的に失敗させる）
+### Step 6: 異常系の動作確認
+
+まず理解しておきたいのは、このプロジェクトには「入力不正」と「実行失敗」で挙動の違いがあることです。
+
+- 入力不正: Dispatcher が検知して破棄。DLQ には流れない
+- 実行失敗: Step Functions または EventBridge 経由で `FAILED` 更新
+- 長時間停滞: scheduled cleanup により `TIMEOUT` 更新
 
 ```bash
 # 必須フィールドを欠いたリクエスト（Dispatcher Lambda がバリデーションエラー）
@@ -544,6 +716,18 @@ curl -s -X POST "${API_URL}/jobs" \
 # Step Functions の失敗は EventBridge → DLQ Handler Lambda でキャッチされ
 # DynamoDB のステータスが FAILED に更新される
 ```
+
+### Step 7: どの AWS サービスが動いたかを振り返る
+
+E2E 実行後は、次の順番で AWS コンソールまたは CLI を見ると理解が深まります。
+
+1. API Gateway: `POST /jobs` / `GET /jobs/{jobId}`
+2. SQS: input queue にメッセージが入り、Dispatcher 後に消える
+3. Lambda: `dispatcher` が起動する
+4. Step Functions: `haiku` または `sonnet` の分岐が実行される
+5. DynamoDB: `jobs` テーブルの `status` が変わる
+6. DynamoDB Streams: `stream-processor` がメトリクス更新
+7. CloudWatch Dashboard: メトリクス全体を俯瞰
 
 ---
 
@@ -561,6 +745,7 @@ terraform destroy -var="owner=your-name"
 
 > **注意**: `terraform destroy` は VPC・Lambda・DynamoDB テーブルを含む全リソースを削除します。
 > Terraform バックエンドの S3 バケットと DynamoDB テーブルは手動で削除してください。
+> `terraform destroy` もユーザー自身で実行してください。
 
 ```bash
 # バックエンドリソースの手動削除（最後に実行）
