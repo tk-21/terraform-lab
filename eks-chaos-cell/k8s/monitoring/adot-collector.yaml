@@ -1,0 +1,133 @@
+# =============================================================
+# ADOT（AWS Distro for OpenTelemetry）コレクター
+# EKS上のPrometheusメトリクスをスクレイプしてAMPに送信する
+#
+# デプロイ前に setup_observability.sh でプレースホルダーを置換すること:
+#   ADOT_ROLE_ARN  → terraform output -raw adot_role_arn
+#   AMP_REMOTE_WRITE_URL → terraform output -raw amp_remote_write_url
+#
+# 収集対象:
+# - Karpenter メトリクス（ノード起動時間・中断数）
+# - Node メトリクス（CPU・Memory・Network）
+# - Pod メトリクス（cell-a・cell-b の区別）
+# =============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amazon-metrics
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: adot-collector
+  namespace: amazon-metrics
+  annotations:
+    # IRSA: Terraform で作成したADOTロールARNをここに設定する
+    eks.amazonaws.com/role-arn: ADOT_ROLE_ARN
+
+---
+# RBAC: ADOTがKubernetesリソース情報を取得するために必要
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: adot-collector
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/metrics", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: adot-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: adot-collector
+subjects:
+  - kind: ServiceAccount
+    name: adot-collector
+    namespace: amazon-metrics
+
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: adot-collector
+  namespace: amazon-metrics
+spec:
+  serviceAccount: adot-collector
+  # システムノードで動作させる（Karpenter管理外ノードに配置）
+  nodeSelector:
+    node.kubernetes.io/purpose: system
+
+  config: |
+    receivers:
+      prometheus:
+        config:
+          global:
+            scrape_interval: 15s
+            external_labels:
+              cluster: eks-chaos-cell-prod
+              region: ap-northeast-1
+
+          scrape_configs:
+            # Karpenterメトリクス（最重要: ノード起動時間・中断数を計測）
+            - job_name: 'karpenter'
+              static_configs:
+                - targets: ['karpenter.karpenter:8000']
+              metric_relabel_configs:
+                - source_labels: [__name__]
+                  regex: 'karpenter_(nodes_|pods_|cloudprovider_).*'
+                  action: keep
+
+            # ノードメトリクス（CPU・Memory・Network）
+            - job_name: 'node-exporter'
+              kubernetes_sd_configs:
+                - role: node
+              relabel_configs:
+                - action: labelmap
+                  regex: __meta_kubernetes_node_label_(.+)
+                - source_labels: [__meta_kubernetes_node_label_cell]
+                  target_label: cell
+
+            # Podメトリクス（Cell別に区別してBlast Radius検証に使う）
+            - job_name: 'kubernetes-pods'
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_label_cell]
+                  target_label: cell
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+                # prometheus.io/scrape: "true" アノテーションがあるPodのみ収集
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  action: keep
+                  regex: "true"
+
+    exporters:
+      prometheusremotewrite:
+        endpoint: AMP_REMOTE_WRITE_URL
+        auth:
+          authenticator: sigv4auth
+
+    extensions:
+      sigv4auth:
+        region: ap-northeast-1
+        service: aps
+
+    service:
+      extensions: [sigv4auth]
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          exporters: [prometheusremotewrite]

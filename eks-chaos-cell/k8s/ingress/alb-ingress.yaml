@@ -1,0 +1,41 @@
+# =============================================================
+# ALB Ingress（AWS Load Balancer Controller）
+#
+# 設計:
+# - Cell-A と Cell-B を同一ALBで受けて重み付きルーティング
+# - / → Cell-A Service（cell-a namespace に配置）
+# - Cell-AのPodが全滅 → ALBが自動でCell-Bに全振り分け
+#   （TargetGroupBindingで別途Cell-B向けルールを追加予定）
+#
+# FIS実験時の挙動:
+# - ALBヘルスチェックが失敗したターゲットを自動で除外
+# - unhealthyThreshold=3・interval=10s → 30秒以内に切り替え完了
+# =============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chaos-cell-ingress
+  namespace: cell-a
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    # グレースフルシャットダウン用のドレイン時間
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    alb.ingress.kubernetes.io/tags: Project=eks-chaos-cell,chaos-target=alb
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port:
+                  number: 80

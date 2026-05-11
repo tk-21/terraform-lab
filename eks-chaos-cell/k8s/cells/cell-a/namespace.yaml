@@ -1,0 +1,11 @@
+# =============================================================
+# Cell-A 専用 Namespace
+# NetworkPolicyでCell-B への通信は原則禁止（依存排除）
+# =============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cell-a
+  labels:
+    cell: cell-a
+    pod-security.kubernetes.io/enforce: baseline

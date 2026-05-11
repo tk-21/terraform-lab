@@ -1,0 +1,94 @@
+# =============================================================
+# Cell-B ワークロード
+# Cell-Aと同一構成・AZ-c（ap-northeast-1c）に固定
+# =============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: cell-b
+  labels:
+    app: app
+    cell: cell-b
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: app
+      cell: cell-b
+  template:
+    metadata:
+      labels:
+        app: app
+        cell: cell-b
+    spec:
+      nodeSelector:
+        cell: cell-b
+      tolerations:
+        - key: cell
+          value: cell-b
+          effect: NoSchedule
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: app
+              cell: cell-b
+
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+              name: http
+
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    mkdir -p /usr/share/nginx/html
+                    printf '<!DOCTYPE html>\n<html>\n<body>\n  <h1>Cell-B Response</h1>\n  <p>Pod: %s</p>\n</body>\n</html>\n' "${HOSTNAME}" > /usr/share/nginx/html/index.html
+                    echo "OK" > /usr/share/nginx/html/healthz
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: app
+                    cell: cell-b
+                topologyKey: kubernetes.io/hostname
