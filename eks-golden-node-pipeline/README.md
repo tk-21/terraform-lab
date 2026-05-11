@@ -5,6 +5,47 @@
 [![AMI Build](https://github.com/tk-21/eks-golden-node-pipeline/actions/workflows/ami-build.yml/badge.svg)](https://github.com/tk-21/eks-golden-node-pipeline/actions/workflows/ami-build.yml)
 [![Terraform](https://github.com/tk-21/eks-golden-node-pipeline/actions/workflows/terraform.yml/badge.svg)](https://github.com/tk-21/eks-golden-node-pipeline/actions/workflows/terraform.yml)
 
+---
+
+## このハンズオンで得られること
+
+このハンズオンを最後まで実施すると、以下のスキルと知識が身につきます。
+
+### インフラエンジニアリング
+
+| 習得内容 | 具体的に学べること |
+|---|---|
+| **Golden AMI パターン** | 変更不可な安全なベースイメージを Packer + Ansible で量産する考え方と実装 |
+| **CIS Benchmark 適用** | Linux サーバーの OS ハードニングを Ansible ロールとして自動化する方法 |
+| **Karpenter によるノード管理** | NodePool / EC2NodeClass を使った EKS ノードの動的プロビジョニング |
+| **Immutable Infrastructure** | AMI 差し替えでノードを入れ替える Blue/Green ローリング更新の考え方 |
+
+### セキュリティ
+
+| 習得内容 | 具体的に学べること |
+|---|---|
+| **OIDC 認証** | GitHub Actions から AWS を IAM Access Key なしで操作する仕組み |
+| **IMDSv2 強制** | EC2 メタデータサービス v2 の設定方法とその重要性 |
+| **最小権限 IAM** | Karpenter / IRSA の IAM ロールを最小権限で設計する方法 |
+
+### DevOps / CI/CD
+
+| 習得内容 | 具体的に学べること |
+|---|---|
+| **マルチステージ CI/CD** | AMI ビルドと Terraform apply を別ワークフローに分離する設計 |
+| **Terraform S3 バックエンド** | チーム開発に必要な State 管理・ロックの仕組みを実際に構築する |
+| **コスト最適化** | Spot インスタンス + arm64(Graviton) で EKS ノードコストを 40% 削減する方法 |
+
+### ハンズオンの全体像
+
+```
+所要時間: 約 90〜120 分（AMI ビルド 25 分 + Terraform 20 分 + 確認 30 分）
+費用目安: 数百円〜数ドル（手順通り後片付けすれば最小限）
+難易度:   ★★★☆☆（AWS CLI / Terraform の基礎知識があれば OK）
+```
+
+---
+
 ## 概要
 
 EKS のノード管理において「どの AMI を使うか」は、セキュリティ・安定性・コスト効率に直結します。このプロジェクトは以下を一気通貫で実現します：
@@ -52,37 +93,73 @@ graph TB
 | アーキテクチャ | arm64 (Graviton) | - |
 | リージョン | ap-northeast-1 | - |
 
+---
+
 ## ハンズオン
 
 この章では、ローカル環境からこのプロジェクトを一通り実行し、Golden AMI をビルドして EKS + Karpenter でノード起動まで確認する手順を順番に説明します。
 
 ### このハンズオンで行うこと
 
-1. ローカル作業環境を用意する
-2. Terraform のバックエンドと GitHub Actions 用 OIDC ロールを準備する
-3. Golden AMI をビルドする
-4. EKS / Karpenter 基盤を作る
-5. EC2NodeClass / NodePool を適用する
-6. テスト用 Pod を作って、Karpenter が Golden AMI ノードを起動することを確認する
+1. ローカル作業環境を用意する（Step 0）
+2. Terraform のバックエンドを準備する（Step 1）
+3. GitHub Actions 用 OIDC ロールを設定する（Step 2）
+4. Golden AMI をビルドする（Step 3）
+5. EKS / Karpenter 基盤を Terraform で構築する（Step 4）
+6. kubeconfig を更新して Karpenter の起動を確認する（Step 5）
+7. EC2NodeClass / NodePool を Kubernetes に適用する（Step 6）
+8. テスト用 Pod を起動して Karpenter が Golden AMI ノードを使うことを確認する（Step 7〜8）
+9. 後片付けをする（Step 9）
+
+---
 
 ### 前提条件
 
-- AWS アカウントを持っている
-- `ap-northeast-1` を利用できる
-- AWS CLI の認証が済んでいる
-- `terraform >= 1.7`
-- `packer >= 1.10`
-- `ansible >= 2.15`
-- `kubectl`
-- `jq`
-- GitHub Actions で実行する場合は GitHub リポジトリと OIDC 設定が済んでいる
+以下がすべて揃っていることを確認してから進めてください。
 
-### Step 0: リポジトリを取得してツールを確認する
+#### AWS
+
+- AWS アカウントを持っている
+- `ap-northeast-1` リージョンを利用できる
+- 作業用 IAM ユーザー / ロールに以下の権限がある
+  - EC2, EKS, IAM, S3, DynamoDB, ECR, CloudFormation への ReadWrite
+  - Packer が一時インスタンスを起動できる権限（`ec2:RunInstances` など）
+
+#### ローカルツール
+
+```bash
+# バージョン確認コマンド
+aws --version          # aws-cli/2.x
+terraform version      # Terraform v1.7 以上
+packer version         # Packer v1.10 以上
+ansible --version      # ansible [core 2.15 以上]
+kubectl version --client
+jq --version
+```
+
+> **Tips**: ツールが未インストールの場合は以下を参照してください。
+> - AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+> - Terraform: https://developer.hashicorp.com/terraform/install
+> - Packer: https://developer.hashicorp.com/packer/install
+> - Ansible: `pip install ansible` または `brew install ansible`
+
+#### GitHub（CI/CD を使う場合のみ）
+
+- このリポジトリを fork またはクローンした GitHub リポジトリがある
+- OIDC の設定ができる権限がある
+
+---
+
+### Step 0: リポジトリを取得してツールを確認する（所要時間: 5 分）
 
 ```bash
 git clone https://github.com/tk-21/eks-golden-node-pipeline.git
 cd eks-golden-node-pipeline
+```
 
+ツールのバージョンをまとめて確認します。
+
+```bash
 aws --version
 terraform version
 packer version
@@ -91,31 +168,53 @@ kubectl version --client
 jq --version
 ```
 
-期待する状態:
-
-- すべてのコマンドがエラーなく表示される
-- AWS CLI で対象アカウントにアクセスできる
-
-確認用コマンド:
+AWS へのアクセスを確認します。
 
 ```bash
 aws sts get-caller-identity
 ```
 
-### Step 1: Terraform バックエンドを作成する
+期待する出力例：
 
-このプロジェクトは `terraform/environments/dev/versions.tf` で S3 backend を使います。先に S3 バケットと DynamoDB テーブルを用意します。
+```json
+{
+    "UserId": "AIDA...",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/your-user"
+}
+```
+
+> **確認ポイント**
+> - `Account` が作業対象の AWS アカウント ID と一致している
+> - すべてのコマンドがエラーなく表示される
+
+---
+
+### Step 1: Terraform バックエンドを作成する（所要時間: 5 分）
+
+このプロジェクトは Terraform の State を S3 で管理し、DynamoDB でロックします。
+Terraform を実行する前にこれらを用意します。
+
+#### 1-1. S3 バケットを作成する
 
 ```bash
 aws s3api create-bucket \
   --bucket eks-golden-node-pipeline-tfstate \
   --region ap-northeast-1 \
   --create-bucket-configuration LocationConstraint=ap-northeast-1
+```
 
+バケットのバージョニングを有効にします（State ファイルの誤削除対策）。
+
+```bash
 aws s3api put-bucket-versioning \
   --bucket eks-golden-node-pipeline-tfstate \
   --versioning-configuration Status=Enabled
+```
 
+#### 1-2. DynamoDB テーブルを作成する
+
+```bash
 aws dynamodb create-table \
   --table-name eks-golden-node-pipeline-tflock \
   --attribute-definitions AttributeName=LockID,AttributeType=S \
@@ -124,230 +223,546 @@ aws dynamodb create-table \
   --region ap-northeast-1
 ```
 
-確認ポイント:
-
-- S3 バケット `eks-golden-node-pipeline-tfstate` が作成されている
-- DynamoDB テーブル `eks-golden-node-pipeline-tflock` が作成されている
-
-### Step 2: GitHub Actions 用 OIDC を準備する
-
-GitHub Actions から AMI ビルドや Terraform を実行する場合は、OIDC プロバイダーと IAM ロールが必要です。詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
-
-最低限必要な考え方は次の通りです。
-
-- GitHub Actions は `aws-actions/configure-aws-credentials@v4` で AssumeRole する
-- 長期 Access Key は使わない
-- IAM ロールの `sub` 条件は `repo:tk-21/eks-golden-node-pipeline:*` のように対象リポジトリへ絞る
-
-### Step 3: Golden AMI をビルドする
-
-Golden AMI のビルドは 2 通りあります。
-
-- GitHub Actions で実行する
-- ローカルから Packer を直接実行する
-
-#### 3-1. GitHub Actions でビルドする場合
+#### 1-3. 作成を確認する
 
 ```bash
-gh workflow run ami-build.yml -f eks_version=1.30
-gh run list --workflow ami-build.yml
+aws s3api head-bucket --bucket eks-golden-node-pipeline-tfstate
+aws dynamodb describe-table \
+  --table-name eks-golden-node-pipeline-tflock \
+  --query 'Table.TableStatus' \
+  --output text
 ```
 
-ワークフローが成功したら、GitHub Actions のサマリーかログから AMI ID を控えます。
+期待する出力:
 
-#### 3-2. ローカルから Packer を直接実行する場合
+```
+ACTIVE
+```
+
+> **確認ポイント**
+> - S3 バケット `eks-golden-node-pipeline-tfstate` が存在する
+> - DynamoDB テーブル `eks-golden-node-pipeline-tflock` が `ACTIVE` になっている
+
+---
+
+### Step 2: GitHub Actions 用 OIDC を準備する（所要時間: 10〜15 分）
+
+> **ローカルのみで実施する場合はスキップ可能です。**
+> GitHub Actions を使わず、ローカルから Packer / Terraform を実行するだけであれば Step 3 に進んでください。
+
+GitHub Actions から AMI ビルドや Terraform を実行するには、OIDC プロバイダーと IAM ロールが必要です。
+
+#### 設計の考え方
+
+```
+GitHub Actions
+    │
+    │  (1) OIDC トークンを取得
+    ▼
+AWS STS AssumeRoleWithWebIdentity
+    │
+    │  (2) 一時クレデンシャルを取得
+    ▼
+IAM ロール（eks-golden-node-pipeline-github-actions-role）
+    │
+    │  (3) EC2 / EKS / Packer 操作
+    ▼
+AWS リソース
+```
+
+- 長期 Access Key を使わないため、キーの漏洩リスクがゼロ
+- IAM ロールの trust policy の `sub` 条件でリポジトリを絞ることが重要
+
+#### 2-1. OIDC プロバイダーを登録する
+
+```bash
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
+
+すでに存在する場合は `EntityAlreadyExists` エラーが出ますが、そのまま進めて問題ありません。
+
+#### 2-2. IAM ロールを作成する
+
+以下の trust policy を `trust-policy.json` として保存してから実行します（`YOUR_ACCOUNT_ID` と `YOUR_REPO` を自分のものに置き換えてください）。
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::YOUR_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:YOUR_REPO/eks-golden-node-pipeline:*"
+        },
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+```
+
+```bash
+aws iam create-role \
+  --role-name eks-golden-node-pipeline-github-actions-role \
+  --assume-role-policy-document file://trust-policy.json
+```
+
+詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
+
+---
+
+### Step 3: Golden AMI をビルドする（所要時間: 20〜30 分）
+
+Golden AMI のビルドは 2 通りあります。どちらか一方を選んで実施してください。
+
+#### 方法 A: GitHub Actions でビルドする（推奨）
+
+Step 2 の OIDC 設定が完了している場合はこちらを使います。
+
+```bash
+# ワークフローをトリガー
+gh workflow run ami-build.yml -f eks_version=1.30
+
+# ビルドの進行状況を確認
+gh run list --workflow ami-build.yml
+gh run watch  # リアルタイムログ
+```
+
+ワークフローが成功したら、AMI ID を GitHub Actions のサマリーまたは以下のコマンドで取得します。
+
+```bash
+# 最新の成功ビルドから AMI ID を取得
+gh run list --workflow ami-build.yml --status success --limit 1 --json databaseId -q '.[0].databaseId' | \
+  xargs gh run view --log | grep "ami-" | tail -1
+```
+
+#### 方法 B: ローカルから Packer を直接実行する
 
 ```bash
 cd packer
+
+# プラグインを初期化（初回のみ）
 packer init golden-ami.pkr.hcl
-packer validate -var "aws_region=ap-northeast-1" -var "eks_version=1.30" golden-ami.pkr.hcl
-packer build -var "aws_region=ap-northeast-1" -var "eks_version=1.30" golden-ami.pkr.hcl
+
+# テンプレートの構文チェック
+packer validate \
+  -var "aws_region=ap-northeast-1" \
+  -var "eks_version=1.30" \
+  golden-ami.pkr.hcl
+```
+
+問題なければビルドを実行します。
+
+```bash
+packer build \
+  -var "aws_region=ap-northeast-1" \
+  -var "eks_version=1.30" \
+  golden-ami.pkr.hcl
+```
+
+ビルドが成功すると `packer-manifest.json` が出力されます。AMI ID を取得します。
+
+```bash
+AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
+echo "AMI ID: ${AMI_ID}"
 cd ..
 ```
 
-ビルドが成功すると `packer/packer-manifest.json` が出力されます。
+出力例：
 
-AMI ID の取得:
+```
+AMI ID: ami-0123456789abcdef0
+```
+
+> **確認ポイント**
+> - EC2 コンソール → AMI 一覧に `golden-ami-eks-1.30-YYYYMMDD` という名前の AMI が表示される
+> - `アーキテクチャ` が `arm64` になっている
+> - `状態` が `available` になっている
+
+EC2 コンソールを使わず CLI で確認する場合:
 
 ```bash
-jq -r '.builds[-1].artifact_id' packer/packer-manifest.json | cut -d: -f2
+aws ec2 describe-images \
+  --region ap-northeast-1 \
+  --owners self \
+  --filters "Name=name,Values=golden-ami-eks-1.30-*" \
+  --query 'Images[*].{ImageId:ImageId,Name:Name,Architecture:Architecture,State:State}' \
+  --output table
 ```
 
-取得例:
+> **ビルドに失敗した場合**
+> - Packer は失敗時に一時 EC2 インスタンスを自動で削除します
+> - ログを確認して Ansible のエラーを特定してください
+> - IAM 権限が不足している場合は `ec2:RunInstances` 等が含まれているか確認してください
 
-```text
-ami-0123456789abcdef0
-```
+---
 
-確認ポイント:
-
-- EC2 コンソールの AMI 一覧に `golden-ami-eks-1.30-...` という名前の AMI がある
-- `Architecture=arm64`
-- `ManagedBy=packer`
-
-### Step 4: Terraform で EKS 基盤を作る
+### Step 4: Terraform で EKS 基盤を作る（所要時間: 20〜30 分）
 
 `terraform/environments/dev` が dev 環境のエントリーポイントです。
+
+#### 4-1. 初期化
 
 ```bash
 cd terraform/environments/dev
 terraform init
-terraform validate
-terraform plan -var "golden_ami_id=ami-0123456789abcdef0"
 ```
 
-`plan` で問題がなければ、次に apply します。
+期待する出力（抜粋）：
+
+```
+Initializing the backend...
+Successfully configured the backend "s3"!
+Initializing modules...
+Terraform has been successfully initialized!
+```
+
+#### 4-2. 構文チェックとフォーマット確認
 
 ```bash
-terraform apply -var "golden_ami_id=ami-0123456789abcdef0"
+terraform validate
+terraform fmt -check -recursive
 ```
 
-確認ポイント:
+#### 4-3. Plan で変更内容を確認する
 
-- VPC
-- EKS クラスター
-- IRSA
-- Karpenter Helm release
-- `rendered-node-class.yaml`
-- `rendered-node-pool.yaml`
+AMI ID を環境変数に設定しておくと便利です。
 
-補足:
+```bash
+# Step 3 で取得した AMI ID を設定
+export TF_VAR_golden_ami_id="ami-0123456789abcdef0"
 
-- `golden_ami_id` を省略すると `golden-ami-eks-1.30-*` の最新 AMI を自動検索します
-- ハンズオンでは、どの AMI を使ったかを明確にするため、AMI ID を明示指定するのがおすすめです
-- GitHub Actions の `terraform.yml` は `main` への push で `terraform apply` まで実行する実装です。ローカルで試す場合は、まず手元で `plan` と `apply` を行う方が挙動を追いやすいです
+terraform plan
+```
 
-出力確認:
+> **Tips**
+> - `golden_ami_id` を省略すると `golden-ami-eks-1.30-*` の最新 AMI を自動検索します
+> - ハンズオンでは AMI ID を明示することを推奨します（どの AMI を使ったか明確になるため）
+> - Plan で `60 to add, 0 to change, 0 to destroy` のように表示されれば正常です
+
+#### 4-4. Apply する
+
+```bash
+terraform apply
+```
+
+確認プロンプトが表示されるので `yes` と入力します。
+
+```
+Do you want to perform these actions?
+  Terraform will perform the actions described above.
+  Only 'yes' will be accepted to approve.
+
+  Enter a value: yes
+```
+
+Apply 完了まで **約 20〜30 分** かかります。
+
+#### 4-5. 出力を確認する
 
 ```bash
 terraform output
-terraform output resolved_golden_ami_id
+```
+
+出力例：
+
+```
+cluster_endpoint           = "https://XXXX.gr7.ap-northeast-1.eks.amazonaws.com"
+cluster_name               = "eks-golden-node-pipeline-dev"
+resolved_golden_ami_id     = "ami-0123456789abcdef0"
+vpc_id                     = "vpc-0123456789abcdef0"
+```
+
+> **確認ポイント**
+> - `cluster_name` が `eks-golden-node-pipeline-dev` になっている
+> - `resolved_golden_ami_id` が Step 3 でビルドした AMI ID と一致している
+
+```bash
+# 作業ディレクトリを戻す
 cd ../../..
 ```
 
-### Step 5: kubeconfig を更新する
+---
+
+### Step 5: kubeconfig を更新して Karpenter を確認する（所要時間: 5 分）
+
+EKS クラスターに接続できるよう kubeconfig を更新します。
 
 ```bash
 aws eks update-kubeconfig \
   --name eks-golden-node-pipeline-dev \
   --region ap-northeast-1
+```
 
+接続できていることを確認します。
+
+```bash
 kubectl config current-context
+kubectl get nodes
 kubectl get pods -A
 ```
 
-確認ポイント:
-
-- `karpenter` namespace が存在する
-- `karpenter` Pod が `Running` になっている
+Karpenter の起動状況を確認します。
 
 ```bash
-kubectl get ns
+kubectl get ns karpenter
 kubectl get pods -n karpenter
 ```
 
-### Step 6: EC2NodeClass / NodePool を適用する
+期待する出力例：
 
-Terraform は Karpenter 用 YAML をレンダリングしますが、現状は Kubernetes API へ自動 apply しません。ここは手動で適用します。
+```
+NAME                         READY   STATUS    RESTARTS   AGE
+karpenter-xxxxxxxxxx-xxxxx   1/1     Running   0          5m
+```
+
+> **確認ポイント**
+> - `karpenter` namespace が存在する
+> - `karpenter` Pod が `1/1 Running` になっている
+> - `Running` になっていない場合はログを確認: `kubectl logs -n karpenter -l app.kubernetes.io/name=karpenter`
+
+---
+
+### Step 6: EC2NodeClass / NodePool を適用する（所要時間: 5 分）
+
+Karpenter がノードを起動するには、どの AMI を使うか（EC2NodeClass）と、どのような条件でノードを追加するか（NodePool）を Kubernetes に登録する必要があります。
+
+Terraform がこれらの YAML をレンダリングしているので、それを apply します。
 
 ```bash
 kubectl apply -f terraform/modules/karpenter/templates/rendered-node-class.yaml
 kubectl apply -f terraform/modules/karpenter/templates/rendered-node-pool.yaml
 ```
 
-適用結果の確認:
+適用結果を確認します。
 
 ```bash
 kubectl get ec2nodeclass
 kubectl get nodepool
+```
+
+期待する出力：
+
+```
+NAME                    READY   AGE
+golden-ami-node-class   True    30s
+
+NAME                    NODECLASS             NODES   READY   AGE
+golden-ami-node-pool    golden-ami-node-class   0     True    30s
+```
+
+詳細を確認します。
+
+```bash
 kubectl describe ec2nodeclass golden-ami-node-class
 kubectl describe nodepool golden-ami-node-pool
 ```
 
-確認ポイント:
+> **確認ポイント**
+> - `golden-ami-node-class` が `READY=True` になっている
+> - `golden-ami-node-pool` が `READY=True` になっている
+> - `kubectl describe ec2nodeclass` の `amiSelectorTerms` に Golden AMI の ID が含まれている
 
-- `golden-ami-node-class` が作成されている
-- `golden-ami-node-pool` が作成されている
-- `amiSelectorTerms` に Golden AMI の ID が入っている
+---
 
-### Step 7: テスト用 Pod でノード起動を確認する
+### Step 7: テスト用 Pod でノード起動を確認する（所要時間: 5〜10 分）
 
-まだ Pod を載せる需要がなければ、Karpenter はノードを起動しません。動作確認用に軽い Deployment を作ります。
+Pod の需要がなければ Karpenter はノードを起動しません。動作確認用に軽い Deployment を作ります。
+
+まず Deployment を作成します（replicas=0 から始めて段階的にスケールします）。
 
 ```bash
-kubectl create deployment inflate --image=public.ecr.aws/eks-distro/kubernetes/pause:3.2 --replicas=0
+kubectl create deployment inflate \
+  --image=public.ecr.aws/eks-distro/kubernetes/pause:3.2 \
+  --replicas=0
+```
+
+Pod を 3 つに増やして、Karpenter の動作を観察します。
+
+```bash
 kubectl scale deployment inflate --replicas=3
-kubectl get pods -w
 ```
 
-別ターミナル、または続けて以下を実行します。
+別ターミナルでノードの起動を監視します（`-w` はウォッチモード）。
 
 ```bash
-kubectl get nodeclaims
+# ターミナル 1: Pod の状態を監視
+kubectl get pods -w
+
+# ターミナル 2: ノードの状態を監視
 kubectl get nodes -w
+
+# ターミナル 3: Karpenter の NodeClaim を監視
+kubectl get nodeclaims -w
 ```
 
-確認ポイント:
+期待する流れ：
 
-- Karpenter が NodeClaim を作る
-- 新しい EC2 ノードが EKS に参加する
-- Pod が `Pending` から `Running` になる
+```
+# Pod が Pending になる
+inflate-xxxx   0/1   Pending   0   3s
 
-### Step 8: 起動したノードが Golden AMI 由来か確認する
+# Karpenter が NodeClaim を作成する
+nodeclaim-xxxx   NotLaunched   ...
 
-まず Kubernetes 側でノードを確認します。
+# EC2 インスタンスが起動して EKS に参加する（3〜4 分）
+NAME       STATUS   ROLES    AGE   VERSION
+ip-10...   Ready    <none>   1m    v1.30.x
+
+# Pod が Running になる
+inflate-xxxx   1/1   Running   0   4m
+```
+
+> **確認ポイント**
+> - Karpenter が `NodeClaim` を作成する
+> - 新しい EC2 ノードが EKS クラスターに参加する（`kubectl get nodes` に表示される）
+> - 3 つの Pod がすべて `Running` になる
+
+---
+
+### Step 8: 起動したノードが Golden AMI 由来か確認する（所要時間: 5 分）
+
+#### 8-1. Kubernetes 側でノードのアーキテクチャを確認する
 
 ```bash
 kubectl get nodes -o wide
 kubectl describe node | grep -E "node.kubernetes.io/lifecycle|beta.kubernetes.io/arch|kubernetes.io/arch"
 ```
 
-次に、EC2 インスタンスと AMI ID を AWS 側で確認します。
+期待する出力（抜粋）：
+
+```
+kubernetes.io/arch=arm64
+node.kubernetes.io/lifecycle=spot
+```
+
+#### 8-2. EC2 側で AMI ID を確認する
 
 ```bash
 aws ec2 describe-instances \
   --region ap-northeast-1 \
   --filters "Name=tag:karpenter.sh/discovery,Values=eks-golden-node-pipeline-dev" \
-  --query 'Reservations[].Instances[].{InstanceId:InstanceId,ImageId:ImageId,State:State.Name,PrivateIp:PrivateIpAddress}' \
+            "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].{InstanceId:InstanceId,ImageId:ImageId,State:State.Name,InstanceType:InstanceType,Arch:Architecture}' \
   --output table
 ```
 
-比較ポイント:
+期待する出力例：
 
-- `ImageId` が `terraform output resolved_golden_ami_id` の値と一致する
-- ノードが `arm64` で起動している
-- Spot または on-demand のいずれかで起動している
+```
+-----------------------------------------------------------------------
+|                        DescribeInstances                            |
++---------+-----------+----------------------+-------------+----------+
+|  Arch   | ImageId   | InstanceId           | InstanceType| State    |
++---------+-----------+----------------------+-------------+----------+
+|  arm64  | ami-0123. | i-0123456789abcdef0  | t4g.medium  | running  |
++---------+-----------+----------------------+-------------+----------+
+```
 
-### Step 9: 後片付け
+#### 8-3. Golden AMI と一致することを確認する
 
-テスト Pod を削除:
+```bash
+# Terraform の出力と比較
+cd terraform/environments/dev
+terraform output resolved_golden_ami_id
+cd ../../..
+```
+
+> **確認ポイント**
+> - `ImageId` が `terraform output resolved_golden_ami_id` の値と **一致している**
+> - `Arch` が `arm64` になっている
+> - インスタンスが Spot で起動している（コスト最適化が機能している）
+
+---
+
+### Step 9: 後片付け（所要時間: 10〜15 分）
+
+**費用の発生を防ぐため、ハンズオン完了後は必ず後片付けをしてください。**
+
+#### 9-1. テスト用 Pod を削除する
 
 ```bash
 kubectl delete deployment inflate
 ```
 
-NodePool / EC2NodeClass を削除:
+Karpenter が不要になったノードを自動で削除するまで待ちます（1〜2 分）。
+
+```bash
+kubectl get nodes -w  # ノードが削除されるのを確認
+```
+
+#### 9-2. NodePool / EC2NodeClass を削除する
 
 ```bash
 kubectl delete -f terraform/modules/karpenter/templates/rendered-node-pool.yaml
 kubectl delete -f terraform/modules/karpenter/templates/rendered-node-class.yaml
 ```
 
-Terraform リソースを削除する場合:
+#### 9-3. Terraform リソースを削除する
 
 ```bash
 cd terraform/environments/dev
-terraform destroy -var "golden_ami_id=ami-0123456789abcdef0"
+terraform destroy
+```
+
+`yes` と入力して削除を実行します。完了まで **約 15〜20 分** かかります。
+
+```bash
 cd ../../..
 ```
 
-AMI を削除する場合:
+> **注意**: EKS クラスター削除後も VPC や Karpenter が作成したネットワークリソースが残る場合があります。AWS コンソールで確認してください。
+
+#### 9-4. AMI を削除する
 
 ```bash
-aws ec2 deregister-image --image-id ami-0123456789abcdef0 --region ap-northeast-1
+# AMI の登録解除
+aws ec2 deregister-image \
+  --image-id ami-0123456789abcdef0 \
+  --region ap-northeast-1
 ```
 
-不要スナップショットが残る場合は、関連 EBS snapshot の削除も忘れずに行ってください。
+関連する EBS スナップショットも削除します。
+
+```bash
+# AMI に関連するスナップショットを確認
+aws ec2 describe-snapshots \
+  --region ap-northeast-1 \
+  --owner-ids self \
+  --filters "Name=description,Values=*golden-ami-eks-1.30*" \
+  --query 'Snapshots[*].{SnapshotId:SnapshotId,Description:Description}' \
+  --output table
+
+# スナップショットを削除（SnapshotId を確認してから実行）
+aws ec2 delete-snapshot --snapshot-id snap-0123456789abcdef0 --region ap-northeast-1
+```
+
+#### 9-5. Terraform バックエンドを削除する（完全にクリーンにする場合）
+
+```bash
+# S3 バケット内のファイルをすべて削除してからバケットを削除
+aws s3 rm s3://eks-golden-node-pipeline-tfstate --recursive
+aws s3api delete-bucket \
+  --bucket eks-golden-node-pipeline-tfstate \
+  --region ap-northeast-1
+
+# DynamoDB テーブルを削除
+aws dynamodb delete-table \
+  --table-name eks-golden-node-pipeline-tflock \
+  --region ap-northeast-1
+```
+
+---
 
 ## クイックスタート
 
@@ -358,11 +773,11 @@ aws ec2 deregister-image --image-id ami-0123456789abcdef0 --region ap-northeast-
 cd packer
 packer init golden-ami.pkr.hcl
 packer build -var "eks_version=1.30" golden-ami.pkr.hcl
-cd ..
 
 # 2. AMI ID を取得
-AMI_ID=$(jq -r '.builds[-1].artifact_id' packer/packer-manifest.json | cut -d: -f2)
-echo "${AMI_ID}"
+AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
+echo "AMI_ID: ${AMI_ID}"
+cd ..
 
 # 3. Terraform 実行
 cd terraform/environments/dev
@@ -378,6 +793,8 @@ kubectl apply -f terraform/modules/karpenter/templates/rendered-node-class.yaml
 kubectl apply -f terraform/modules/karpenter/templates/rendered-node-pool.yaml
 ```
 
+---
+
 ## コスト見積もり（dev 環境）
 
 | リソース | 単価 | 月額目安 |
@@ -389,6 +806,8 @@ kubectl apply -f terraform/modules/karpenter/templates/rendered-node-pool.yaml
 | **合計** | | **~$134** |
 
 > **コスト削減 Tips**: dev 環境は夜間にノードをゼロスケール、NAT Gateway を削減用 VPC エンドポイントで代替すると月額 $30〜$50 に抑えられます。
+
+---
 
 ## ディレクトリ構成
 
