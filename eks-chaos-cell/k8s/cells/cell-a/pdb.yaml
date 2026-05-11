@@ -1,0 +1,24 @@
+# =============================================================
+# PodDisruptionBudget（PDB）
+#
+# 設計意図:
+# - minAvailable: 2 → 4 Pod中2台は必ず生存させる
+# - FIS実験でノード停止されてもPDB範囲内で安全に移行
+# - KarpenterのConsolidationもPDBを尊重する
+#
+# 面接での解説:
+# "PDBがないと、ノードドレイン時に全Podが同時に退避され
+#  一時的にサービス断が発生します。PDBで最低2台を保証することで
+#  ローリングに退避され、サービス継続性を担保しています"
+# =============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-pdb
+  namespace: cell-a
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: app
+      cell: cell-a

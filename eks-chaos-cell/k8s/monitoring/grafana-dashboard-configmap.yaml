@@ -1,0 +1,129 @@
+# =============================================================
+# EKS Chaos Cell ダッシュボード定義
+#
+# AMGへのインポート手順:
+#   1. Grafana UI → Dashboards → Import
+#   2. このConfigMapの dashboard.json の内容を貼り付け
+#   3. Data Source: AMPワークスペースを選択
+#
+# パネル構成:
+#   - Cell-A/B Pod数（AZ障害後の減少→回復を観測）
+#   - Karpenterノード起動数（Cell別）
+#   - ALBレスポンスタイム・5xxエラー数
+# =============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-cell-dashboard
+  namespace: amazon-metrics
+data:
+  dashboard.json: |
+    {
+      "title": "EKS Chaos Cell Dashboard",
+      "uid": "eks-chaos-cell",
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Cell-A Running Pods（AZ障害で減少→Karpenter回復）",
+          "type": "stat",
+          "targets": [{
+            "expr": "count(kube_pod_info{namespace=\"cell-a\",pod=~\"app-.*\"})",
+            "legendFormat": "Cell-A Running Pods"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "yellow", "value": 2},
+                  {"color": "green", "value": 4}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Cell-B Running Pods（障害時も変化しないことを確認）",
+          "type": "stat",
+          "targets": [{
+            "expr": "count(kube_pod_info{namespace=\"cell-b\",pod=~\"app-.*\"})",
+            "legendFormat": "Cell-B Running Pods"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "yellow", "value": 2},
+                  {"color": "green", "value": 4}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "Karpenter ノード起動数（NodePool別）",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum(increase(karpenter_nodes_created_total[5m])) by (nodepool)",
+              "legendFormat": "{{nodepool}}"
+            }
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}
+        },
+        {
+          "id": 4,
+          "title": "Karpenter ノード起動レイテンシ（p50/p90）",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(karpenter_cloudprovider_instance_type_price_estimate_bucket[5m])) by (le))",
+              "legendFormat": "p50 node launch"
+            },
+            {
+              "expr": "histogram_quantile(0.90, sum(rate(karpenter_cloudprovider_instance_type_price_estimate_bucket[5m])) by (le))",
+              "legendFormat": "p90 node launch"
+            }
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}
+        },
+        {
+          "id": 5,
+          "title": "ALB レスポンスタイム（ms）",
+          "type": "timeseries",
+          "targets": [{
+            "expr": "aws_applicationelb_target_response_time_average * 1000",
+            "legendFormat": "ALB Response Time (ms)"
+          }],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}
+        },
+        {
+          "id": 6,
+          "title": "ALB 5xxエラー数（Stop Conditionしきい値との関係）",
+          "type": "timeseries",
+          "targets": [{
+            "expr": "aws_applicationelb_httpcode_target_5_xx_count_sum",
+            "legendFormat": "5xx errors"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": 0},
+                  {"color": "yellow", "value": 5},
+                  {"color": "red", "value": 20}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12}
+        }
+      ]
+    }

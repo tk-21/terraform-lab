@@ -1,0 +1,9 @@
+# ALB Controller用 ServiceAccount（IRSA）
+# IAMロールはTerraformで作成済み（terraform/main.tf の aws_iam_role.alb_controller）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/eks-chaos-cell-prod-alb-controller

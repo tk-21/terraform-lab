@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cell-b
+  labels:
+    cell: cell-b
+    pod-security.kubernetes.io/enforce: baseline

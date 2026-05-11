@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: cell-a
+  labels:
+    app: app
+    cell: cell-a
+  annotations:
+    # ALBターゲットグループ登録解除待機時間（グレースフルシャットダウン考慮）
+    service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: |
+      deregistration_delay.timeout_seconds=30
+spec:
+  selector:
+    app: app
+    cell: cell-a
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: ClusterIP
