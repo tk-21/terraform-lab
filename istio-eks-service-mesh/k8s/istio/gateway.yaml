@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: mesh-apps-gateway
+  namespace: mesh-apps
+spec:
+  # デフォルトの Istio Ingress Gateway Pod を選択する
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"  # ハンズオン環境のため全ホスト許可（本番では FQDN を指定すること）

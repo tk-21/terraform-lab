@@ -1,0 +1,61 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: frontend-external
+  namespace: mesh-apps
+  # カナリアリリース段階的移行ガイド（Ingress Gateway 経由の外部トラフィック）
+  # 以下の weight 値を順に変更して安全にロールアウトする:
+  #
+  # [Step 1] 初期状態: v1=100%, v2=0%  → 動作確認フェーズ
+  # [Step 2] 検証開始: v1=80%,  v2=20% → 少量トラフィックで品質確認
+  # [Step 3] 半分移行: v1=50%,  v2=50% → メトリクスが正常なら次へ
+  # [Step 4] 完全移行: v1=0%,   v2=100% → v1 は削除可能
+  #
+  # ロールバック: v2 で問題が発生した場合は v1=100%, v2=0% に戻す
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - mesh-apps-gateway  # 外部トラフィックのみ
+  http:
+    - route:
+        - destination:
+            host: frontend
+            subset: v1
+          weight: 80  # ← ここを段階的に減らす
+        - destination:
+            host: frontend
+            subset: v2
+          weight: 20  # ← ここを段階的に増やす
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: gateway-error,connect-failure,retriable-4xx
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: frontend-internal
+  namespace: mesh-apps
+  # クラスタ内部通信用（weight の変更は上の frontend-external と同期させること）
+spec:
+  hosts:
+    - frontend
+  gateways:
+    - mesh
+  http:
+    - route:
+        - destination:
+            host: frontend
+            subset: v1
+          weight: 80
+        - destination:
+            host: frontend
+            subset: v2
+          weight: 20
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: gateway-error,connect-failure,retriable-4xx

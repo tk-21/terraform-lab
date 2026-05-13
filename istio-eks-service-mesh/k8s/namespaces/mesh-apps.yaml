@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh-apps
+  labels:
+    # Istio サイドカー自動インジェクションを有効化
+    istio-injection: enabled
+    env: dev
+    managed-by: ansible

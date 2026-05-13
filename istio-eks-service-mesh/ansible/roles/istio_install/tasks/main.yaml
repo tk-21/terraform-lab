@@ -1,0 +1,85 @@
+---
+# Istio のインストールはEKSワーカーノードではなく、
+# kubectl が使えるローカル環境から実施する（delegate_to: localhost）
+
+# istioctl バイナリをローカルにダウンロードする
+- name: istioctl バイナリをダウンロードする
+  ansible.builtin.get_url:
+    url: "https://github.com/istio/istio/releases/download/{{ istio_version }}/istioctl-{{ istio_version }}-linux-amd64.tar.gz"
+    dest: "/tmp/istioctl-{{ istio_version }}.tar.gz"
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+
+# アーカイブを展開する
+- name: istioctl を展開する
+  ansible.builtin.unarchive:
+    src: "/tmp/istioctl-{{ istio_version }}.tar.gz"
+    dest: "{{ istio_install_dir }}"
+    remote_src: false
+    creates: "{{ istio_install_dir }}/istioctl"
+  become: true
+  delegate_to: localhost
+  run_once: true
+
+# Istio の事前チェック
+- name: EKS クラスタへの Istio インストール事前チェックを実行する
+  ansible.builtin.command:
+    cmd: "{{ istio_install_dir }}/istioctl x precheck"
+  delegate_to: localhost
+  run_once: true
+  register: istio_precheck
+  changed_when: false
+
+- name: 事前チェック結果を表示する
+  ansible.builtin.debug:
+    var: istio_precheck.stdout_lines
+  delegate_to: localhost
+  run_once: true
+
+# Istio をインストールする
+# コスト最適化のためサイドカーリソース要求を最小化する
+- name: Istio を {{ istio_profile }} プロファイルでインストールする
+  ansible.builtin.command:
+    cmd: >
+      {{ istio_install_dir }}/istioctl install
+      --set profile={{ istio_profile }}
+      --set values.global.proxy.resources.requests.cpu=100m
+      --set values.global.proxy.resources.requests.memory=128Mi
+      -y
+  delegate_to: localhost
+  run_once: true
+  register: istio_install_result
+  changed_when: "'✔ Istio core installed' in istio_install_result.stdout"
+
+- name: Istio インストール結果を表示する
+  ansible.builtin.debug:
+    var: istio_install_result.stdout_lines
+  delegate_to: localhost
+  run_once: true
+
+# インストール結果の確認
+- name: istio-system の Pod が全て Running になるまで待機する
+  ansible.builtin.command:
+    cmd: kubectl wait --for=condition=ready pod --all -n istio-system --timeout=300s
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+# mesh-apps Namespace を作成して自動インジェクションを有効化
+- name: mesh-apps Namespace を作成する
+  ansible.builtin.command:
+    cmd: kubectl apply -f k8s/namespaces/mesh-apps.yaml
+  delegate_to: localhost
+  run_once: true
+  changed_when: "'created' in mesh_ns_result.stdout or 'configured' in mesh_ns_result.stdout"
+  register: mesh_ns_result
+
+# mTLS STRICT モード適用
+- name: mesh-apps Namespace に mTLS STRICT モードを適用する
+  ansible.builtin.command:
+    cmd: kubectl apply -f k8s/istio/peer-authentication.yaml
+  delegate_to: localhost
+  run_once: true
+  register: mtls_result
+  changed_when: "'created' in mtls_result.stdout or 'configured' in mtls_result.stdout"

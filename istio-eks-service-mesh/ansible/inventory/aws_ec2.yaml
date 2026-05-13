@@ -1,0 +1,17 @@
+# AWS EC2 ダイナミックインベントリ設定
+# EKSワーカーノードをタグで自動グルーピング
+plugin: amazon.aws.aws_ec2
+regions:
+  - ap-northeast-1
+filters:
+  tag:Project: istio-eks-service-mesh
+  instance-state-name: running
+keyed_groups:
+  - key: tags.role
+    prefix: role
+  - key: tags.env
+    prefix: env
+hostnames:
+  - private-ip-address  # プライベートIPで接続（VPC内からのみ）
+compose:
+  ansible_host: private_ip_address

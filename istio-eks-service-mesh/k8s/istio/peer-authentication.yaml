@@ -1,0 +1,11 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: mesh-apps
+  labels:
+    # mTLS STRICT: サービス間通信を全て相互TLS認証必須にする
+    # これにより平文通信を完全に排除する
+spec:
+  mtls:
+    mode: STRICT

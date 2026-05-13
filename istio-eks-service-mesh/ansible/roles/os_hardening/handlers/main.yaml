@@ -1,0 +1,10 @@
+---
+- name: sshd を再起動する
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
+
+- name: auditd を再起動する
+  ansible.builtin.service:
+    name: auditd
+    state: restarted
