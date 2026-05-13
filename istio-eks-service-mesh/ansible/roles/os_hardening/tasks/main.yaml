@@ -1,0 +1,162 @@
+---
+# CIS Amazon Linux 2023 Benchmark Level 1 準拠 OS ハードニング
+
+# セキュリティパッチを最新化する（CIS 1.9）
+- name: セキュリティパッチを含む全パッケージを更新する
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    security: true
+
+# CIS 2.x: 不要なサービスを停止・無効化する
+# EKSワーカーノードでは以下のサービスは不要
+- name: 不要なサービスを停止・無効化する
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - telnet
+    - rsh
+    - ypserv
+    - tftp
+  ignore_errors: true  # 存在しないサービスはスキップ
+
+# CIS 5.2: SSH サーバー設定のハードニング
+- name: SSH PermitRootLogin を無効化する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH パスワード認証を無効化する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH X11Forwarding を無効化する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?X11Forwarding'
+    line: 'X11Forwarding no'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH MaxAuthTries を設定する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?MaxAuthTries'
+    line: 'MaxAuthTries 4'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH ClientAliveInterval を設定する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?ClientAliveInterval'
+    line: 'ClientAliveInterval 300'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH ClientAliveCountMax を設定する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?ClientAliveCountMax'
+    line: 'ClientAliveCountMax 0'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+- name: SSH AllowTcpForwarding を無効化する
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?AllowTcpForwarding'
+    line: 'AllowTcpForwarding no'
+    validate: 'sshd -t -f %s'
+  notify: sshd を再起動する
+
+# CIS 3.x: カーネルパラメータのハードニング
+# Kubernetes 動作に必要なパラメータ（ip_forward等）は有効のまま
+- name: Kubernetesと互換性を保ちながらカーネルパラメータをハードニングする
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+  loop: "{{ sysctl_hardening | dict2items }}"
+
+# CIS 6.1: 重要なファイルのパーミッション設定
+- name: /etc/passwd のパーミッションを設定する
+  ansible.builtin.file:
+    path: /etc/passwd
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: /etc/shadow のパーミッションを設定する
+  ansible.builtin.file:
+    path: /etc/shadow
+    mode: '0000'
+    owner: root
+    group: root
+
+- name: /etc/group のパーミッションを設定する
+  ansible.builtin.file:
+    path: /etc/group
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: /etc/gshadow のパーミッションを設定する
+  ansible.builtin.file:
+    path: /etc/gshadow
+    mode: '0000'
+    owner: root
+    group: root
+
+- name: /etc/crontab のパーミッションを設定する
+  ansible.builtin.file:
+    path: /etc/crontab
+    mode: '0600'
+    owner: root
+    group: root
+
+# CIS 4.x: 監査ログの設定
+# Kubernetes API サーバーのアクセスを記録
+- name: auditd をインストールする
+  ansible.builtin.dnf:
+    name: audit
+    state: present
+
+- name: auditd 監査ルールファイルを配置する
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/hardening.rules
+    content: |
+      # アイデンティティ関連ファイルへの書き込みを監査する
+      -w /etc/passwd -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/sudoers -p wa -k scope
+      # 全プロセス実行を監査する（Kubernetes上の不審なコマンドを検知）
+      -a always,exit -F arch=b64 -S execve -k exec
+    mode: '0600'
+    owner: root
+    group: root
+  notify: auditd を再起動する
+
+- name: auditd を有効化・起動する
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+
+# CIS 5.4.4: デフォルト umask を 027 に設定
+- name: デフォルトumaskを027に設定する
+  ansible.builtin.lineinfile:
+    path: /etc/profile
+    regexp: '^umask'
+    line: 'umask 027'

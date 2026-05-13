@@ -1,0 +1,8 @@
+---
+# EKS ワーカーノードに CIS Level 1 OS ハードニングを適用する
+- name: EKS ワーカーノードの OS ハードニング
+  hosts: role_worker
+  become: true
+  gather_facts: true
+  roles:
+    - os_hardening

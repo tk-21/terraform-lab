@@ -1,0 +1,6 @@
+istio_version: "1.21.0"
+istio_install_dir: "/usr/local/bin"
+# Istio インストールプロファイル
+# defaultプロファイル: istiod + ingress gateway を含む標準構成
+istio_profile: "default"
+istio_namespace: "istio-system"

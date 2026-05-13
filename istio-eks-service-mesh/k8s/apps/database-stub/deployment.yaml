@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-stub-v1
+  namespace: mesh-apps
+  labels:
+    app: database-stub
+    version: v1
+    # 実際の DB の代わりに http-echo でスタブとして動作させる
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-stub
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: database-stub
+        version: v1
+    spec:
+      containers:
+        - name: database-stub
+          image: hashicorp/http-echo:latest
+          args:
+            - "-text=db-stub: query result"
+            - "-listen=:8080"
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5

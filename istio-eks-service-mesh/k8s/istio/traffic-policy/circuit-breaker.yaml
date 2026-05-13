@@ -1,0 +1,38 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend-circuit-breaker-test
+  namespace: mesh-apps
+  # サーキットブレーカー動作確認用（テスト設定）
+  # consecutive5xxErrors を 1 に設定することで 1 回のエラーで即座にトリップ確認できる
+  #
+  # テスト手順:
+  # 1. このファイルを apply する
+  #    kubectl apply -f circuit-breaker.yaml
+  #
+  # 2. fortio で負荷をかけて 5xx を発生させる
+  #    kubectl exec -it deploy/fortio -n mesh-apps -- fortio load \
+  #      -c 3 -qps 10 -n 50 http://frontend/
+  #
+  # 3. Kiali でサーキットブレーカーアイコンが表示されることを確認
+  #    open http://localhost:20001  # kubectl port-forward 後
+  #
+  # 4. 確認後は destination-rule.yaml の本番設定（consecutive5xxErrors: 3）に戻す
+  #    kubectl apply -f ../destination-rule.yaml
+spec:
+  host: frontend
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    outlierDetection:
+      consecutive5xxErrors: 1   # テスト用: 1回のエラーで即サーキットブレーク発動
+      interval: 10s              # 短い検出ウィンドウでテストを高速化
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+    - name: v2
+      labels:
+        version: v2

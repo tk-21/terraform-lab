@@ -1,0 +1,63 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend
+  namespace: mesh-apps
+spec:
+  host: frontend
+  trafficPolicy:
+    tls:
+      # PeerAuthentication の STRICT モードと連動して mTLS を強制する
+      mode: ISTIO_MUTUAL
+    outlierDetection:
+      consecutive5xxErrors: 3   # 3回連続5xxエラーでサーキットブレーク発動
+      interval: 30s              # 検出ウィンドウ（この期間内のエラーをカウント）
+      baseEjectionTime: 30s      # 最小除外時間（指数バックオフで延長される）
+      maxEjectionPercent: 50     # 最大除外割合（可用性確保のため上限を設ける）
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+    - name: v2
+      labels:
+        version: v2
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: backend
+  namespace: mesh-apps
+spec:
+  host: backend
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: database-stub
+  namespace: mesh-apps
+spec:
+  host: database-stub
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+    - name: v1
+      labels:
+        version: v1

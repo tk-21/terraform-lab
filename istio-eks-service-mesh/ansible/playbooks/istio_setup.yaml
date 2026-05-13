@@ -1,0 +1,8 @@
+---
+# Istio を EKS クラスタにインストールし mTLS を有効化する
+# 実際の操作はローカルから kubectl 経由で実施（delegate_to: localhost）
+- name: Istio セットアップと mTLS 有効化
+  hosts: role_worker
+  gather_facts: false
+  roles:
+    - istio_install

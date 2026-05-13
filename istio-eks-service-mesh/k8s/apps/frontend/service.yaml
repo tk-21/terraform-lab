@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: mesh-apps
+  labels:
+    app: frontend
+spec:
+  # v1/v2 両方を含む（バージョン選択は DestinationRule の subset で行う）
+  selector:
+    app: frontend
+  ports:
+    - name: http  # Istio はポート名でプロトコルを判定するため必須
+      port: 80
+      targetPort: 8080

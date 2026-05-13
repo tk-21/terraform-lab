@@ -1,0 +1,8 @@
+# CIS Amazon Linux 2023 Benchmark Level 1 デフォルト値
+# 各設定の CIS ベンチマーク番号をコメントで記載
+cis_enable_firewalld: false        # EKS環境ではiptables/ebpfを使用
+cis_disable_usb_storage: true      # CIS 1.1.10: USBストレージ無効化
+cis_set_umask: "027"               # CIS 5.4.4: デフォルトumask設定
+cis_password_max_days: 365
+cis_password_min_days: 7
+cis_password_warn_days: 7

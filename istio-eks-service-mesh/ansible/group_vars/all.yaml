@@ -1,0 +1,18 @@
+# 全ホスト共通変数
+ansible_user: ec2-user
+ansible_connection: aws_ssm  # Session Manager経由接続
+aws_region: "ap-northeast-1"
+
+# OS hardening パラメータ
+sysctl_hardening:
+  net.ipv4.ip_forward: 1                        # Kubernetes ルーティングに必要
+  net.bridge.bridge-nf-call-iptables: 1         # コンテナネットワーク要件
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.tcp_syncookies: 1
+  kernel.dmesg_restrict: 1
+  fs.suid_dumpable: 0
+
+# Istio バージョン
+istio_version: "1.21.0"
+istio_install_dir: "/usr/local/bin"

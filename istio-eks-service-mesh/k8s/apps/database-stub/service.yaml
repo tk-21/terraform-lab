@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-stub
+  namespace: mesh-apps
+  labels:
+    app: database-stub
+spec:
+  selector:
+    app: database-stub
+  ports:
+    # Istio は "http" プレフィックスのポート名で HTTP プロトコルとして扱う
+    # スタブ実装（http-echo）なので実際の DB ポート 5432 ではなく HTTP で公開する
+    - name: http
+      port: 80
+      targetPort: 8080
