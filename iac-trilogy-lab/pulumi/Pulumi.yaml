@@ -1,0 +1,11 @@
+name: itl-trilogy-lab
+description: iac-trilogy-lab Phase 3 — Pulumi (Python) 実装
+runtime:
+  name: python
+  options:
+    virtualenv: ../.venv
+main: .
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: aws-python
