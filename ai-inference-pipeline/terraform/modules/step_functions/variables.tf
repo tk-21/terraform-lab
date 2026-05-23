@@ -1,0 +1,9 @@
+variable "name_prefix" { type = string }
+variable "env" { type = string }
+variable "sfn_role_arn" { type = string }
+variable "ecs_cluster_arn" { type = string }
+variable "task_definition_arn" { type = string }
+variable "private_subnet_ids" { type = list(string) }
+variable "ecs_security_group_id" { type = string }
+variable "lambda_bedrock_arn" { type = string }
+variable "lambda_notify_arn" { type = string }

@@ -1,0 +1,9 @@
+variable "name_prefix" { type = string }
+variable "env" { type = string }
+variable "region" { type = string }
+variable "vpc_id" { type = string }
+variable "execution_role_arn" { type = string }
+variable "task_role_arn" { type = string }
+variable "ecr_repository_url" { type = string }
+variable "input_bucket_name" { type = string }
+variable "output_bucket_name" { type = string }
