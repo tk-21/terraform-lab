@@ -1,0 +1,65 @@
+<svg width="1440" height="560" viewBox="0 0 1440 560" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">ai-inference-pipeline architecture overview</title>
+  <desc id="desc">Simple architecture diagram showing S3, EventBridge, Step Functions, ECS Fargate, Lambda with Bedrock, DynamoDB, and Chatwork.</desc>
+  <defs>
+    <linearGradient id="bg" x1="80" y1="60" x2="1360" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1F33"/>
+      <stop offset="1" stop-color="#123551"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#67E8A5"/>
+      <stop offset="1" stop-color="#FBBF24"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="24" y="24" width="1392" height="512" rx="28" fill="url(#bg)"/>
+
+  <text x="72" y="92" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="36" font-weight="800">ai-inference-pipeline</text>
+  <text x="72" y="128" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="20">S3 に置いたファイルを、前処理 → AI 推論 → 保存 → 通知まで自動で流す構成</text>
+
+  <rect x="72" y="176" width="170" height="88" rx="20" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="157" y="214" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="24" font-weight="800">S3</text>
+  <text x="157" y="242" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">input/ に CSV 配置</text>
+
+  <rect x="312" y="176" width="170" height="88" rx="20" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="397" y="214" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="20" font-weight="800">EventBridge</text>
+  <text x="397" y="242" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">Object Created</text>
+
+  <rect x="552" y="176" width="210" height="88" rx="20" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="657" y="214" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="20" font-weight="800">Step Functions</text>
+  <text x="657" y="242" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">全体フローを制御</text>
+
+  <path d="M242 220H292" stroke="url(#line)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M482 220H532" stroke="url(#line)" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="292" cy="220" r="6" fill="#FBBF24"/>
+  <circle cx="532" cy="220" r="6" fill="#FBBF24"/>
+
+  <rect x="844" y="112" width="220" height="96" rx="22" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="954" y="150" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="22" font-weight="800">ECS Fargate</text>
+  <text x="954" y="178" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">Docker 前処理</text>
+
+  <rect x="844" y="240" width="220" height="96" rx="22" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="954" y="278" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="20" font-weight="800">Lambda + Bedrock</text>
+  <text x="954" y="306" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">Claude Haiku で推論</text>
+
+  <path d="M762 220H804C824 220 824 160 844 160" stroke="url(#line)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M762 220H804C824 220 824 288 844 288" stroke="url(#line)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="804" cy="220" r="6" fill="#FBBF24"/>
+
+  <rect x="1144" y="112" width="220" height="96" rx="22" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="1254" y="150" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="22" font-weight="800">DynamoDB</text>
+  <text x="1254" y="178" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">推論結果を保存</text>
+
+  <rect x="1144" y="240" width="220" height="96" rx="22" fill="#14324C" stroke="#2D6583" stroke-width="2"/>
+  <text x="1254" y="278" text-anchor="middle" fill="#F8FAFC" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="22" font-weight="800">Chatwork</text>
+  <text x="1254" y="306" text-anchor="middle" fill="#C9D9E8" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="16">結果を通知</text>
+
+  <path d="M1064 160H1124" stroke="url(#line)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M1064 288H1124" stroke="url(#line)" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="1124" cy="160" r="6" fill="#FBBF24"/>
+  <circle cx="1124" cy="288" r="6" fill="#FBBF24"/>
+
+  <rect x="72" y="390" width="1292" height="98" rx="22" fill="#102A42" stroke="#244E69" stroke-width="2"/>
+  <text x="108" y="432" fill="#8DECC4" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="18" font-weight="700">Flow</text>
+  <text x="108" y="464" fill="#E7F0F7" font-family="'Segoe UI', 'Hiragino Sans', sans-serif" font-size="22" font-weight="700">S3 アップロード → EventBridge トリガー → Step Functions 実行 → ECS 前処理 → Bedrock 推論 → DynamoDB 保存 / Chatwork 通知</text>
+</svg>
