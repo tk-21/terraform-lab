@@ -1,0 +1,47 @@
+version: 3
+
+# PR merge後もブランチを自動削除しない
+# 理由: ラボ環境では手動でブランチ管理を体験することが学習目的のため
+automerge: false
+delete_source_branch_on_merge: false
+
+# 並列実行を無効化する
+# 理由: 同一ワークスペースへの並列実行はTerraformステートファイルの競合（state lock競合）を引き起こす
+#       DynamoDB state lockで直列化されるが、並列実行するとロック待ちがタイムアウトする可能性がある
+parallel_plan: false
+parallel_apply: false
+
+projects:
+  - name: sample-infra-dev
+    dir: terraform/sample-infra
+    workspace: default
+    terraform_version: v1.6.0
+    autoplan:
+      when_modified:
+        - "*.tf"
+        - "*.tfvars"
+      enabled: true
+    apply_requirements:
+      # approved: PR に1名以上のApproveが付いていないとapplyできない
+      # → "誰でもatlantis applyできてしまう"問題を防ぐセーフガード
+      - approved
+      # mergeable: コンフリクトなし、かつブランチ保護の必須ステータスチェックが全て通過していること
+      # → CIが通っていないコードをapplyさせない。terraform fmtチェックなどのGitHub Actionsと連携して機能する
+      - mergeable
+    workflow: default
+
+workflows:
+  default:
+    plan:
+      steps:
+        # -upgrade: .terraform.lock.hclのプロバイダーバージョンを最新に追従させる
+        - init:
+            extra_args: ["-upgrade"]
+        # -compact-warnings: 警告メッセージを折りたたみ、PRコメントの可読性を向上させる
+        - plan:
+            extra_args: ["-compact-warnings"]
+    apply:
+      steps:
+        # -compact-warnings: applyコメントも同様に可読性を優先
+        - apply:
+            extra_args: ["-compact-warnings"]
