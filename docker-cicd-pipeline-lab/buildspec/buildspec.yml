@@ -1,0 +1,50 @@
+version: 0.2
+
+# CodeBuild 環境変数は CodeBuild Project で定義
+# REPOSITORY_URI, CONTAINER_NAME は自動注入される
+env:
+  variables:
+    REGION: ap-northeast-1
+
+phases:
+  pre_build:
+    commands:
+      - echo "=== ECR ログイン ==="
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+      - IMAGE_TAG=${COMMIT_HASH:-latest}
+      - echo "IMAGE_TAG=$IMAGE_TAG"
+
+  build:
+    commands:
+      - echo "=== Docker ビルド (arm64 向け) ==="
+      - docker buildx create --use --name mybuilder || true
+      - |
+        docker buildx build \
+          --platform linux/arm64 \
+          --build-arg IMAGE_TAG=$IMAGE_TAG \
+          -t $REPOSITORY_URI:$IMAGE_TAG \
+          -t $REPOSITORY_URI:latest \
+          ./app \
+          --push
+
+  post_build:
+    commands:
+      - echo "=== imagedefinitions.json 生成 ==="
+      # CodeDeploy (Blue/Green) 用のアーティファクト
+      - |
+        cat > imagedefinitions.json << EOF
+        [{"name":"${CONTAINER_NAME}","imageUri":"${REPOSITORY_URI}:${IMAGE_TAG}"}]
+        EOF
+      # imageDetail.json は Blue/Green デプロイ必須
+      - |
+        cat > imageDetail.json << EOF
+        {"ImageURI":"${REPOSITORY_URI}:${IMAGE_TAG}"}
+        EOF
+      - echo "=== ビルド完了: $IMAGE_TAG ==="
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - imageDetail.json
