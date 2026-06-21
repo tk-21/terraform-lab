@@ -1,0 +1,25 @@
+name: Terraform Lint
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Format Check
+        run: |
+          cd terraform/sample-infra
+          terraform fmt -check -recursive
+        # フォーマットエラーは apply を防ぐガードとして機能する
+        # atlantis.yaml の apply_requirements: mergeable と組み合わせることで、
+        # このCIチェックが通らないPRはAtlantisがapplyを拒否する仕組みになる

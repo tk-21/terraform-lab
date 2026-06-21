@@ -1,0 +1,114 @@
+name: Terraform Cloud PR Workflow
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/sample-infra/**'
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/sample-infra/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan (TFC)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # TF_API_TOKENをcli_config_credentials_tokenに渡すことで
+      # terraform initがTFCのリモートバックエンドに自動認証される
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Init
+        working-directory: terraform/sample-infra
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: terraform/sample-infra
+        run: terraform fmt -check
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: terraform/sample-infra
+        # TFCバックエンド使用時はリモートでplanが実行される
+        # -no-colorはPRコメントのmarkdown表示を崩さないために必須
+        run: terraform plan -no-color -input=false
+        continue-on-error: true
+
+      # AtlantisがPRコメントにplanを投稿するのと同等の体験をGitHub Actionsで再現する
+      - name: PR Comment with Plan Result
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const planStatus = '${{ steps.plan.outcome }}' === 'success'
+              ? '✅ Success'
+              : '❌ Failed';
+
+            const output = `### Terraform Plan Result 🔍
+
+            **Plan Status**: ${planStatus}
+
+            <details><summary>Show Plan Output</summary>
+
+            \`\`\`hcl
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *Workflow: \`${{ github.workflow }}\` | Run: \`${{ github.run_id }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Plan Status Check
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  terraform-apply:
+    name: Terraform Apply (TFC)
+    runs-on: ubuntu-latest
+    # mainへのmerge後にのみapplyを実行する
+    # AtlantisはPRマージ時のwebhookでapplyを自動トリガーするが、
+    # GitHub Actionsでは push to main イベントで同等の動作を実現する
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # GitHub Environmentの承認ゲートにより、applyには手動承認が必要
+    # Atlantisの apply_requirements: approved と設計思想は同じだが、
+    # TFCはUIでの承認、AtlantisはPRコメント（atlantis apply）で実行する点が異なる
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Init
+        working-directory: terraform/sample-infra
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: terraform/sample-infra
+        run: terraform apply -auto-approve -input=false
