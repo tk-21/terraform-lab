@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-worker
+  namespace: deepdive
+  labels:
+    app: job-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-worker
+  template:
+    metadata:
+      labels:
+        app: job-worker
+    spec:
+      serviceAccountName: job-worker
+      nodeSelector:
+        role: workload
+
+      # グレースフルシャットダウン（ECS の stopTimeout=30 相当だが長め）
+      # KEDA が 0 スケールする際や Karpenter がノードを退避させる際にも有効
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: worker
+          image: <ECR_WORKER_URL>:latest
+          env:
+            - name: AWS_REGION
+              value: ap-northeast-1
+            - name: SQS_QUEUE_URL
+              value: <SQS_QUEUE_URL>
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+# KEDA ScaledObject: SQS キュー深度でワーカーをスケール
+# ECS の CloudWatch Alarm + Step Scaling との最大の違い:
+#   1. minReplicaCount=0 でゼロスケール可能（ECS は min=1 が実質的な制約）
+#   2. KEDA が 15 秒おきにポーリング（CloudWatch Alarm の 60 秒より応答が早い）
+#   3. queueLength ベース: 1 レプリカあたりのメッセージ数で比例スケール
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: job-worker
+  namespace: deepdive
+spec:
+  scaleTargetRef:
+    name: job-worker
+
+  minReplicaCount: 0
+  # 0 の意味: キューが空なら Pod をゼロにしてリソースを解放する
+  # Karpenter はその後ノードも削除（consolidation）→ EC2 コスト ゼロ
+  maxReplicaCount: 10
+  pollingInterval: 15 # 秒ごとに SQS の深度を確認
+
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: keda-pod-identity
+      metadata:
+        queueURL: <SQS_QUEUE_URL>
+        queueLength: "5"
+        # 1 レプリカが担当するメッセージ数: 10 メッセージ → 2 レプリカ起動
+        awsRegion: ap-northeast-1
+        activationQueueLength: "1"
+        # 最初の 1 レプリカを起動する最小メッセージ数（0 から 1 への起動閾値）
+---
+# KEDA TriggerAuthentication: Pod Identity を KEDA に紐付け
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-pod-identity
+  namespace: deepdive
+spec:
+  podIdentity:
+    provider: aws
+    # KEDA が Pod Identity（deepdive-keda-role）を使って SQS にアクセス

@@ -1,0 +1,125 @@
+# API サーバー Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: deepdive
+  labels:
+    app: api-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      serviceAccountName: api-server
+
+      # Topology Spread: AZ に均等分散（ECS の spread(AZ) と同等だが明示的）
+      topologySpreadConstraints:
+        - maxSkew: 1 # AZ 間の Pod 数の偏り許容値
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          # DoNotSchedule: AZ が偏るならスケジュールを保留（厳格）
+          # ScheduleAnyway: 偏っても強行スケジュール（緩い）
+          labelSelector:
+            matchLabels:
+              app: api-server
+
+      # Karpenter の workload ノードに配置
+      nodeSelector:
+        role: workload
+
+      containers:
+        - name: api
+          image: <ECR_API_URL>:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: AWS_REGION
+              value: ap-northeast-1
+            - name: SQS_QUEUE_URL
+              value: <SQS_QUEUE_URL>
+
+          # resources は Karpenter のノードサイジングに直接影響する
+          # requests に基づいてノードのインスタンスタイプを決定する
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# PodDisruptionBudget: Karpenter の node consolidation 中も最低 1 Pod を維持
+# Karpenter は PDB を確認してから disruption を実行する
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-server-pdb
+  namespace: deepdive
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api-server
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+  namespace: deepdive
+spec:
+  selector:
+    app: api-server
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+# Ingress: AWS LBC が ALB を自動作成する
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-server
+  namespace: deepdive
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # Step 8 のデプロイスクリプトで実際のサブネット ID に置換される
+    alb.ingress.kubernetes.io/subnets: <PUBLIC_SUBNET_IDS>
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+spec:
+  # ingressClassName: kubernetes.io/ingress.class アノテーション（非推奨）の代替（K8s 1.19+）
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-server
+                port:
+                  number: 80
