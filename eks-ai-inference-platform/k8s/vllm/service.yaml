@@ -1,0 +1,46 @@
+# ClusterIP: Phase4のAI Gatewayがクラスター内から推論リクエストを送るための内部エンドポイント
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: ai-inference
+  labels:
+    app: vllm-server
+spec:
+  selector:
+    app: vllm-server
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+---
+# ALB Ingress: 動作確認・デバッグ用の外部公開エンドポイント (本番はGateway経由のみ)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm-ingress
+  namespace: ai-inference
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # モデルの入出力には機密プロンプトが含まれる可能性があるためHTTPS必須
+    # 証明書なしで動作確認する場合は下記をHTTP:80に変更してもよい
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    # ヘルスチェックのタイムアウト: vLLMの /health は軽量だが10sで余裕をもたせる
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "10"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm-service
+                port:
+                  number: 8000

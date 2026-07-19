@@ -1,0 +1,37 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: cpu-general
+spec:
+  template:
+    metadata:
+      labels:
+        node-role: cpu-general
+    spec:
+      nodeClassRef:
+        name: default
+      requirements:
+        # arm64/Graviton2を強制: x86比でコスト約20%削減かつ性能向上
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        # Spotを優先しコスト最適化、枯渇時のみon-demandにフォールバック
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        # Graviton3世代(c7g/m7g/r7g): 最新世代で最もコスト対性能比が高い
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["c7g", "m7g", "r7g"]
+        # 最小インスタンスサイズを制限: nanoとmicroはシステムリソース不足でPodが起動できないため
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro"]
+      taints: []
+  limits:
+    cpu: "100"
+    memory: 400Gi
+  disruption:
+    # 未使用リソースをすぐに回収してコストを最小化する
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30s

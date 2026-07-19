@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+  namespace: ai-inference
+  labels:
+    app: vllm-server
+    version: v1
+spec:
+  # replica 0 → 1 はKEDA(Phase5)が制御するため初期値は1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-server
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+      annotations:
+        # Phase3のOTEL CollectorがPrometheusスクレイプで収集するためのアノテーション
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: vllm-sa
+      tolerations:
+        # KarpenterのGPU NodePoolにはNVIDIA GPUのtaintが付くため明示的にtolerate
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        # NVIDIA GPU搭載ノード(g4dn系)のみにスケジュールするため
+        karpenter.k8s.aws/instance-gpu-manufacturer: "nvidia"
+      # Spot中断通知からノード終了まで約2分 + vLLM graceful shutdownの猶予を合計で設定
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: model-downloader
+          # S3からEBSキャッシュボリュームへモデル重みをDLするinitコンテナ
+          # キャッシュ済みなら即時終了してコールドスタート時間を短縮する
+          image: amazon/aws-cli:2.17.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              MODEL_DIR="/model-cache/${MODEL_NAME}"
+              if [ -d "${MODEL_DIR}" ] && [ "$(ls -A ${MODEL_DIR} 2>/dev/null)" ]; then
+                echo "キャッシュ確認済み: ${MODEL_DIR} - ダウンロードをスキップします"
+                exit 0
+              fi
+              echo "S3からモデル重みをダウンロード中: s3://${MODEL_BUCKET}/${MODEL_NAME}/"
+              mkdir -p "${MODEL_DIR}"
+              aws s3 sync "s3://${MODEL_BUCKET}/${MODEL_NAME}/" "${MODEL_DIR}/" \
+                --region ap-northeast-1 \
+                --no-progress
+              echo "ダウンロード完了"
+          env:
+            - name: MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: MODEL_NAME
+            - name: MODEL_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: MODEL_BUCKET
+          volumeMounts:
+            - name: model-cache
+              mountPath: /model-cache
+      containers:
+        - name: vllm
+          # vLLM公式イメージ: CUDA 12.x / T4(Volta) GPU対応
+          image: vllm/vllm-openai:v0.5.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+          args:
+            - --model=/model-cache/$(MODEL_NAME)
+            - --host=0.0.0.0
+            - --port=$(PORT)
+            - --max-model-len=$(MAX_MODEL_LEN)
+            - --tensor-parallel-size=$(TENSOR_PARALLEL_SIZE)
+            - --gpu-memory-utilization=$(GPU_MEMORY_UTILIZATION)
+            - --max-num-seqs=$(MAX_NUM_SEQS)
+            # Prometheusメトリクスを /metrics エンドポイントに公開 (Phase3 OTEL収集対象)
+            - --enable-metrics
+            # initContainerでDL済みのためオフラインモードで起動: 不要なHuggingFace通信を排除
+            - --no-download
+          envFrom:
+            - configMapRef:
+                name: vllm-config
+          resources:
+            requests:
+              # T4 GPU 16GB VRAM: Phi-3-mini fp16 は約4GBで動作
+              nvidia.com/gpu: "1"
+              memory: "8Gi"
+              cpu: "2"
+            limits:
+              nvidia.com/gpu: "1"
+              # OOM Killerを避けるためlimitsはrequestsより余裕を持たせる
+              memory: "14Gi"
+              cpu: "4"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            # モデルロードには最大2-3分かかるため十分な猶予を設定
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            # readinessより後に開始してモデルロード前に再起動されるのを防ぐ
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            failureThreshold: 5
+          volumeMounts:
+            - name: model-cache
+              mountPath: /model-cache
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        # vLLMのPagedAttentionはプロセス間でKVキャッシュブロックを共有するためshm拡大が必要
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi

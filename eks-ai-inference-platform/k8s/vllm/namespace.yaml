@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-inference
+  labels:
+    # Phase3のOTEL自動instrumentationスコープをネームスペース単位で制御するラベル
+    instrumentation: enabled

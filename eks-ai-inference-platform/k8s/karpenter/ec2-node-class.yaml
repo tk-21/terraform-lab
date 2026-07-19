@@ -1,0 +1,52 @@
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # Bottlerocket: 不要なパッケージが排除されたセキュリティ強化OS
+  # 攻撃対象領域が最小化されコンテナワークロードに最適化されている
+  amiFamily: Bottlerocket
+  # KarpenterがEC2インスタンスに付与するIAMロール
+  # aws-auth ConfigMapへの自動登録もこのロールを元に行われる
+  role: "eks-ai-inf-dev-karpenter-node"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "eks-ai-inf-dev"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "eks-ai-inf-dev"
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 50Gi
+        # gp3: gp2比で20%安価かつスループット・IOPSを個別設定可能
+        volumeType: gp3
+        encrypted: true
+---
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: gpu
+spec:
+  # AL2: NVIDIA GPU DriverがAL2向けEKS最適化AMIに同梱されているため
+  # Bottlerocketよりも安定してGPUドライバーが動作する
+  amiFamily: AL2
+  role: "eks-ai-inf-dev-karpenter-node"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "eks-ai-inf-dev"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "eks-ai-inf-dev"
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        # vLLMモデル重みキャッシュ用: Phi-3-miniで約2GB、将来の大型モデル移行を見越して100GB確保
+        volumeSize: 100Gi
+        volumeType: gp3
+        encrypted: true
+  userData: |
+    #!/bin/bash
+    # NVIDIA DriverはAL2 EKS最適化AMIに含まれるため追加インストール不要
+    # 起動時のGPU状態をログに残してトラブルシューティングを容易にする
+    nvidia-smi > /var/log/nvidia-smi-startup.log 2>&1 || true

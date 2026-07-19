@@ -1,0 +1,54 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-scaler
+  namespace: ai-inference
+spec:
+  scaleTargetRef:
+    name: vllm-server
+  # scale-to-zero: アイドル時はGPU Spot料金($0.16/h)の発生を完全に止める
+  # 次のリクエスト到着時はAI GatewayがBedrockへ自動フォールバックするため可用性は維持される
+  minReplicaCount: 0
+  maxReplicaCount: 3
+  # 15秒ごとにAMPメトリクスをポーリングしてスケール判断を行う
+  pollingInterval: 15
+  # スケールイン前に5分間 (300秒) トラフィックゼロを確認してから縮退する
+  # 短時間の静寂でGPUノードが返却されるコールドスタートフラッピングを防ぐ
+  cooldownPeriod: 300
+
+  triggers:
+    - type: prometheus
+      metadata:
+        # AMPエンドポイント: terraform output amp_query_url の値 (api/v1/query部分は除く)
+        # 例: https://aps-workspaces.ap-northeast-1.amazonaws.com/workspaces/WORKSPACE_ID
+        serverAddress: "https://aps-workspaces.ap-northeast-1.amazonaws.com/workspaces/WORKSPACE_ID"
+        # vLLMの内部キューにリクエストが積まれたらスケールアウトを開始する
+        # HPAのCPU/Memory起点と違い、推論待ち行列の実態を直接トリガーに使える
+        query: "sum(vllm_num_requests_waiting{namespace='ai-inference'})"
+        threshold: "1"
+        # 待機リクエストが0より多くなったらアクティブ化する (0=完全アイドル)
+        activationThreshold: "0"
+        authModes: "pod"
+      authenticationRef:
+        name: amp-trigger-auth
+        kind: ClusterTriggerAuthentication
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # 待機リクエスト検出後すぐにスケールアウトを開始する
+          # 安定化ウィンドウを0にすることでKEDAの判断を即時HPAに反映させる
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 30
+        scaleDown:
+          # スケールイン前に5分間安定したゼロ負荷を要求する
+          # コールドスタート (~5分) が頻発しないようフラッピングを防止する
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60

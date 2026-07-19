@@ -1,0 +1,396 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_AMP",
+      "label": "Amazon Managed Prometheus",
+      "description": "AMPデータソース: AMGコンソールでPrometheusデータソースとして設定する",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "piechart", "name": "Pie chart", "version": "" },
+    { "type": "panel", "id": "barchart", "name": "Bar chart", "version": "" }
+  ],
+  "uid": "eks-ai-inference-gpu",
+  "title": "EKS AI Inference Platform - GPU & Cost",
+  "description": "GPU Health / 推論パフォーマンス / コストルーティングを統合監視するダッシュボード",
+  "tags": ["gpu", "vllm", "inference", "karpenter", "bedrock"],
+  "timezone": "Asia/Tokyo",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Row 1: GPU Health",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "GPU使用率 (%)",
+      "description": "DCGM_FI_DEV_GPU_UTIL: GPU Streaming Multiprocessorの計算使用率",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": true },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "DCGM_FI_DEV_GPU_UTIL",
+          "legendFormat": "GPU {{gpu}} ({{instance}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "VRAM使用量 (GiB)",
+      "description": "DCGM_FI_DEV_FB_USED: g4dn.xlargeは16GiB。KVキャッシュが逼迫すると推論がキューイングされる",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "min": 0,
+          "max": 16,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 12 },
+              { "color": "red", "value": 14 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "DCGM_FI_DEV_FB_USED / 1024",
+          "legendFormat": "VRAM {{gpu}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "GPU温度 (℃)",
+      "description": "60℃超で警告: g4dn.xlargeのT4 GPUの推奨動作温度は83℃未満",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "orange", "value": 75 },
+              { "color": "red", "value": 83 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "DCGM_FI_DEV_GPU_TEMP",
+          "legendFormat": "Temp {{gpu}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "電力消費 (W)",
+      "description": "DCGM_FI_DEV_POWER_USAGE: T4 GPUの最大TDPは70W。コスト試算の実測値として使用",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "DCGM_FI_DEV_POWER_USAGE",
+          "legendFormat": "Power {{gpu}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Row 2: Inference Performance",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 1 }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "推論レイテンシ P50/P95/P99 (秒)",
+      "description": "histogram_quantile: Histogramバケットから任意パーセンタイルを算出する。P99はSLO設定の基準になる",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 10, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P99" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "histogram_quantile(0.50, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "histogram_quantile(0.95, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "histogram_quantile(0.99, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "スループット (tokens/sec)",
+      "description": "rate()で単位時間あたりの生成トークン数を算出する。GPU使用率との相関を見る",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 12, "y": 10, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(rate(inference_tokens_per_second_sum[5m]))",
+          "legendFormat": "tokens/sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "同時実行リクエスト数",
+      "description": "vllm_num_requests_running: この値が増加し始めたらKEDAのスケールアウトトリガーに近い",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 18, "y": 10, "w": 3, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 8 },
+              { "color": "red", "value": 16 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(vllm_num_requests_running)",
+          "legendFormat": "Running",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "gauge",
+      "title": "vLLM KVキャッシュ使用率 (%)",
+      "description": "vllm_gpu_cache_usage_perc: 100%に近づくと新規リクエストがキューに積まれる。MAX_NUM_SEQSのチューニング指標",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 18, "y": 14, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "vllm_gpu_cache_usage_perc",
+          "legendFormat": "KV Cache",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Row 3: Cost & Routing",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 1 }
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "累積コスト (USD)",
+      "description": "inference_cost_usd_sum: セッション開始からの累積推論コスト合計",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 19, "w": 4, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1.0 },
+              { "color": "red", "value": 5.0 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(inference_cost_usd_sum)",
+          "legendFormat": "Total Cost",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "piechart",
+      "title": "ルーティング内訳 (vLLM vs Bedrock)",
+      "description": "コスト認識ルーティングの実績: vLLM (Spot) vs Bedrock (Haiku) の比率を可視化する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 4, "y": 19, "w": 8, "h": 8 },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum by (backend) (inference_routing_total)",
+          "legendFormat": "{{backend}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "コスト/分 (USD/min)",
+      "description": "rate(inference_cost_usd_sum[5m]): リアルタイムのコスト消費レートを監視する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 12, "y": 19, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 5,
+          "custom": { "lineWidth": 2, "fillOpacity": 20 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(rate(inference_cost_usd_sum[5m])) * 60",
+          "legendFormat": "Cost/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "barchart",
+      "title": "1M tokens あたりコスト比較 (USD)",
+      "description": "vLLM: g4dn.xlarge Spot ~$0.16/h × 処理時間 / tokens。Bedrock Haiku: $0.25/1M input + $1.25/1M output",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 18, "y": 19, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "options": {
+        "xField": "backend",
+        "orientation": "horizontal",
+        "barWidth": 0.6,
+        "colorByField": "backend"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum by (backend) (rate(inference_cost_usd_sum[5m])) / sum by (backend) (rate(inference_tokens_per_second_sum[5m])) * 1000000",
+          "legendFormat": "{{backend}}",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-gateway
+  namespace: ai-inference
+  labels:
+    app: ai-gateway
+    version: v1
+spec:
+  # AI Gateway は stateless なため複数レプリカで可用性を確保する
+  # Spot 中断時に 1 台は必ず残るよう 2 台以上を維持する
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-gateway
+  template:
+    metadata:
+      labels:
+        app: ai-gateway
+      annotations:
+        # OTEL Collector が Prometheus スクレイプでカスタムメトリクスを収集するためのアノテーション
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: ai-gateway-sa
+      # AI Gateway は CPU バウンドなので GPU 不要
+      # Graviton2 (arm64) ノードに配置してコンピュートコストを削減する
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      containers:
+        - name: ai-gateway
+          # ECR イメージ: `terraform output ecr_repository_url` で確認後に差し替える
+          image: ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com/ai-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # vLLM の Service は ai-inference namespace 内で ClusterIP として稼働している
+            - name: VLLM_URL
+              value: "http://vllm-service.ai-inference.svc.cluster.local:8000"
+            # OTEL Collector は monitoring namespace で稼働している
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector.monitoring.svc.cluster.local:4317"
+            - name: BUDGET_SSM_KEY
+              value: "/ai-inference/hourly-budget-usd"
+            - name: AWS_DEFAULT_REGION
+              value: "ap-northeast-1"
+            - name: POWERTOOLS_SERVICE_NAME
+              value: "ai-gateway"
+            - name: POWERTOOLS_LOG_LEVEL
+              value: "INFO"
+            - name: AWS_LAMBDA_LOG_FORMAT
+              value: "JSON"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            # uvicorn 起動 + OTEL 初期化が完了するまで猶予を設ける
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+      # Spot 中断時にリクエスト処理中のコネクションを正常終了させる
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-gateway-service
+  namespace: ai-inference
+  labels:
+    app: ai-gateway
+spec:
+  selector:
+    app: ai-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+---
+# ALB Ingress: VPC 外からの推論リクエストのエントリポイント
+# ALB Controller は Phase 1 で EKS アドオンとしてインストール済みであること
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-gateway-ingress
+  namespace: ai-inference
+  annotations:
+    kubernetes.io/ingress.class: alb
+    # internet-facing: 外部クライアントからのアクセスを許可する
+    # internal に変更すれば VPC 内限定にできる
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    # HTTP/2 を有効化してレイテンシを削減する
+    alb.ingress.kubernetes.io/load-balancer-attributes: >-
+      routing.http2.enabled=true,idle_timeout.timeout_seconds=60
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-gateway-service
+                port:
+                  number: 80

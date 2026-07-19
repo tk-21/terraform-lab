@@ -1,0 +1,48 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: gpu-inference
+spec:
+  template:
+    metadata:
+      labels:
+        node-role: gpu-inference
+    spec:
+      nodeClassRef:
+        name: gpu
+      requirements:
+        # amd64のみ: NVIDIA GPU DriverはAL2のx86_64向けにビルドされているため
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        # Spotを最優先: 推論ワークロードはステートレスでSpot中断に耐性があるため
+        # g4dn.xlargeのSpot割引は約70%でコスト削減効果が大きい
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        # g4dn: T4 GPU(推論に最適化された16GB VRAM), g5: A10G(より高性能かつ新世代)
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["g4dn", "g5"]
+        # xlarge(1GPU)と2xlarge(1GPU+より多いRAM): 大型モデルには2xlargeが必要
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["xlarge", "2xlarge"]
+        # GPUノードであることを明示してNVIDIA Device Pluginが正しく認識できるようにする
+        - key: karpenter.k8s.aws/instance-gpu-manufacturer
+          operator: In
+          values: ["nvidia"]
+      # GPU使用Podがこのtaintをtolerateしない限りGPUノードにスケジュールされないようにする
+      # これにより誤ってCPUワークロードがGPUノードを占有するコスト浪費を防ぐ
+      taints:
+        - key: "nvidia.com/gpu"
+          value: "true"
+          effect: NoSchedule
+  limits:
+    # コスト上限: GPU上限4枚 = g4dn.xlarge最大4台相当
+    # 予期しないスケールアウトによるコスト暴走を防ぐ
+    "nvidia.com/gpu": "4"
+  disruption:
+    # 推論処理中はノードを削除しない: 処理中断によりユーザーへのエラーが発生するため
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 5m
