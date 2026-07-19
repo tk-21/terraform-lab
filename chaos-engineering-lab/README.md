@@ -9,6 +9,8 @@ CPU ストレスを EC2 に注入し、ASG が自動スケールアウトする�
 [![AWS FIS](https://img.shields.io/badge/AWS-FIS-orange)](https://aws.amazon.com/fis/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![chaos-engineering-lab README hero](docs/readme-hero.png)
+
 ---
 
 ## このハンズオンで得られること
