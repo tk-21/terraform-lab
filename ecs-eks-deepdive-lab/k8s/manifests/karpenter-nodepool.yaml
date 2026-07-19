@@ -1,0 +1,89 @@
+# EC2NodeClass: AWS リソースの設定（サブネット、AMI、ストレージ）
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: workload
+spec:
+  amiFamily: AL2
+
+  # EKS ノードが使う IAM Role（Instance Profile 経由）
+  role: deepdive-eks-node-role
+
+  subnetSelectorTerms:
+    - tags:
+        # Private Subnet のみ選択（ECS の private subnet タグと統一）
+        kubernetes.io/role/internal-elb: "1"
+
+  securityGroupSelectorTerms:
+    - tags:
+        # EKS が管理する SG を自動選択（手動管理不要）
+        aws:eks:cluster-name: deepdive-eks
+
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true # 全ディスク暗号化（セキュリティ要件）
+
+---
+# NodePool: Kubernetes レベルのスケジューリング設定
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: workload
+spec:
+  template:
+    metadata:
+      labels:
+        role: workload # nodeSelector で参照する
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: workload
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"] # Graviton2 統一（x86_64 より約 20% 安価）
+
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"] # Spot インスタンス優先でコスト削減
+
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            - c6g.medium
+            - c6g.large
+            - m6g.medium
+            - m6g.large
+            - r6g.medium
+          # 複数インスタンスタイプを指定する理由:
+          # 単一タイプだと Spot 枯渇時に起動できない
+          # 複数を許可することで Spot 可用性を最大化する
+
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["ap-northeast-1a", "ap-northeast-1c"]
+
+      # ノードの有効期限: 一定期間で強制的に新しいノードに入れ替え
+      # セキュリティパッチ適用とドリフト検出のために重要
+      expireAfter: 168h # 7 日
+
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    # WhenUnderutilized: 使用率が低い複数ノードを 1 台に統合してコスト削減
+    # WhenEmpty: Pod がいないノードのみ削除（より保守的。EKS クリティカル環境向け）
+    consolidateAfter: 30s
+
+    budgets:
+      - nodes: "20%"
+        # 同時に disruption できるノードは最大 20%
+        # PodDisruptionBudget と連携: PDB の minAvailable を守りながらノードを統合
+        # 例: 10 ノードのうち同時に退避できるのは 2 台
+
+  limits:
+    cpu: 20
+    memory: 40Gi
