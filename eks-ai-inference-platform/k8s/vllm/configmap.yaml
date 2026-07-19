@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vllm-config
+  namespace: ai-inference
+data:
+  MODEL_NAME: "microsoft/Phi-3-mini-4k-instruct"
+  MAX_MODEL_LEN: "4096"
+  # g4dn.xlarge はT4 GPU 1枚構成のため tensor-parallel-size は 1 固定
+  TENSOR_PARALLEL_SIZE: "1"
+  # PagedAttentionのKVキャッシュプールにGPU VRAMの90%を割り当てる
+  # 値を上げるほどバッチサイズが増えスループット向上するが、OOMリスクが上がる
+  GPU_MEMORY_UTILIZATION: "0.90"
+  # 連続バッチ処理での最大同時リクエスト数
+  # GPU_MEMORY_UTILIZATION と組み合わせてレイテンシとスループットのトレードオフを調整する
+  MAX_NUM_SEQS: "32"
+  PORT: "8000"
+  # MODEL_BUCKET は deployment.yaml の env で上書きする
+  MODEL_BUCKET: "REPLACE_WITH_BUCKET_NAME"

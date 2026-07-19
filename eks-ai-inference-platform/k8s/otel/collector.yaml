@@ -1,0 +1,210 @@
+# OTEL Collector: 3つのソースからメトリクスを収集してAMPに転送する
+#   1. vLLM /metrics  (推論パフォーマンスメトリクス)
+#   2. DCGM Exporter  (GPUフィジカルメトリクス)
+#   3. AI Gateway     (カスタムビジネスメトリクス: コスト/レイテンシ/ルーティング)
+#
+# DeploymentにしてDaemonSetにしない理由:
+#   メトリクス収集はノード単位でなくクラスター単位の集約処理のため
+#   スケールアウトするとメトリクスが重複してAMPに送信されてしまう
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            # vLLM 推論メトリクス: Podアノテーション経由でService Discovery
+            - job_name: 'vllm'
+              scrape_interval: 15s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names: ['ai-inference']
+              relabel_configs:
+                # prometheus.io/scrape: "true" のPodのみを対象にする
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  action: keep
+                  regex: 'true'
+                # アノテーションで指定されたポートにスクレイプ先を切り替える
+                - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                  action: replace
+                  target_label: __address__
+                  regex: (.+);(.+)
+                  replacement: $1:$2
+                # Podのラベルをメトリクスのラベルとして引き継ぐ
+                - action: labelmap
+                  regex: __meta_kubernetes_pod_label_(.+)
+                - source_labels: [__meta_kubernetes_namespace]
+                  action: replace
+                  target_label: kubernetes_namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  action: replace
+                  target_label: kubernetes_pod_name
+
+            # DCGM GPU メトリクス: monitoring namespaceのServiceを対象にする
+            - job_name: 'dcgm'
+              scrape_interval: 15s
+              kubernetes_sd_configs:
+                - role: service
+                  namespaces:
+                    names: ['monitoring']
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_label_app]
+                  action: keep
+                  regex: nvidia-dcgm-exporter
+                - source_labels: [__meta_kubernetes_service_name]
+                  action: replace
+                  target_label: service
+
+      # AI Gatewayからのプッシュ型OTELメトリクス受信
+      # GatewayはgRPC/HTTPでCollectorにデータを送信するため pull型のスクレイプは不要
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+
+    processors:
+      # OOMによるCollector再起動を防ぐためメモリ使用量に上限を設ける
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 512
+        spike_limit_mib: 128
+
+      # 全メトリクスにクラスター情報を付与することでAMPのメトリクスを複数クラスターで区別できる
+      # cluster_name は `terraform output cluster_name` で確認し、一致させること
+      resource:
+        attributes:
+          - key: cluster_name
+            value: "${CLUSTER_NAME}"
+            action: insert
+          - key: environment
+            value: "dev"
+            action: insert
+
+      # バッチ送信: 小さなリクエストをまとめてAMPへの接続コストを削減する
+      batch:
+        timeout: 10s
+        send_batch_size: 1000
+
+    exporters:
+      # AMP への remote_write
+      # SigV4認証はIRSAのWebIdentityトークンを使用するため認証情報のハードコードが不要
+      prometheusremotewrite:
+        endpoint: "${AMP_REMOTE_WRITE_URL}"
+        auth:
+          authenticator: sigv4auth
+
+      # デバッグ用: Collectorが受信したメトリクスをログに出力する
+      # 本番ではdebugレベルに変更するか削除すること
+      debug:
+        verbosity: basic
+
+    extensions:
+      # SigV4認証: IRSA経由でAMPへの署名付きリクエストを生成する
+      sigv4auth:
+        region: ap-northeast-1
+        service: aps
+      health_check:
+        endpoint: "0.0.0.0:13133"
+
+    service:
+      extensions: [sigv4auth, health_check]
+      pipelines:
+        metrics:
+          receivers: [prometheus, otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheusremotewrite]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  # レプリカ数は1: 複数にするとメトリクスが重複してAMPに書き込まれる
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: otel-collector-sa
+      # arm64ノード (Graviton) に配置してコストを最適化する
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.104.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            # ConfigMapのプレースホルダーをTerraform outputから取得した実際のURLで置換する
+            # デプロイ前に: kubectl create secret generic otel-amp-url --from-literal=url=<AMP_URL>
+            - name: AMP_REMOTE_WRITE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: otel-amp-config
+                  key: remote_write_url
+            # クラスター名: `terraform output cluster_name` の値を設定する
+            # OTELコレクター設定内の ${CLUSTER_NAME} プレースホルダーを置換するために使用する
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: otel-cluster-config
+                  key: cluster_name
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 4318
+              name: http
+            - containerPort: 13133
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 4318
+      targetPort: 4318

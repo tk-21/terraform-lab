@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    # Karpenterがこのnamespaceのワークロードをスケジュール対象とするためのラベル
+    app.kubernetes.io/managed-by: "terraform-lab"

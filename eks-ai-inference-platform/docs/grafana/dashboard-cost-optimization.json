@@ -1,0 +1,386 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_AMP",
+      "label": "Amazon Managed Prometheus",
+      "description": "AMPデータソース: AMGコンソールでPrometheusデータソースとして設定する",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" },
+    { "type": "panel", "id": "bargauge", "name": "Bar gauge", "version": "" }
+  ],
+  "uid": "eks-ai-inference-cost-opt",
+  "title": "EKS AI Inference Platform - コスト最適化",
+  "description": "scale-to-zero 節約効果 / vLLM vs Bedrock コスト比較 / GPU稼働時間分析",
+  "tags": ["cost", "keda", "scale-to-zero", "karpenter", "bedrock"],
+  "timezone": "Asia/Tokyo",
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Row 1: コスト概要",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "vLLM 累積コスト (USD)",
+      "description": "GPU Spot ($0.16/h) の稼働時間から算出した推定コスト",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(increase(inference_cost_usd{backend=\"vllm\"}[$__range]))",
+          "legendFormat": "vLLM累積コスト"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Bedrock 累積コスト (USD)",
+      "description": "Bedrock Claude Haiku ($0.25/1M tokens) の推定コスト",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 2 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(increase(inference_cost_usd{backend=\"bedrock\"}[$__range]))",
+          "legendFormat": "Bedrock累積コスト"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "scale-to-zero 節約時間 (h)",
+      "description": "vLLM replica=0 だった時間: GPU Spot課金が発生しなかった時間",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 4 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "(sum(increase(kube_deployment_spec_replicas{deployment=\"vllm-server\",namespace=\"ai-inference\"}[$__range] == bool 0)) * $__interval_ms / 1000 / 3600) or vector(0)",
+          "legendFormat": "scale-to-zero 時間"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "scale-to-zero 推定節約額 (USD)",
+      "description": "GPU Spot未稼働時間 × $0.16/h で算出した節約額",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "((sum(increase(kube_deployment_spec_replicas{deployment=\"vllm-server\",namespace=\"ai-inference\"}[$__range] == bool 0)) * $__interval_ms / 1000 / 3600) or vector(0)) * 0.16",
+          "legendFormat": "推定節約額"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Row 2: バックエンド別コスト時系列",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 7, "w": 24, "h": 1 }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "バックエンド別コスト比較 (USD/5min)",
+      "description": "vLLM (GPU Spot) と Bedrock (Claude Haiku) のコスト推移を並べて比較する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 5,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "vLLM (GPU Spot)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Bedrock (Claude Haiku)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(increase(inference_cost_usd{backend=\"vllm\"}[5m]))",
+          "legendFormat": "vLLM (GPU Spot)"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(increase(inference_cost_usd{backend=\"bedrock\"}[5m]))",
+          "legendFormat": "Bedrock (Claude Haiku)"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Row 3: トークン単価 & スケール状態",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "1Mトークンあたり実効コスト (USD)",
+      "description": "vLLMのGPU稼働コスト÷生成トークン数: Bedrockの定価($0.25/1M)と比較して優位性を確認する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": { "lineWidth": 2, "fillOpacity": 5 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Bedrock定価 ($0.25)" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "(sum(rate(inference_cost_usd{backend=\"vllm\"}[1h])) * 3600 * 1e6) / (sum(rate(vllm_prompt_tokens_total[1h])) + sum(rate(vllm_generation_tokens_total[1h])))",
+          "legendFormat": "vLLM実効コスト/1Mトークン"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "vector(0.25)",
+          "legendFormat": "Bedrock定価 ($0.25)"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "vLLM レプリカ数 (scale-to-zero 状態)",
+      "description": "0=GPU Spot未稼働(節約中) / 1以上=稼働中: KEDAによるscale-to-zeroの動作を確認する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "max": 4,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "opacity"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "blue", "value": 1 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "kube_deployment_spec_replicas{deployment=\"vllm-server\",namespace=\"ai-inference\"}",
+          "legendFormat": "vLLM replicas"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Row 4: リクエスト待ち行列 (KEDA トリガー確認)",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 1 }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "vLLM 待機リクエスト数 (KEDA スケールトリガー)",
+      "description": "vllm_num_requests_waiting > 0 でKEDAがスケールアウトをトリガーする: この値の推移でスケール動作を検証する",
+      "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+      "gridPos": { "x": 0, "y": 26, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "opacity"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(vllm_num_requests_waiting{namespace=\"ai-inference\"})",
+          "legendFormat": "待機リクエスト数"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_AMP}" },
+          "expr": "sum(vllm_num_requests_running{namespace=\"ai-inference\"})",
+          "legendFormat": "処理中リクエスト数"
+        }
+      ]
+    }
+  ]
+}

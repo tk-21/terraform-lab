@@ -1,0 +1,29 @@
+# gp3 StorageClass: gp2比でIOPS 3000→16000まで追加料金なし、スループット 125→1000MB/s
+# EBSはAZをまたげないため WaitForFirstConsumer でノードのAZに合わせてボリュームを作成する
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-encrypted
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+  # デフォルト(125MB/s)より高いスループットを設定: S3からのモデルDL速度を向上させるため
+  throughput: "250"
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-pvc
+  namespace: ai-inference
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3-encrypted
+  resources:
+    requests:
+      # Phi-3-mini ~2.2GB + 量子化版 + 推論中の作業領域を考慮して30GBを確保
+      # 将来的により大きなモデルに切り替える際はここを変更する
+      storage: 30Gi

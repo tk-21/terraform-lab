@@ -1,0 +1,24 @@
+---
+# KEDAがAMPにSigV4署名でアクセスするためのServiceAccount
+# IRSA経由でAMPクエリ権限を付与する (静的なアクセスキーは使用しない)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keda-amp-sa
+  namespace: keda
+  annotations:
+    # terraform output keda_amp_irsa_arn で取得した値を設定する
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/eks-ai-inf-dev-keda-amp-irsa"
+---
+# ClusterTriggerAuthentication: AMPへのSigV4認証を全Namespace共通で提供する
+# NamespaceレベルのTriggerAuthenticationではなくClusterスコープにする理由:
+# ai-inference namespace の ScaledObject から keda namespace の認証情報を参照するため
+apiVersion: keda.sh/v1alpha1
+kind: ClusterTriggerAuthentication
+metadata:
+  name: amp-trigger-auth
+spec:
+  podIdentity:
+    # EKS IRSA (WebIdentity) を使用してSigV4署名を実施する
+    # IAMアクセスキーをSecretに格納する方式は禁止 (セキュリティポリシー)
+    provider: aws-eks

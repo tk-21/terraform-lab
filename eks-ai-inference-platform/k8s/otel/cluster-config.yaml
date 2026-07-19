@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-cluster-config
+  namespace: monitoring
+data:
+  # `terraform output cluster_name` の値をデプロイ前にここに設定する
+  cluster_name: "eks-ai-inf-dev-cluster"
