@@ -1,0 +1,8 @@
+.venv/
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.tfvars
+# Lambda ビルド成果物（Terraform が生成するシークレット埋め込み済みファイル）
+**/.build/
