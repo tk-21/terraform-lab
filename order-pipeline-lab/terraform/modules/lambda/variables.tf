@@ -1,0 +1,10 @@
+variable "project" { type = string }
+variable "environment" { type = string }
+variable "common_tags" { type = map(string) }
+variable "dynamodb_table_name" { type = string }
+variable "dynamodb_table_arn" { type = string }
+variable "orders_queue_arn" { type = string }
+variable "orders_dlq_arn" { type = string }
+variable "private_subnet_ids" { type = list(string) }
+variable "vpc_endpoints_sg_id" { type = string }
+variable "vpc_id" { type = string }

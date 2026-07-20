@@ -1,0 +1,12 @@
+variable "project" { type = string }
+variable "environment" { type = string }
+variable "common_tags" { type = map(string) }
+variable "inventory_check_arn" { type = string }
+variable "notification_arn" { type = string }
+variable "ecs_cluster_arn" { type = string }
+variable "task_definition_arn" { type = string }
+variable "ecs_task_sg_id" { type = string }
+variable "private_subnet_ids" { type = list(string) }
+variable "dynamodb_table_name" { type = string }
+variable "dynamodb_table_arn" { type = string }
+variable "orders_queue_arn" { type = string }

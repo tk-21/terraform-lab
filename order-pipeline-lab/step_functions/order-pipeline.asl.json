@@ -1,0 +1,231 @@
+{
+  "Comment": "注文処理パイプライン - 障害耐性設計",
+  "StartAt": "Initialize",
+  "States": {
+
+    "Initialize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName.$": "$.dynamodb_table_name",
+        "Item": {
+          "order_id":   { "S.$": "$.order_id" },
+          "status":     { "S": "RECEIVED" },
+          "amount":     { "N.$": "States.Format('{}', $.amount)" },
+          "created_at": { "S.$": "$$.Execution.StartTime" }
+        }
+      },
+      "ResultPath": null,
+      "Next": "CheckInventory",
+      "Retry": [{
+        "ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleError",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "CheckInventory": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName.$": "$.inventory_check_arn",
+        "Payload": {
+          "order_id.$": "$.order_id",
+          "items.$":    "$.items"
+        }
+      },
+      "ResultSelector": {
+        "inventory_ok.$":   "$.Payload.inventory_ok",
+        "reserved_items.$": "$.Payload.reserved_items",
+        "reason.$":         "$.Payload.reason"
+      },
+      "ResultPath": "$.inventory_result",
+      "Next": "IsInventoryOk",
+      "Retry": [{
+        "ErrorEquals": [
+          "Lambda.ServiceException",
+          "Lambda.TooManyRequestsException",
+          "Lambda.SdkClientException"
+        ],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0,
+        "JitterStrategy": "FULL"
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleError",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "IsInventoryOk": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable":      "$.inventory_result.inventory_ok",
+        "BooleanEquals": true,
+        "Next":          "ProcessPayment"
+      }],
+      "Default": "NotifyFailure"
+    },
+
+    "ProcessPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster.$":  "$.ecs_cluster_arn",
+        "TaskDefinition.$": "$.task_definition_arn",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets.$":        "$.private_subnet_ids",
+            "SecurityGroups.$": "$.ecs_task_sg_ids",
+            "AssignPublicIp":   "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [{
+            "Name": "payment-processor",
+            "Environment": [
+              { "Name": "ORDER_ID",            "Value.$": "$.order_id" },
+              { "Name": "AMOUNT",              "Value.$": "States.Format('{}', $.amount)" },
+              { "Name": "RESERVED_ITEMS",      "Value.$": "States.JsonToString($.inventory_result.reserved_items)" },
+              { "Name": "DYNAMODB_TABLE_NAME", "Value.$": "$.dynamodb_table_name" }
+            ]
+          }]
+        },
+        "CapacityProviderStrategy": [
+          { "CapacityProvider": "FARGATE_SPOT", "Weight": 80 },
+          { "CapacityProvider": "FARGATE",      "Weight": 20 }
+        ]
+      },
+      "ResultPath": "$.payment_result",
+      "Next": "NotifySuccess",
+      "Retry": [{
+        "ErrorEquals": ["ECS.EcsException", "States.TaskFailed"],
+        "IntervalSeconds": 5,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0,
+        "Comment": "なぜ: 決済は冪等性を担保した上で最大3回リトライ。FARGATE_SPOT 中断も考慮"
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "CompensatePayment",
+        "ResultPath": "$.error",
+        "Comment": "なぜ: 決済失敗時は在庫予約を解放する補償処理へ"
+      }]
+    },
+
+    "CompensatePayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName.$": "$.notification_arn",
+        "Payload": {
+          "order_id.$": "$.order_id",
+          "status":     "FAILED",
+          "reason":     "決済処理に失敗しました。在庫の予約を解放します。"
+        }
+      },
+      "ResultPath": null,
+      "Next": "NotifyFailure",
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleError",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName.$": "$.notification_arn",
+        "Payload": {
+          "order_id.$": "$.order_id",
+          "status":     "COMPLETED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "OrderComplete",
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleError",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName.$": "$.notification_arn",
+        "Payload": {
+          "order_id.$": "$.order_id",
+          "status":     "FAILED",
+          "reason.$":   "$.inventory_result.reason"
+        }
+      },
+      "ResultPath": null,
+      "Next": "OrderFailed",
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleError",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "HandleError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName.$": "$.dynamodb_table_name",
+        "Key": {
+          "order_id": { "S.$": "$.order_id" }
+        },
+        "UpdateExpression": "SET #s = :status, error_detail = :err",
+        "ExpressionAttributeNames": { "#s": "status" },
+        "ExpressionAttributeValues": {
+          ":status": { "S": "ERROR" },
+          ":err":    { "S.$": "States.JsonToString($.error)" }
+        }
+      },
+      "ResultPath": null,
+      "Next": "OrderFailed"
+    },
+
+    "OrderComplete": {
+      "Type": "Succeed"
+    },
+
+    "OrderFailed": {
+      "Type": "Fail",
+      "Error": "OrderProcessingFailed",
+      "Cause": "注文処理が失敗しました。DynamoDB でステータスを確認してください。"
+    }
+  }
+}
