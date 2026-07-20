@@ -1,0 +1,9 @@
+.venv/
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+phase1_outputs.json
+phase2_outputs.json
+phase3_outputs.json
+phase2_image_uris.env
