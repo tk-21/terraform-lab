@@ -7,6 +7,15 @@
 # Addonsモジュール内でHelmとKubernetesリソースを管理するためのプロバイダー設定
 ################################################################################
 
+terraform {
+  required_providers {
+    htpasswd = {
+      source  = "loafoe/htpasswd"
+      version = "~> 1.0"
+    }
+  }
+}
+
 ################################################################################
 # AWS Load Balancer Controller
 #
@@ -99,8 +108,8 @@ resource "helm_release" "karpenter" {
       controller = {
         resources = {
           requests = {
-            cpu    = "1"
-            memory = "1Gi"
+            cpu    = "500m"
+            memory = "512Mi"
           }
           limits = {
             cpu    = "1"

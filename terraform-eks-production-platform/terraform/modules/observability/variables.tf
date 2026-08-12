@@ -41,3 +41,9 @@ variable "grafana_admin_user" {
   description = "Amazon Managed GrafanaのSSO管理者ユーザーのメールアドレス"
   type        = string
 }
+
+variable "grafana_admin_user_ids" {
+  description = "Amazon Managed GrafanaのADMINに関連付けるIAM Identity CenterユーザーIDのリスト。未指定時は関連付けを作成しない"
+  type        = list(string)
+  default     = []
+}

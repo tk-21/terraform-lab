@@ -18,7 +18,7 @@ aws_region   = "ap-northeast-1"
 eks_public_access_cidrs = ["YOUR_IP_ADDRESS/32"]
 
 # EKSバージョン
-eks_cluster_version = "1.29"
+eks_cluster_version = "1.31"
 
 # Node Groupのインスタンスタイプ。
 # Karpenterと併用するため初期ノードは最小限に抑える。

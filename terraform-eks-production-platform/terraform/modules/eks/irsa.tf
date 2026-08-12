@@ -7,7 +7,7 @@
 # 2. 用途ごとにIAMロールを作成
 # 3. Trust PolicyのConditionにKubernetes ServiceAccountを明示的に指定
 #    - StringEquals: "oidc.eks.region.amazonaws.com/id/XXXX:sub"
-#                 = "system:serviceaccounts:{namespace}:{serviceaccount-name}"
+#                 = "system:serviceaccount:{namespace}:{serviceaccount-name}"
 # 4. Kubernetes ServiceAccountのannotationsにIAMロールARNを設定
 #    （HelmのvaluesまたはKubernetesマニフェストで設定）
 #
@@ -44,7 +44,7 @@ resource "aws_iam_role" "karpenter" {
       Condition = {
         StringEquals = {
           # karpenter-system NamespaceのkarpenterサービスアカウントのみTrust
-          "${local.oidc_provider_url}:sub" = "system:serviceaccounts:karpenter:karpenter"
+          "${local.oidc_provider_url}:sub" = "system:serviceaccount:karpenter:karpenter"
           "${local.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }
@@ -178,7 +178,7 @@ resource "aws_sqs_queue_policy" "karpenter_interruption" {
 
 # EventBridgeルール: スポットインスタンス中断警告
 resource "aws_cloudwatch_event_rule" "karpenter_spot_interruption" {
-  name        = "${var.project_name}-${var.environment}-karpenter-spot-interruption"
+  name        = "${var.project_name}-${var.environment}-karpenter-spot"
   description = "Karpenter スポットインスタンス2分前中断通知"
 
   event_pattern = jsonencode({
@@ -197,7 +197,7 @@ resource "aws_cloudwatch_event_target" "karpenter_spot_interruption" {
 
 # EventBridgeルール: インスタンス状態変化（rebalance推奨等）
 resource "aws_cloudwatch_event_rule" "karpenter_rebalance" {
-  name        = "${var.project_name}-${var.environment}-karpenter-rebalance"
+  name        = "${var.project_name}-${var.environment}-karpenter-rebal"
   description = "Karpenter EC2インスタンスリバランス推奨通知"
 
   event_pattern = jsonencode({
@@ -216,7 +216,7 @@ resource "aws_cloudwatch_event_target" "karpenter_rebalance" {
 
 # EventBridgeルール: EC2インスタンス状態変化
 resource "aws_cloudwatch_event_rule" "karpenter_instance_state" {
-  name        = "${var.project_name}-${var.environment}-karpenter-instance-state"
+  name        = "${var.project_name}-${var.environment}-karpenter-state"
   description = "Karpenter EC2インスタンス状態変化通知"
 
   event_pattern = jsonencode({
@@ -254,7 +254,7 @@ resource "aws_iam_role" "lbc" {
       Condition = {
         StringEquals = {
           # kube-system NamespaceのLBC ServiceAccountのみTrust
-          "${local.oidc_provider_url}:sub" = "system:serviceaccounts:kube-system:aws-load-balancer-controller"
+          "${local.oidc_provider_url}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
           "${local.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }
@@ -402,7 +402,7 @@ resource "aws_iam_role" "argocd" {
       Condition = {
         StringEquals = {
           # argocd NamespaceのArgoCD server ServiceAccountのみTrust
-          "${local.oidc_provider_url}:sub" = "system:serviceaccounts:argocd:argocd-server"
+          "${local.oidc_provider_url}:sub" = "system:serviceaccount:argocd:argocd-server"
           "${local.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }
@@ -456,7 +456,7 @@ resource "aws_iam_role" "app" {
       Condition = {
         StringEquals = {
           # sample-app Namespaceの sample-app ServiceAccountのみTrust
-          "${local.oidc_provider_url}:sub" = "system:serviceaccounts:sample-app:sample-app"
+          "${local.oidc_provider_url}:sub" = "system:serviceaccount:sample-app:sample-app"
           "${local.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }

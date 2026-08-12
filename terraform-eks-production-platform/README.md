@@ -8,7 +8,7 @@ AWS 上に VPC を設計し、セキュアな EKS クラスターをゼロから
 ## このプロジェクトで作るもの
 
 - 3 層 VPC: `Public / Private / Isolated`
-- EKS 1.29 クラスター
+- EKS 1.31 クラスター
 - Managed Node Group + Karpenter
 - AWS Load Balancer Controller
 - ArgoCD による GitOps
@@ -35,7 +35,7 @@ AWS 上に VPC を設計し、セキュアな EKS クラスターをゼロから
 |---|---|
 | Terraform | `>= 1.7.0` |
 | AWS CLI | `>= 2.0` |
-| kubectl | `>= 1.29` |
+| kubectl | EKS クラスターのマイナーバージョンとの差が 1 以内 |
 | helm | `>= 3.14` |
 | git | 最新安定版推奨 |
 | python3 | venv 作成用 |
@@ -81,6 +81,51 @@ aws sts get-caller-identity
 9. `kubectl` 接続とシステム Pod を確認する
 10. ArgoCD / Karpenter / GitOps 動作を確認する
 11. 必要なら `terraform destroy` で後片付けする
+
+## このハンズオンの肝
+
+このハンズオンの目的は、Terraform で EKS を「作れる」ことではありません。AWS の
+マネージドサービスと Kubernetes の実行時コンポーネントが依存し合う環境を、設計意図を
+説明できる状態まで扱うことです。特に次の 5 点が重要です。
+
+1. **IaC のライフサイクルを完結させる**
+   - S3 / DynamoDB backend、`init`、`plan`、`apply`、`destroy` を一連で扱う
+   - state を持つ仕組みと、state を最後に削除する理由を理解する
+2. **EKS の Day 0 問題を切り分ける**
+   - Cluster が `ACTIVE` でも、LBC の webhook、Helm release、EKS add-on が直ちに Ready
+     とは限らない
+   - Pod、Event、Helm status、Controller log を見て、起動順・PVC・CPU 不足を切り分ける
+3. **IRSA で最小権限を実装する**
+   - Pod ごとに IAM Role を分離し、OIDC trust policy の `sub` を
+     `system:serviceaccount:<namespace>:<serviceaccount>` に限定する
+   - annotation、ServiceAccount、IAM trust policy の 3 点が揃って初めて機能する
+4. **固定キャパシティと自動スケールを分担する**
+   - Managed Node Group はコアコンポーネントを動かす土台、Karpenter は追加負荷への
+     弾力的なキャパシティとして使う
+   - NodePool / EC2NodeClass、discovery tag、NodeClaim を確認できるようにする
+5. **メトリクスの経路を自分で確認する**
+   - Prometheus が EKS を scrape し、AMP に Remote Write し、Grafana が AMP / CloudWatch
+     をデータソースとして可視化する流れを追う
+
+## やり切ったと言える到達基準
+
+次をすべて自分で確認・説明できれば、このハンズオンは完走です。
+
+- [ ] `terraform validate` と `terraform plan` が成功し、plan の作成対象を説明できる
+- [ ] `terraform apply` 後に、`kubectl get nodes` と `kubectl get pods -A` で基盤が Ready
+      であることを確認できる
+- [ ] LBC、Karpenter、Prometheus の失敗時に、`kubectl describe`、`kubectl logs`、
+      `helm status`、`kubectl get events` を使って原因を絞り込める
+- [ ] Karpenter の NodePool / EC2NodeClass を適用し、Pending Pod を契機に NodeClaim と
+      Karpenter ノードが増えることを確認できる
+- [ ] Grafana に IAM Identity Center でログインし、AMP をデータソースとして追加して、
+      PromQL を 1 つ実行できる
+- [ ] IRSA の trust policy の `sub` と Kubernetes ServiceAccount の対応を説明できる
+- [ ] `terraform plan -destroy` で削除対象を確認して環境を破棄できる。backend も削除する
+      場合は、S3 versioning の全世代を削除する必要があることを理解している
+
+「apply が成功した」だけでは途中です。障害を 1 つ以上自力で観測・切り分けし、
+監視画面でデータを確認し、削除まで完了して初めて一周したと言えます。
 
 ## 1. リポジトリを準備する
 
@@ -247,7 +292,7 @@ aws_region   = "ap-northeast-1"
 
 eks_public_access_cidrs = ["203.0.113.10/32"]
 
-eks_cluster_version       = "1.29"
+eks_cluster_version       = "1.31"
 node_group_instance_types = ["t3.medium", "t3.large"]
 
 karpenter_version = "0.35.0"
@@ -305,6 +350,8 @@ terraform init \
 - バケット名が作成したものと一致しているか
 - S3 バケットと DynamoDB テーブルが同じリージョンにあるか
 - AWS 認証が切れていないか
+- `htpasswd` を使う子モジュールにも `loafoe/htpasswd` の `required_providers` が定義されているか
+  - 子モジュール側の宣言がないと、Terraform は `hashicorp/htpasswd` を探して初期化に失敗する
 
 ## 9. Terraform フォーマットと検証を行う
 
@@ -363,6 +410,20 @@ apply が成功したら、次の値は後で使います。
 terraform output
 ```
 
+### 11.2 初回 apply の注意点
+
+EKS の作成直後は、AWS Load Balancer Controller (LBC) の webhook が Ready になる前に、
+Prometheus や CloudWatch add-on が Service を作成しようとして失敗することがあります。
+`aws-load-balancer-webhook-service` の endpoint がまだないというエラーは、この起動順の競合です。
+
+次を実行して LBC が `2/2` Ready になるのを確認してから、失敗した場合は同じ
+`terraform apply` を再実行してください。
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+kubectl get endpoints -n kube-system aws-load-balancer-webhook-service
+```
+
 ## 12. kubeconfig を更新する
 
 apply 完了後、まずローカルの `kubectl` をクラスターへ向けます。
@@ -406,6 +467,22 @@ kubectl get pods -n karpenter
 kubectl get nodepool
 kubectl get ec2nodeclass
 ```
+
+Helm チャートの導入だけでは NodePool は作成されません。次の別マニフェストを適用します。
+
+```bash
+cd /path/to/terraform-eks-production-platform
+kubectl apply -f kubernetes/karpenter/node-pool.yaml
+```
+
+`terraform/environments/prod` にいる場合は、パスを次のように指定します。
+
+```bash
+kubectl apply -f ../../../kubernetes/karpenter/node-pool.yaml
+```
+
+Karpenter v0.35 では `consolidationPolicy: WhenUnderutilized` と
+`consolidateAfter` を併用できません。NodePool の manifest では前者だけを指定します。
 
 ### 13.3 ArgoCD
 
@@ -506,7 +583,36 @@ terraform output grafana_workspace_endpoint
 terraform output amp_workspace_endpoint
 ```
 
-Grafana は AWS SSO 前提のため、ワークスペース作成後に組織側ユーザー関連付けも確認してください。
+Grafana は IAM Identity Center 前提です。Amazon Managed Grafana コンソールで
+ワークスペースの **Authentication** から、利用するユーザーまたはグループを割り当て、
+最初の利用者を Admin にしてください。メールアドレスだけでは権限を割り当てられず、
+IAM Identity Center のユーザー ID またはコンソール操作が必要です。
+
+ワークスペースを開いても最初はダッシュボードが空です。Terraform の `data_sources` は
+AMP と CloudWatch へアクセスする IAM 権限を準備しますが、AMP workspace 自体を Grafana の
+データソースとして自動追加するものではありません。
+
+Grafana の **Connections** から次を追加してください。
+
+1. **AWS Data Sources** → **Amazon Managed Service for Prometheus**
+2. Region に `ap-northeast-1` を選択し、この環境の AMP Workspace を選択
+3. 必要に応じて **CloudWatch** も追加
+
+Prometheus の動作は次で確認できます。
+
+```bash
+kubectl get pods -n monitoring
+```
+
+`prometheus-server` が Pending の場合は、イベントを確認します。
+
+```bash
+kubectl get events -n monitoring --sort-by=.lastTimestamp
+```
+
+本構成は AMP に Remote Write するため、Prometheus Server のローカル永続化は無効です。
+PVC が `no storage class is set` で Pending になった場合は、`server.persistentVolume.enabled=false`
+が Helm values に反映されているか確認してください。
 
 ## 18. よくある詰まりどころ
 
@@ -532,6 +638,35 @@ Grafana は AWS SSO 前提のため、ワークスペース作成後に組織側
 - `nodepool` / `ec2nodeclass` が存在するか
 - Karpenter controller Pod が正常か
 - Subnet / Security Group の discovery tag が一致しているか
+- Karpenter の IRSA trust policy の subject が
+  `system:serviceaccount:karpenter:karpenter` になっているか
+  - `serviceaccounts`（複数形）は誤りで、`sts:AssumeRoleWithWebIdentity` が 403 になります
+
+### Karpenter が CrashLoopBackOff になる
+
+まずログを確認します。
+
+```bash
+kubectl logs deployment/karpenter -n karpenter --all-containers --tail=100
+```
+
+`AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity` の場合は、
+Karpenter ServiceAccount の annotation と IRSA trust policy の namespace / service account 名、
+および subject の単数形 `serviceaccount` を確認してください。
+
+### Prometheus の Helm リリースが `context deadline exceeded` になる
+
+まず Pod とイベントを確認します。
+
+```bash
+helm status prometheus -n monitoring
+kubectl get pods,pvc -n monitoring
+kubectl get events -n monitoring --sort-by=.lastTimestamp
+```
+
+`Insufficient cpu` の場合、Managed Node Group の余力が足りません。Karpenter Controller を
+2 レプリカにする場合は、初期ノード上で動くシステム Pod の CPU 要求も考慮してください。
+本構成の Karpenter Controller の request は各 Pod `500m` に調整しています。
 
 ## 19. コストについて
 
@@ -548,30 +683,75 @@ NAT Gateway x2、EKS、AMG、AMP を含むため、月額コストは軽くあ�
 - Karpenter で起動する追加 EC2
 - AMG / AMP
 
+Amazon Managed Grafana (AMG) は有料です。90 日間・最大 5 ユーザーの無料トライアル後は、
+Editor / Admin が月額 $9、Viewer が月額 $5（いずれもアクティブユーザーごと）です。
+また、ログインがない月でもワークスペースごとに最低 1 Editor ライセンスが必要です。
+
 ## 20. 後片付け
 
 使い終わったら、課金を避けるために削除を検討してください。
 
-まず Kubernetes 側で残りやすいものを確認します。
+まず Terraform 管理外の Karpenter リソースを削除します。
 
 ```bash
-kubectl get app -n argocd
-kubectl get nodepool
+cd /path/to/terraform-eks-production-platform
+kubectl delete -f kubernetes/karpenter/node-pool.yaml
+kubectl get nodeclaims
 ```
 
-その後、Terraform 側の差分確認:
+次に `terraform/environments/prod` で Terraform 管理リソースを削除します。
 
 ```bash
-terraform plan -destroy
+terraform plan -destroy -out=destroy.tfplan
+terraform apply destroy.tfplan
 ```
 
-問題なければ削除:
+ArgoCD の `applications.argoproj.io` などの CRD が Helm の resource policy により残るという
+warning は、EKS クラスター自体を削除済みであれば追加対応不要です。
+
+### 20.1 backend の S3 / DynamoDB も削除する場合
+
+backend は Terraform の state を保持しているため、必ず上記の destroy が完了してから削除します。
+削除後は state と履歴を復元できず、次回は backend の作り直しと `terraform init` が必要です。
 
 ```bash
-terraform destroy
+export BACKEND_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-tfstate-${AWS_ACCOUNT_ID}"
+export LOCK_TABLE="${PROJECT_NAME}-${ENVIRONMENT}-tfstate-lock"
+
+aws dynamodb delete-table \
+  --table-name "$LOCK_TABLE" \
+  --region "$AWS_REGION"
 ```
 
-削除時の詳細な注意点は [`docs/cost-estimate.md`](/home/takuya/terraform-lab/terraform-eks-production-platform/docs/cost-estimate.md) の destroy 手順を参照してください。
+S3 bucket は versioning を有効にしているため、全バージョンと Delete Marker を消してから削除します。
+以下は `jq` を使用します。
+
+```bash
+while true; do
+  DELETE_PAYLOAD=$(aws s3api list-object-versions \
+    --bucket "$BACKEND_BUCKET" \
+    --output json | \
+    jq -c '{Objects: ([.Versions[]?, .DeleteMarkers[]?] | map({Key: .Key, VersionId: .VersionId})), Quiet: true}')
+
+  COUNT=$(printf '%s' "$DELETE_PAYLOAD" | jq '.Objects | length')
+  [ "$COUNT" -eq 0 ] && break
+
+  aws s3api delete-objects \
+    --bucket "$BACKEND_BUCKET" \
+    --delete "$DELETE_PAYLOAD"
+done
+
+aws s3api delete-bucket --bucket "$BACKEND_BUCKET"
+```
+
+削除確認:
+
+```bash
+aws s3api head-bucket --bucket "$BACKEND_BUCKET"
+aws dynamodb describe-table --table-name "$LOCK_TABLE" --region "$AWS_REGION"
+```
+
+どちらも存在しない旨のエラーになれば、backend も含めて削除完了です。
 
 ## 21. 参考ドキュメント
 

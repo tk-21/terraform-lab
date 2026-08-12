@@ -208,7 +208,8 @@ module "observability" {
   oidc_provider_arn = module.eks.oidc_provider_arn
   oidc_provider_url = module.eks.oidc_provider_url
 
-  grafana_admin_user = var.grafana_admin_user
+  grafana_admin_user     = var.grafana_admin_user
+  grafana_admin_user_ids = var.grafana_admin_user_ids
 
   depends_on = [module.eks]
 }

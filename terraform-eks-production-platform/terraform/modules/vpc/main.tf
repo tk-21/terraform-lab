@@ -234,11 +234,11 @@ resource "aws_route_table_association" "isolated" {
 # VPC CIDRに限定することでVPC外からのアクセスを防ぐ。
 resource "aws_security_group" "vpc_endpoint" {
   name        = "${var.project_name}-${var.environment}-sg-vpc-endpoint"
-  description = "VPC Endpoint (Interface type) 用セキュリティグループ。VPC内からのHTTPSのみ許可"
+  description = "Security group for Interface VPC endpoints"
   vpc_id      = aws_vpc.this.id
 
   ingress {
-    description = "VPC内からのHTTPSのみ許可（AWS API呼び出し）"
+    description = "Allow HTTPS from within the VPC"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -247,7 +247,7 @@ resource "aws_security_group" "vpc_endpoint" {
 
   # アウトバウンドは制限しない（AWSサービスへの応答が必要）
   egress {
-    description = "アウトバウンドは全許可"
+    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

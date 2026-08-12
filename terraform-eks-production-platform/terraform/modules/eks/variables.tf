@@ -36,9 +36,9 @@ variable "vpc_cidr_block" {
 # マイナーバージョンアップ時にコードを変更せず変数のみで対応できるようにする。
 # また、環境ごとに異なるバージョンを使用できる（本番は古いバージョンで安定稼働等）。
 variable "cluster_version" {
-  description = "EKS Kubernetesバージョン。マイナーバージョンまで指定（例: 1.29）"
+  description = "EKS Kubernetesバージョン。マイナーバージョンまで指定（例: 1.31）"
   type        = string
-  default     = "1.29"
+  default     = "1.31"
 }
 
 # public_access_cidrsを変数化する理由：

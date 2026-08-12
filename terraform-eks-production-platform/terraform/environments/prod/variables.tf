@@ -28,7 +28,7 @@ variable "eks_public_access_cidrs" {
 variable "eks_cluster_version" {
   description = "EKS Kubernetesバージョン"
   type        = string
-  default     = "1.29"
+  default     = "1.31"
 }
 
 variable "node_group_instance_types" {
@@ -52,4 +52,10 @@ variable "argocd_version" {
 variable "grafana_admin_user" {
   description = "Amazon Managed GrafanaのSSO管理者ユーザーのメールアドレス"
   type        = string
+}
+
+variable "grafana_admin_user_ids" {
+  description = "Amazon Managed GrafanaのADMINに関連付けるIAM Identity CenterユーザーIDのリスト"
+  type        = list(string)
+  default     = []
 }

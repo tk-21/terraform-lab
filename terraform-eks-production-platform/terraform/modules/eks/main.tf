@@ -64,7 +64,7 @@ resource "aws_iam_role_policy_attachment" "cluster_policy" {
 
 resource "aws_security_group" "cluster" {
   name        = "${var.project_name}-${var.environment}-sg-eks-cluster"
-  description = "EKSクラスターコントロールプレーン用セキュリティグループ"
+  description = "Security group for the EKS control plane"
   vpc_id      = var.vpc_id
 
   tags = merge(var.common_tags, {
@@ -74,14 +74,14 @@ resource "aws_security_group" "cluster" {
 
 resource "aws_security_group" "node" {
   name        = "${var.project_name}-${var.environment}-sg-eks-node"
-  description = "EKSノードグループ用セキュリティグループ"
+  description = "Security group for EKS worker nodes"
   vpc_id      = var.vpc_id
 
   # ノード間の全通信を許可する理由：
   # Kubernetes のPod間通信、kubelet、kube-proxyなど様々なプロトコルと
   # ポートを使用するため、ノード間は全許可が実用的。
   ingress {
-    description = "ノード間の全通信を許可（Pod間通信・kubelet等）"
+    description = "Allow all traffic between worker nodes"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -90,7 +90,7 @@ resource "aws_security_group" "node" {
 
   # APIサーバー（コントロールプレーン）からノードへのアクセスを許可
   ingress {
-    description     = "EKSコントロールプレーンからノードへのアクセス"
+    description     = "Allow control plane access to worker nodes"
     from_port       = 0
     to_port         = 0
     protocol        = "-1"
@@ -98,7 +98,7 @@ resource "aws_security_group" "node" {
   }
 
   egress {
-    description = "アウトバウンドは全許可（NAT経由でAWSサービスにアクセス）"
+    description = "Allow all outbound traffic to AWS services"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -115,7 +115,7 @@ resource "aws_security_group" "node" {
 # クラスターSGからノードSGへのインバウンドルール
 resource "aws_security_group_rule" "cluster_to_node" {
   type                     = "ingress"
-  description              = "ノードからEKS APIサーバーへの接続（kubelet, kubectl等）"
+  description              = "Allow worker node access to the EKS API server"
   from_port                = 443
   to_port                  = 443
   protocol                 = "tcp"
