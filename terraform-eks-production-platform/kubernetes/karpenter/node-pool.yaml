@@ -124,10 +124,6 @@ spec:
   # スケールダウン設定
   disruption:
     consolidationPolicy: WhenUnderutilized
-    # 30分間アイドルのノードを自動削除する理由:
-    # スポットインスタンスを使っていても、使用していないノードにコストが発生する。
-    # 30分は短すぎず長すぎないバランスの値。
-    consolidateAfter: 30m
 
     # ノードのTTL設定（オプション）
     # 長期間稼働したノードをローリングリプレイスすることでOS/AMIを最新に保つ

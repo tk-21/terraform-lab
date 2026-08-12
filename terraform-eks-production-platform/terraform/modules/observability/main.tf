@@ -30,7 +30,7 @@ resource "aws_iam_role" "container_insights" {
       Condition = {
         StringEquals = {
           # amazon-cloudwatch NamespaceのServiceAccountのみTrust
-          "${var.oidc_provider_url}:sub" = "system:serviceaccounts:amazon-cloudwatch:cloudwatch-agent"
+          "${var.oidc_provider_url}:sub" = "system:serviceaccount:amazon-cloudwatch:cloudwatch-agent"
           "${var.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }
@@ -81,7 +81,7 @@ resource "aws_prometheus_workspace" "this" {
 # Prometheus Remote Write用IRSAロール
 # EKS上のPrometheusがAMPにRemote Writeするための権限
 resource "aws_iam_role" "prometheus_remote_write" {
-  name = "${var.project_name}-${var.environment}-irsa-prometheus-remote-write"
+  name = "${var.project_name}-${var.environment}-irsa-prom-rw"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -94,7 +94,7 @@ resource "aws_iam_role" "prometheus_remote_write" {
       Condition = {
         StringEquals = {
           # monitoring NamespaceのPrometheus ServiceAccountのみTrust
-          "${var.oidc_provider_url}:sub" = "system:serviceaccounts:monitoring:prometheus-server"
+          "${var.oidc_provider_url}:sub" = "system:serviceaccount:monitoring:prometheus-server"
           "${var.oidc_provider_url}:aud" = "sts.amazonaws.com"
         }
       }
@@ -105,7 +105,7 @@ resource "aws_iam_role" "prometheus_remote_write" {
 }
 
 resource "aws_iam_role_policy" "prometheus_remote_write" {
-  name = "${var.project_name}-${var.environment}-policy-prometheus-remote-write"
+  name = "${var.project_name}-${var.environment}-policy-prom-rw"
   role = aws_iam_role.prometheus_remote_write.id
 
   policy = jsonencode({
@@ -165,6 +165,12 @@ resource "helm_release" "prometheus" {
 
         # 長期保存はAMPに任せるためローカル保存は短期間に設定してコスト削減
         retention = "2h"
+
+        # AMPへRemote Writeするため、ローカルTSDBの永続ボリュームは不要。
+        # EBS CSI DriverおよびStorageClassが未構成でもPodをスケジュールできるようにする。
+        persistentVolume = {
+          enabled = false
+        }
 
         resources = {
           requests = {
@@ -277,8 +283,8 @@ resource "aws_grafana_workspace" "this" {
   # 組織のSSO設定を流用してGrafanaへのアクセス権を一元管理できる。
   authentication_providers = ["AWS_SSO"]
 
-  # サポートするユーザー数（VIEWER/EDITOR/ADMIN）
-  permission_types = ["SERVICE_MANAGED"]
+  # Grafanaの権限をAWS側で管理する
+  permission_type = "SERVICE_MANAGED"
 
   # データソースを明示的に有効化する理由：
   # GrafanaワークスペースがそれぞれのサービスAPIを呼び出す権限の根拠になる
@@ -292,7 +298,9 @@ resource "aws_grafana_workspace" "this" {
 
 # Grafana管理者ユーザーをSSOで招待
 resource "aws_grafana_role_association" "admin" {
+  count = length(var.grafana_admin_user_ids) > 0 ? 1 : 0
+
   role         = "ADMIN"
-  user_ids     = []  # 実際のSSOユーザーIDを設定する（手動確認が必要）
+  user_ids     = var.grafana_admin_user_ids
   workspace_id = aws_grafana_workspace.this.id
 }
