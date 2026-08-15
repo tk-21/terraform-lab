@@ -10,7 +10,7 @@
 - **Terraformで再現性高く構築する力**
   - 手動作業に頼らず、インフラをコードで安全に管理する流れを学べる
 - **エンタープライズ設計の勘所**
-  - マルチテナント、WAF、OIDC、監視、予算管理まで含めた設計判断を追体験できる
+  - マルチテナント、API スロットリング、OIDC、監視、予算管理まで含めた設計判断を追体験できる
 - **個人環境でのコスト最適化の考え方**
   - 月額制約の中で、どこにコストをかけてどこを削るかの実践感覚が身につく
 
@@ -22,7 +22,7 @@
 
 - **本番さながらの設計を個人で体験**できる
   - マルチテナント（テナントごとのトークン上限管理）
-  - WAF付きAPI Gateway → LambdaルーターでモデルをHaiku/Sonnetに動的振り分け
+  - API Gateway HTTP API → Lambdaルーターで Bedrock モデルへ安全にリクエストを振り分け
   - RAG基盤（S3 + Aurora pgvector）でナレッジベース構築
   - X-Ray + CloudWatchで完全な可観測性
   - OIDC認証のCI/CD（アクセスキー不使用）
@@ -40,7 +40,7 @@
 |---------|---------|
 | IaC | Terraform >= 1.5.0 / AWS Provider ~> 5.0 |
 | クラウド | AWS ap-northeast-1 |
-| AI基盤 | Amazon Bedrock（Claude 3 Haiku / Sonnet） |
+| AI基盤 | Amazon Bedrock（Amazon Nova Lite、Titan Text Embeddings V2） |
 | 認証 | OIDC（アクセスキー禁止） |
 | CI/CD | GitHub Actions |
 | 言語 | Python 3.12（Lambda） |
@@ -55,13 +55,12 @@ graph TB
 
     subgraph AWS["AWS ap-northeast-1"]
         subgraph Gateway["API Entry Point"]
-            WAF["WAF v2\nOWASP Rules + Rate Limit"]
             APIGW["API Gateway HTTP v2\nPOST /chat"]
         end
 
         subgraph VPC["VPC (10.0.0.0/16)"]
             subgraph Private["Private Subnets (1a / 1c)"]
-                Router["Router Lambda\nHaiku / Sonnet 自動選択"]
+                Router["Router Lambda\nモデル選択"]
                 Cost["Cost Controller Lambda\nトークン上限監視"]
                 Action["Action Handler Lambda\ninfra-ops"]
             end
@@ -70,9 +69,8 @@ graph TB
 
         subgraph Bedrock["Amazon Bedrock"]
             GR["Guardrails\nPII匿名化 / コンテンツフィルタ"]
-            Haiku["Claude 3 Haiku\n軽量タスク"]
-            Sonnet["Claude 3.5 Sonnet\n複雑タスク"]
-            Agent["Bedrock Agent\ninfra-ops"]
+            NovaLight["Amazon Nova Lite\n軽量タスク"]
+            NovaComplex["Amazon Nova Lite\n複雑タスク（dev）"]
             KB["Knowledge Base\nRAG"]
         end
 
@@ -94,17 +92,14 @@ graph TB
 
     CICD["GitHub Actions\nOIDC + Terraform"]
 
-    Client --> WAF --> APIGW --> Router
+    Client --> APIGW --> Router
 
     Router -- "テナント確認 / 使用量記録" --> DDB
-    Router -- "短いPrompt" --> Haiku
-    Router -- "複雑なPrompt" --> Sonnet
-    GR -. "フィルタ適用" .-> Haiku & Sonnet
+    Router -- "短いPrompt" --> NovaLight
+    Router -- "複雑なPrompt" --> NovaComplex
+    GR -. "フィルタ適用" .-> NovaLight & NovaComplex
 
-    Router -- "Agent呼び出し" --> Agent
-    Agent --> KB
     KB --> Aurora & S3
-    Agent --> Action --> DDB
 
     EB --> Cost --> DDB
     Cost --> SNS
@@ -199,7 +194,7 @@ aws sts get-caller-identity
 | DynamoDB | Full |
 | S3 | Full |
 | API Gateway v2 | Full |
-| WAF v2 | Full |
+| WAF v2 | HTTP API を CloudFront / ALB の前段で保護する場合のみ |
 | CloudWatch | Full |
 | CloudTrail | Full |
 | SNS | Full |
@@ -222,8 +217,7 @@ aws sts get-caller-identity
 
 | モデル名 | 用途 |
 |---------|------|
-| Claude 3 Haiku | 軽量タスク用ルーター |
-| Claude 3.5 Sonnet v2 | 複雑タスク・Agentモデル |
+| Amazon Nova Lite | dev のルーターモデル（軽量・複雑タスク共通） |
 | Titan Text Embeddings V2 | Knowledge Base埋め込みモデル |
 
 > アクセス承認は通常即時〜数分で完了します。「Access status」が「Access granted」になったことを確認してから次のステップに進んでください。
@@ -308,9 +302,12 @@ project     = "bedrock-ai-platform-sandbox"
 environment = "dev"
 owner       = "your-name"   # ← ここを変更（GitHubユーザー名など）
 vpc_cidr    = "10.0.0.0/16"
+enable_bedrock_agent = false # Bedrock Agents Classic は新規アカウントで作成不可
 ```
 
 > `owner` は全リソースの `Owner` タグに使われます。設定しないと `terraform plan` 時にエラーになります。
+>
+> `enable_bedrock_agent` は Bedrock Agents Classic の作成可否です。新規アカウントでは [AWS のメンテナンスモード](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-classic-maintenance-mode.html)により作成できないため、dev の既定値は `false` です。将来は AgentCore への移行を想定しています。
 
 ---
 
@@ -350,8 +347,6 @@ aws_bedrockagent_knowledge_base.main
 aws_rds_cluster.aurora
 aws_lambda_function.router
 aws_apigatewayv2_api.main
-aws_wafv2_web_acl.main
-aws_bedrockagent_agent.infra_ops
 aws_cloudwatch_dashboard.main
 ...
 ```
@@ -384,9 +379,9 @@ Do you want to perform these actions?
 | セキュリティ基盤 | 〜1分 | IAM, Guardrail, CloudTrail |
 | Aurora 起動 | **5〜10分** | RDS Cluster, Instance |
 | pgvectorスキーマ初期化 | 〜2分 | terraform_data (RDS Data API) |
-| Lambda + API GW | 〜2分 | Lambda, API Gateway, WAF |
-| Bedrock Agent | 〜3分 | Agent, Action Group, KB Association |
-| 合計 | **約15〜20分** | |
+| Lambda + API GW | 〜2分 | Lambda, API Gateway |
+| Observability | 〜1分 | X-Ray, CloudWatch Dashboard, Alarms |
+| 合計 | **約12〜17分** | |
 
 > Aurora のみ起動が遅いです。`module.knowledge_base.aws_rds_cluster_instance.aurora` が完了するまで待ちます。
 
@@ -400,7 +395,6 @@ terraform output
 export CHAT_ENDPOINT=$(terraform output -raw chat_endpoint)
 export KB_ID=$(terraform output -raw knowledge_base_id)
 export KB_BUCKET=$(terraform output -raw kb_documents_bucket)
-export AGENT_ID=$(terraform output -raw bedrock_agent_id)
 export ROUTER_NAME=$(terraform output -raw router_lambda_name)
 export COST_LAMBDA=$(terraform output -raw cost_controller_lambda_name)
 export TENANT_TABLE=$(terraform output -raw tenant_table_name)
@@ -409,7 +403,6 @@ export DASHBOARD=$(terraform output -raw cloudwatch_dashboard_name)
 
 # 確認
 echo "Chat endpoint: $CHAT_ENDPOINT"
-echo "Agent ID: $AGENT_ID"
 echo "Dashboard: $DASHBOARD"
 ```
 
@@ -430,26 +423,28 @@ curl -s -X POST "$CHAT_ENDPOINT" \
 ```json
 {
   "response": "Hello! How can I assist you today?",
-  "model_used": "anthropic.claude-3-haiku-20240307-v1:0",
+  "model_used": "amazon.nova-lite-v1:0",
   "tenant_id": "default",
   "input_tokens": 10,
   "output_tokens": 15
 }
 ```
 
-#### 7-2. モデル自動選択の確認（Haiku → Sonnet ルーティング）
+#### 7-2. モデル自動選択の確認
 
-**シンプルなプロンプト → Haikuが選択される**:
+dev の既定値は、AWS Marketplace のサブスクリプションを必要としない `amazon.nova-lite-v1:0` です。複雑度判定のルーティング機構は維持していますが、dev では軽量・複雑タスクの両方に Nova Lite を使用します。
+
+**シンプルなプロンプト**:
 
 ```bash
 curl -s -X POST "$CHAT_ENDPOINT" \
   -H "Content-Type: application/json" \
   -d '{"tenant_id":"default","prompt":"今日の天気は？"}' | jq .model_used
 
-# 期待: "anthropic.claude-3-haiku-20240307-v1:0"
+# 期待: "amazon.nova-lite-v1:0"
 ```
 
-**複雑なプロンプト → Sonnetが選択される**:
+**複雑なプロンプト**:
 
 ```bash
 curl -s -X POST "$CHAT_ENDPOINT" \
@@ -457,18 +452,7 @@ curl -s -X POST "$CHAT_ENDPOINT" \
   -d '{"tenant_id":"default","prompt":"pgvector と OpenSearch Serverless のアーキテクチャ上のトレードオフを詳しく analyze して比較してください。"}' \
   | jq .model_used
 
-# 期待: "anthropic.claude-3-5-sonnet-20241022-v2:0"
-```
-
-**複雑キーワードのみでもSonnet選択**:
-
-```bash
-curl -s -X POST "$CHAT_ENDPOINT" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"default","prompt":"Terraformのベストプラクティスをexplainしてください"}' \
-  | jq .model_used
-
-# 期待: "anthropic.claude-3-5-sonnet-..." （"explain"がトリガー）
+# 期待: "amazon.nova-lite-v1:0"
 ```
 
 #### 7-3. テナント管理の確認
@@ -495,7 +479,7 @@ curl -s -X POST "$CHAT_ENDPOINT" \
   -H "x-tenant-id: tenant-premium" \
   -d '{"prompt":"Hello"}' | jq .model_used
 
-# 期待: Sonnet（tenant-premiumはpreferred_model=Sonnetで固定）
+# 期待: "amazon.nova-lite-v1:0"（tenant-premiumは Nova Lite で固定）
 ```
 
 **DynamoDBの使用量記録を確認**:
@@ -513,19 +497,7 @@ aws dynamodb get-item \
 # 期待: total_tokens, input_tokens, output_tokens が加算されている
 ```
 
-#### 7-4. WAFレートリミットの確認（任意）
-
-```bash
-# 短時間に大量リクエストを送信（1001リクエスト/5分超でブロックされることを確認）
-# ※ 実際には下記を繰り返すと WAF が 403 を返す
-for i in $(seq 1 5); do
-  curl -s -o /dev/null -w "%{http_code}\n" \
-    -X POST "$CHAT_ENDPOINT" \
-    -H "Content-Type: application/json" \
-    -d '{"prompt":"test"}'
-done
-# → 通常は 200 が返る（レートリミット超過時は 403）
-```
+> HTTP API は AWS WAF の直接関連付けに対応していません。WAF が必要な環境では CloudFront または ALB を API の前段に配置し、そのリソースに Web ACL を関連付けてください。
 
 ---
 
@@ -542,7 +514,7 @@ cat > /tmp/kb-docs/infra-overview.txt << 'EOF'
 
 このシステムはAWS Bedrockを使用したマルチテナントAI基盤です。
 VPC内のPrivate SubnetにLambdaを配置し、VPC Endpoint経由でBedrockにアクセスします。
-コスト最適化のため、シンプルなタスクにはClaude Haiku、複雑なタスクにはClaude Sonnetを使用します。
+dev では AWS Marketplace のモデルサブスクリプションを必要としない Amazon Nova Lite を使用します。
 EOF
 
 cat > /tmp/kb-docs/cost-guide.txt << 'EOF'
@@ -608,54 +580,11 @@ done
 
 ---
 
-### Step 9: Bedrock Agentの動作確認
+### Step 9: AgentCore 移行（将来対応）
 
-```bash
-# ── インフラ状態確認（Action Group: getInfrastructureStatus）──
+Bedrock Agents Classic は新規アカウントでは作成できないため、dev では無効化しています。Knowledge Base、Guardrail、Action Handler Lambda は作成済みで、AgentCore 対応リージョンに移行する際に再利用できます。
 
-aws bedrock-agent-runtime invoke-agent \
-  --agent-id $AGENT_ID \
-  --agent-alias-id TSTALIASID \
-  --session-id "test-session-$(date +%s)" \
-  --input-text "現在のインフラコンポーネントの稼働状況を教えてください" \
-  --region ap-northeast-1 \
-  --cli-binary-format raw-in-base64-out \
-  /tmp/agent_response.json
-
-cat /tmp/agent_response.json | jq .
-```
-
-```bash
-# ── コスト照会（Action Group: getCostSummary）──────────────────
-
-aws bedrock-agent-runtime invoke-agent \
-  --agent-id $AGENT_ID \
-  --agent-alias-id TSTALIASID \
-  --session-id "test-session-$(date +%s)" \
-  --input-text "今月の各テナントのトークン使用量と推定コストを集計してください" \
-  --region ap-northeast-1 \
-  --cli-binary-format raw-in-base64-out \
-  /tmp/agent_response.json
-
-cat /tmp/agent_response.json | jq .
-```
-
-```bash
-# ── RAGクエリ（Knowledge Base検索）──────────────────────────────
-# （Step 8の同期完了後に実行）
-
-aws bedrock-agent-runtime invoke-agent \
-  --agent-id $AGENT_ID \
-  --agent-alias-id TSTALIASID \
-  --session-id "test-session-$(date +%s)" \
-  --input-text "このシステムのコスト管理方針を教えてください" \
-  --region ap-northeast-1 \
-  --cli-binary-format raw-in-base64-out \
-  /tmp/agent_response.json
-
-# Knowledge Baseからの引用が含まれた回答が返ることを確認
-cat /tmp/agent_response.json | jq .
-```
+> AgentCore の構築はリージョン・接続方式を含む追加設計が必要です。`bedrock-agent-runtime invoke-agent` は Classic Agent が有効な既存アカウントでのみ実行してください。
 
 ---
 
@@ -740,6 +669,13 @@ curl -s -X POST "$CHAT_ENDPOINT" \
 
 ### Step 13: GitHub Actions CI/CD セットアップ（オプション）
 
+ここまでの手順では `environments/dev` に移動しています。CI/CD 用のファイル操作は、先にプロジェクトルートへ戻ってから行います。
+
+```bash
+cd ../..
+test -f README.md && pwd
+```
+
 #### 13-1. GitHub OIDC Providerの作成
 
 ```bash
@@ -809,12 +745,15 @@ GitHubリポジトリの `Settings → Secrets and variables → Actions` で以
 #### 13-4. CI/CDの動作確認
 
 ```bash
-# テスト用ブランチを作成してPRを作成
+# この時点でプロジェクトルートにいることを確認
+test -f README.md
+
+# テスト用ブランチを作成して PR を作成
 git checkout -b test/cicd-check
 echo "# CI/CD Test $(date)" >> README.md
 git add README.md
 git commit -m "test: GitHub Actions CI/CD動作確認"
-git push origin test/cicd-check
+git push -u origin test/cicd-check
 # → GitHubでPRを作成するとterraform planの結果がPRコメントとして自動投稿される
 ```
 
@@ -869,13 +808,12 @@ aws dynamodb delete-table \
 
 - [ ] `terraform validate` が通る
 - [ ] `terraform apply` が完走する（Aurora初期化含む）
-- [ ] `/chat` エンドポイントが **短いプロンプト** で Haiku を選択する
-- [ ] `/chat` エンドポイントが **複雑なプロンプト / 複雑キーワード** で Sonnet を選択する
+- [ ] `/chat` エンドポイントが短いプロンプトで `amazon.nova-lite-v1:0` を返す
+- [ ] `/chat` エンドポイントが複雑なプロンプトでも正常に応答する
 - [ ] **存在しないテナント**へのリクエストが 404 を返す
 - [ ] DynamoDBの使用量テーブルにトークン数が **累積加算**されている
 - [ ] Knowledge Base 同期ジョブが `COMPLETE` になる
-- [ ] Bedrock Agent が Knowledge Base を参照して日本語で回答する
-- [ ] Bedrock Agent の Action Group（`getCostSummary` 等）が応答する
+- [ ] AgentCore 移行時に Knowledge Base と Action Handler Lambda の接続を検証する
 - [ ] Cost Controller Lambda がエラーなく完了する
 - [ ] CloudWatch ダッシュボードにメトリクスが表示されている
 - [ ] Alarm Status が全て OK（緑）
@@ -943,23 +881,11 @@ aws logs tail "/aws/lambda/${ROUTER_NAME}" \
 
 ---
 
-### Bedrock Agentが応答しない
+### Bedrock Agent の作成が AccessDeniedException で失敗する
 
-**原因**: Agentの `PREPARE` が未完了の可能性。
+**原因**: Bedrock Agents Classic はメンテナンスモードです。過去12か月に利用実績がないアカウントでは新規 Agent を作成できません。
 
-```bash
-# Agentのステータス確認
-aws bedrock-agent get-agent \
-  --agent-id $AGENT_ID \
-  --region ap-northeast-1 \
-  --query "agent.agentStatus" \
-  | jq .
-
-# NOT_PREPARED の場合は再準備
-aws bedrock-agent prepare-agent \
-  --agent-id $AGENT_ID \
-  --region ap-northeast-1
-```
+**解決策**: dev では `enable_bedrock_agent = false` を維持してデプロイし、将来は Amazon Bedrock AgentCore へ移行してください。既存の Classic Agent を持つ allowlisted アカウントでのみ `true` に設定できます。
 
 ---
 
@@ -1022,8 +948,8 @@ bedrock-ai-platform-sandbox/
     ├── router-lambda/               ← インテリジェントルーター               [Week3 ✅]
     ├── multi-tenant/                ← テナント管理（DynamoDB）               [Week3 ✅]
     ├── cost-controller/             ← トークン上限制御・アラート             [Week4 ✅]
-    ├── api-gateway/                 ← WAF付きAPI Gateway                     [Week4 ✅]
-    ├── bedrock-agent/               ← Agentリソース・Action Groups           [Week5 ✅]
+    ├── api-gateway/                 ← HTTP API・スロットリング               [Week4 ✅]
+    ├── bedrock-agent/               ← Action Handler Lambda・Classic Agentは任意 [Week5 ✅]
     └── observability/               ← X-Ray・CloudWatch・コストアラート      [Week6 ✅]
 ```
 
@@ -1082,7 +1008,7 @@ RAG（Retrieval-Augmented Generation）基盤。S3に格納したドキュメン
 | リソース | 内容 |
 |---------|------|
 | `aws_s3_bucket` documents | ドキュメント格納、SSE-KMS暗号化、90日→IA移行 |
-| `aws_rds_cluster` | Aurora PostgreSQL 16.4 Serverless v2、RDS Data API有効 |
+| `aws_rds_cluster` | Aurora PostgreSQL 16.14 Serverless v2、RDS Data API有効 |
 | `aws_rds_cluster_instance` | `db.serverless`、min 0.5 ACU / max 4.0 ACU |
 | `terraform_data` aurora_init | pgvector スキーマを RDS Data API 経由で自動初期化 |
 | `aws_bedrockagent_knowledge_base` | Aurora pgvector ストレージ、Titan Embeddings V2 使用 |
@@ -1101,7 +1027,11 @@ CREATE TABLE IF NOT EXISTS bedrock_integration.bedrock_kb (
 );
 CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx
   ON bedrock_integration.bedrock_kb
-  USING hnsw (embedding vector_cosine_ops);  -- 近似最近傍検索
+USING hnsw (embedding vector_cosine_ops);  -- 近似最近傍検索
+
+CREATE INDEX IF NOT EXISTS bedrock_kb_chunks_fts_idx
+  ON bedrock_integration.bedrock_kb
+USING gin (to_tsvector('simple', chunks)); -- Bedrock KB の必須全文検索インデックス
 ```
 
 ---
@@ -1120,7 +1050,7 @@ CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx
 | tenant_id | tier | daily | monthly |
 |-----------|------|-------|---------|
 | default | standard | 100,000 | 2,000,000 |
-| tenant-premium | premium（Sonnet固定） | 500,000 | 10,000,000 |
+| tenant-premium | premium（Nova Lite固定） | 500,000 | 10,000,000 |
 
 #### module: router-lambda
 
@@ -1134,10 +1064,12 @@ CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx
     ├─▶ 上限超過 → 429 Too Many Requests
     ▼
 複雑度判定
-    ├─▶ prompt > 1000文字 → Sonnet
-    ├─▶ 複雑系キーワード検出 → Sonnet
-    └─▶ それ以外 → Haiku（コスト最適化）
+    ├─▶ prompt > 1000文字 → 複雑タスク用モデル
+    ├─▶ 複雑系キーワード検出 → 複雑タスク用モデル
+    └─▶ それ以外 → 軽量タスク用モデル
 ```
+
+> dev の既定値では両方に Amazon Nova Lite を設定しています。推論プロファイル対応モデルを利用する環境では、入力変数で軽量・複雑タスク用モデルを別々に指定できます。
 
 複雑系キーワード: `analyze / compare / explain / implement / design / architect / debug / optimize / refactor / summarize / translate / evaluate / review / generate code / write code / create a / step-by-step`
 
@@ -1157,21 +1089,23 @@ CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx
 
 | リソース | 内容 |
 |---------|------|
-| `aws_wafv2_web_acl` | OWASP 共通ルール + 既知悪意パターン + IP レートリミット（5分間/IP 1000件） |
 | `aws_apigatewayv2_api` | HTTP API、CORS設定（`x-tenant-id` ヘッダー許可） |
 | `aws_apigatewayv2_stage` | スロットリング（burst 100 / rate 50）、アクセスログ有効 |
+
+> HTTP API は AWS WAF の直接関連付けに非対応です。WAF が必要な環境では CloudFront または ALB を API の前段に配置し、そのリソースに Web ACL を関連付けます。
 
 ---
 
 ### Week5: bedrock-agent
 
+> Bedrock Agents Classic は dev では無効です。新規アカウントでは作成できないため、AgentCore 移行用に Action Handler Lambda のみを維持します。
+
 | リソース | 内容 |
 |---------|------|
-| `aws_bedrockagent_agent` | Claude Sonnet 3.5 v2、Guardrail設定済み、セッションTTL 600s |
-| `aws_bedrockagent_agent_action_group` infra-ops | OpenAPI スキーマ定義 |
-| `aws_bedrockagent_agent_knowledge_base_association` | Knowledge Base との紐付け（ENABLED） |
+| `aws_lambda_function` action handler | AgentCore 移行時に再利用する infra-ops 実行基盤 |
+| `aws_bedrockagent_agent` ほか | `enable_bedrock_agent = true` の場合のみ作成（allowlisted アカウント向け） |
 
-**Action Group: infra-ops のオペレーション**
+**Classic Agent 有効時の Action Group: infra-ops のオペレーション**
 
 | オペレーション | メソッド | パス | 説明 |
 |------------|--------|-----|------|
@@ -1240,16 +1174,15 @@ CostCenter  = "personal"
 | Aurora ストレージ | 10GB 想定（$0.11/GB-月） | ~$1 |
 | S3（ドキュメント + CloudTrail） | 90日→IA移行 | ~$0.5 |
 | CloudTrail | 管理イベント 1 trail 無料枠内 | $0 |
-| Bedrock API | Titan Embeddings + Claude Haiku/Sonnet（使用量従量） | ~$3–8 |
+| Bedrock API | Titan Embeddings + Amazon Nova Lite（使用量従量） | ~$3–8 |
 | DynamoDB | PAY_PER_REQUEST | ~$0.1 |
 | Lambda × 3 | 512MB以下 | ~$0 |
-| WAF v2 | WebACL $5/月 + ルール $1/月 × 3 | ~$8 |
 | API Gateway HTTP API | $1/100万リクエスト | ~$0.1 |
 | CloudWatch | Dashboard $3/月、Alarms $0.10 × 3 | ~$3.3 |
 | AWS Budgets | 最初の 2 budgets は無料 | $0 |
-| **合計** | | **~$36–44** |
+| **合計** | | **~$28–36** |
 
-> Interface VPC Endpoint と WAF がコストの主因です。  
+> Interface VPC Endpoint がコストの主因です。
 > 検証目的なら使用後すぐに `terraform destroy` することで$5以下に抑えられます。
 
 ---
@@ -1267,7 +1200,6 @@ CostCenter  = "personal"
 - [x] DynamoDB SSE + PITR 有効
 - [x] Lambda IAM ポリシー：DynamoDB / Bedrock はARN指定のみ
 - [x] GitHub Actions OIDC認証（アクセスキー不使用）
-- [x] WAF v2（OWASP共通ルール・既知悪意パターン・IPレートリミット）
 - [x] API Gateway スロットリング（burst 100 / rate 50 rps）
 
 ---
@@ -1284,3 +1216,4 @@ CostCenter  = "personal"
 | 6 | observability | ✅ 完了 |
 | 7 | GitHub Actions CI/CD | ✅ 完了 |
 | 8 | 統合テスト + Zenn記事化 | 進行中 |
+# CI/CD Test Sat Aug 15 15:38:48 JST 2026
