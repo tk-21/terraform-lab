@@ -8,6 +8,12 @@ variable "environment" {
   type        = string
 }
 
+variable "enable_bedrock_agent" {
+  description = "Whether to create Bedrock Agents Classic resources. The action-handler Lambda remains available for a future AgentCore migration."
+  type        = bool
+  default     = false
+}
+
 variable "knowledge_base_id" {
   description = "Bedrock Knowledge Base ID to associate with the agent"
   type        = string

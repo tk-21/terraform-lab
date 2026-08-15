@@ -35,3 +35,9 @@ variable "waf_rate_limit" {
   type        = number
   default     = 1000
 }
+
+variable "enable_waf" {
+  description = "Whether to create a regional WAF Web ACL. HTTP APIs cannot be associated directly; protect them through CloudFront or an ALB."
+  type        = bool
+  default     = false
+}

@@ -228,6 +228,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
     id     = "expire-old-logs"
     status = "Enabled"
 
+    # 空のフィルターはバケット内の全オブジェクトを対象にする。
+    filter {}
+
     expiration {
       days = 365
     }
@@ -270,7 +273,7 @@ resource "aws_s3_bucket_policy" "cloudtrail" {
         Resource = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
         Condition = {
           StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
+            "s3:x-amz-acl"  = "bucket-owner-full-control"
             "aws:SourceArn" = "arn:aws:cloudtrail:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:trail/${local.name_prefix}-bedrock-trail"
           }
         }
@@ -336,15 +339,11 @@ resource "aws_cloudtrail" "bedrock" {
   cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
   cloud_watch_logs_role_arn     = aws_iam_role.cloudtrail_cw.arn
 
-  # Bedrock のデータイベントを記録
+  # Bedrock API を含む管理イベントを記録する。Bedrock Model は CloudTrail
+  # data_resource のサポート対象ではないため、データイベントとしては指定しない。
   event_selector {
     read_write_type           = "All"
     include_management_events = true
-
-    data_resource {
-      type   = "AWS::Bedrock::Model"
-      values = ["arn:aws:bedrock"]
-    }
   }
 
   tags = {

@@ -33,6 +33,11 @@ output "s3_endpoint_id" {
   value       = aws_vpc_endpoint.s3.id
 }
 
+output "dynamodb_endpoint_prefix_list_id" {
+  description = "Managed prefix list ID for the DynamoDB gateway endpoint"
+  value       = aws_vpc_endpoint.dynamodb.prefix_list_id
+}
+
 output "bedrock_runtime_endpoint_id" {
   description = "VPC Endpoint ID for Bedrock Runtime"
   value       = aws_vpc_endpoint.bedrock_runtime.id

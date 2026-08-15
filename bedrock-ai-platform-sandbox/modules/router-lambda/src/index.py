@@ -139,7 +139,7 @@ def _select_model(prompt: str, tenant: dict) -> str:
     if pinned:
         return pinned
 
-    # 複雑度判定: 長いプロンプトまたは複雑系キーワード → Sonnet
+    # 複雑度判定: 長いプロンプトまたは複雑系キーワード → 複雑タスク用モデル
     if len(prompt) > 1000 or _COMPLEX_RE.search(prompt):
         return SONNET_MODEL_ID
 
@@ -150,6 +150,46 @@ def _select_model(prompt: str, tenant: dict) -> str:
 # ヘルパー: Bedrock 呼び出し
 # ================================================================
 def _invoke_bedrock(model_id: str, prompt: str) -> dict:
+    """モデルファミリーごとに正しい Bedrock ネイティブ形式で呼び出す。"""
+    if model_id.startswith("amazon.nova"):
+        return _invoke_nova(model_id, prompt)
+
+    return _invoke_anthropic(model_id, prompt)
+
+
+def _invoke_nova(model_id: str, prompt: str) -> dict:
+    resp = bedrock.invoke_model(
+        modelId=model_id,
+        body=json.dumps(
+            {
+                "schemaVersion": "messages-v1",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"text": prompt}],
+                    }
+                ],
+                "inferenceConfig": {"maxTokens": 2048},
+            }
+        ),
+        guardrailIdentifier=GUARDRAIL_ID,
+        guardrailVersion=GUARDRAIL_VER,
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = json.loads(resp["body"].read())
+    content = body["output"]["message"]["content"][0]["text"]
+    usage = body.get("usage", {})
+    return {
+        "content": content,
+        "usage": {
+            "input_tokens": usage.get("inputTokens", 0),
+            "output_tokens": usage.get("outputTokens", 0),
+        },
+    }
+
+
+def _invoke_anthropic(model_id: str, prompt: str) -> dict:
     resp = bedrock.invoke_model(
         modelId=model_id,
         body=json.dumps(

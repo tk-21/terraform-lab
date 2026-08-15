@@ -23,6 +23,11 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "dynamodb_endpoint_prefix_list_id" {
+  description = "Managed prefix list ID for the DynamoDB gateway endpoint"
+  type        = string
+}
+
 variable "guardrail_id" {
   description = "Bedrock Guardrail ID"
   type        = string
@@ -60,23 +65,26 @@ variable "usage_table_arn" {
 }
 
 variable "haiku_model_id" {
-  description = "Model ID for Claude Haiku (light tasks)"
+  description = "Model ID for light tasks"
   type        = string
-  default     = "anthropic.claude-3-haiku-20240307-v1:0"
+  # Amazon Nova Lite は ap-northeast-1 でオンデマンド推論に対応し、
+  # AWS Marketplace のモデルサブスクリプションを必要としない。
+  default = "amazon.nova-lite-v1:0"
 }
 
 variable "sonnet_model_id" {
-  description = "Model ID for Claude Sonnet (complex tasks)"
+  description = "Model ID for complex tasks"
   type        = string
-  default     = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  # dev では Marketplace 依存を避けるため、軽量タスクと同じ Nova Lite を既定にする。
+  # AgentCore 移行時などに推論プロファイル対応モデルへ明示的に切り替え可能。
+  default = "amazon.nova-lite-v1:0"
 }
 
 variable "allowed_model_arns" {
   description = "Bedrock model ARNs the Lambda is allowed to invoke"
   type        = list(string)
   default = [
-    "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
-    "arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.nova-lite-v1:0",
   ]
 }
 
