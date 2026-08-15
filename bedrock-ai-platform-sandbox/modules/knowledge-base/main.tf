@@ -14,6 +14,8 @@ locals {
     SQL
     ,
     "CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx ON bedrock_integration.bedrock_kb USING hnsw (embedding vector_cosine_ops)",
+    # Bedrock Knowledge Bases の RDS ストレージ検証で必須となる全文検索インデックス。
+    "CREATE INDEX IF NOT EXISTS bedrock_kb_chunks_fts_idx ON bedrock_integration.bedrock_kb USING gin (to_tsvector('simple', chunks))",
   ]
 }
 
@@ -67,6 +69,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "documents" {
     id     = "move-to-ia"
     status = "Enabled"
 
+    # 空のフィルターはバケット内の全オブジェクトを対象にする。
+    filter {}
+
     transition {
       days          = 90
       storage_class = "STANDARD_IA"
@@ -87,7 +92,7 @@ resource "aws_s3_bucket_policy" "documents" {
         Principal = {
           Service = "bedrock.amazonaws.com"
         }
-        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Action = ["s3:GetObject", "s3:ListBucket"]
         Resource = [
           aws_s3_bucket.documents.arn,
           "${aws_s3_bucket.documents.arn}/*",
@@ -199,8 +204,11 @@ resource "aws_rds_cluster_instance" "main" {
 # RDS Data API を利用して SQL を実行
 # -----------------------------------------------------------------
 resource "terraform_data" "aurora_init" {
-  # クラスターが再作成された場合のみ再実行
-  triggers_replace = aws_rds_cluster.main.cluster_identifier
+  # クラスター再作成時、またはスキーマ定義変更時に再実行する。
+  triggers_replace = [
+    aws_rds_cluster.main.cluster_identifier,
+    sha256(join("\n", local.init_sql)),
+  ]
 
   provisioner "local-exec" {
     command = <<-EOT
@@ -220,7 +228,8 @@ resource "terraform_data" "aurora_init" {
         "CREATE EXTENSION IF NOT EXISTS vector" \
         "CREATE SCHEMA IF NOT EXISTS bedrock_integration" \
         "CREATE TABLE IF NOT EXISTS bedrock_integration.bedrock_kb (id uuid PRIMARY KEY, embedding vector(${var.vector_dimensions}), chunks text, metadata json)" \
-        "CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx ON bedrock_integration.bedrock_kb USING hnsw (embedding vector_cosine_ops)"
+        "CREATE INDEX IF NOT EXISTS bedrock_kb_embedding_idx ON bedrock_integration.bedrock_kb USING hnsw (embedding vector_cosine_ops)" \
+        "CREATE INDEX IF NOT EXISTS bedrock_kb_chunks_fts_idx ON bedrock_integration.bedrock_kb USING gin (to_tsvector('simple', chunks))"
       do
         aws rds-data execute-statement \
           --resource-arn "$CLUSTER_ARN" \
@@ -294,9 +303,9 @@ resource "aws_iam_policy" "bedrock_kb" {
         }
       },
       {
-        Sid    = "AllowEmbeddingModel"
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
+        Sid      = "AllowEmbeddingModel"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
         Resource = [var.embedding_model_arn]
       },
       {
@@ -309,9 +318,16 @@ resource "aws_iam_policy" "bedrock_kb" {
         Resource = [aws_rds_cluster.main.arn]
       },
       {
-        Sid    = "AllowAuroraSecret"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
+        # Bedrock Knowledge Bases が RDS ベクトルストアの接続情報を検証するために必要
+        Sid      = "AllowDescribeAuroraCluster"
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBClusters"]
+        Resource = [aws_rds_cluster.main.arn]
+      },
+      {
+        Sid      = "AllowAuroraSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
         Resource = [aws_rds_cluster.main.master_user_secret[0].secret_arn]
       }
     ]
@@ -364,7 +380,11 @@ resource "aws_bedrockagent_knowledge_base" "main" {
     Name = "${local.name_prefix}-kb"
   }
 
-  depends_on = [terraform_data.aurora_init]
+  # Aurora のスキーマ初期化と、Bedrock サービスロールへの権限付与後に作成する。
+  depends_on = [
+    terraform_data.aurora_init,
+    aws_iam_role_policy_attachment.bedrock_kb,
+  ]
 }
 
 # -----------------------------------------------------------------
