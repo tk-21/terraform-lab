@@ -1,5 +1,8 @@
 locals {
   name_prefix = "${var.project}-${var.environment}"
+
+  # X-Ray Group 名は最大32文字。先頭の可読部分とハッシュで識別性・一意性を両立する。
+  xray_group_name = "${substr(local.name_prefix, 0, 23)}-${substr(sha256(local.name_prefix), 0, 8)}"
 }
 
 data "aws_region" "current" {}
@@ -8,7 +11,7 @@ data "aws_region" "current" {}
 # X-Ray Group: Lambda トレース
 # -----------------------------------------------------------------
 resource "aws_xray_group" "lambdas" {
-  group_name        = "${local.name_prefix}-lambdas"
+  group_name        = local.xray_group_name
   filter_expression = "annotation.project = \"${var.project}\""
 
   insights_configuration {
@@ -143,7 +146,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       # ---- Row 1: API Gateway ----
       {
         type   = "metric"
-        x      = 0; y = 0; width = 8; height = 6
+        x      = 0
+        y      = 0
+        width  = 8
+        height = 6
         properties = {
           title  = "API Gateway - Requests & Errors"
           region = data.aws_region.current.name
@@ -158,7 +164,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 8; y = 0; width = 8; height = 6
+        x      = 8
+        y      = 0
+        width  = 8
+        height = 6
         properties = {
           title  = "API Gateway - Latency (p50/p99)"
           region = data.aws_region.current.name
@@ -174,7 +183,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       # ---- Row 1 右: Bedrock 呼び出し数 ----
       {
         type   = "metric"
-        x      = 16; y = 0; width = 8; height = 6
+        x      = 16
+        y      = 0
+        width  = 8
+        height = 6
         properties = {
           title  = "Bedrock - InvokeModel Calls"
           region = data.aws_region.current.name
@@ -189,7 +201,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       # ---- Row 2: Lambda ----
       {
         type   = "metric"
-        x      = 0; y = 6; width = 8; height = 6
+        x      = 0
+        y      = 6
+        width  = 8
+        height = 6
         properties = {
           title  = "Router Lambda - Invocations & Errors"
           region = data.aws_region.current.name
@@ -204,7 +219,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 8; y = 6; width = 8; height = 6
+        x      = 8
+        y      = 6
+        width  = 8
+        height = 6
         properties = {
           title  = "Action Handler Lambda - Invocations & Errors"
           region = data.aws_region.current.name
@@ -219,7 +237,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 16; y = 6; width = 8; height = 6
+        x      = 16
+        y      = 6
+        width  = 8
+        height = 6
         properties = {
           title  = "Cost Controller Lambda - Invocations & Errors"
           region = data.aws_region.current.name
@@ -234,7 +255,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       # ---- Row 3: DynamoDB ----
       {
         type   = "metric"
-        x      = 0; y = 12; width = 12; height = 6
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
         properties = {
           title  = "DynamoDB - Tenant Table Read/Write"
           region = data.aws_region.current.name
@@ -248,7 +272,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 12; y = 12; width = 12; height = 6
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
         properties = {
           title  = "DynamoDB - Usage Table Read/Write"
           region = data.aws_region.current.name
@@ -263,7 +290,10 @@ resource "aws_cloudwatch_dashboard" "main" {
       # ---- Row 4: Alarm Status ----
       {
         type   = "alarm"
-        x      = 0; y = 18; width = 24; height = 3
+        x      = 0
+        y      = 18
+        width  = 24
+        height = 3
         properties = {
           title = "Alarm Status"
           alarms = [
