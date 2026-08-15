@@ -38,7 +38,9 @@ variable "db_master_username" {
 variable "aurora_engine_version" {
   description = "Aurora PostgreSQL engine version"
   type        = string
-  default     = "16.4"
+  # ap-northeast-1 で db.serverless をサポートする利用可能バージョン。
+  # 利用可能な値は `aws rds describe-db-engine-versions` でリージョンごとに確認する。
+  default = "16.14"
 }
 
 variable "aurora_min_acu" {

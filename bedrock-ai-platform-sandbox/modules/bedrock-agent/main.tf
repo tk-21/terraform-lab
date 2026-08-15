@@ -54,21 +54,21 @@ resource "aws_iam_policy" "action_handler" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowLogs"
-        Effect = "Allow"
-        Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Sid      = "AllowLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.action_handler.arn}:*"
       },
       {
-        Sid    = "AllowXRay"
-        Effect = "Allow"
-        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Sid      = "AllowXRay"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
       },
       {
-        Sid    = "AllowUsageScan"
-        Effect = "Allow"
-        Action = ["dynamodb:Scan"]
+        Sid      = "AllowUsageScan"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Scan"]
         Resource = [var.usage_table_arn]
       }
     ]
@@ -119,6 +119,8 @@ resource "aws_lambda_function" "action_handler" {
 
 # Bedrock Agent が Action Handler Lambda を呼び出せる Permission
 resource "aws_lambda_permission" "bedrock_agent" {
+  count = var.enable_bedrock_agent ? 1 : 0
+
   statement_id  = "AllowBedrockAgentInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.action_handler.function_name
@@ -130,15 +132,17 @@ resource "aws_lambda_permission" "bedrock_agent" {
 # IAM Role for Bedrock Agent
 # -----------------------------------------------------------------
 resource "aws_iam_role" "bedrock_agent" {
+  count = var.enable_bedrock_agent ? 1 : 0
+
   name = "${local.name_prefix}-bedrock-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid    = "AllowBedrockAssume"
-      Effect = "Allow"
+      Sid       = "AllowBedrockAssume"
+      Effect    = "Allow"
       Principal = { Service = "bedrock.amazonaws.com" }
-      Action = "sts:AssumeRole"
+      Action    = "sts:AssumeRole"
       Condition = {
         StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
         ArnLike = {
@@ -152,6 +156,8 @@ resource "aws_iam_role" "bedrock_agent" {
 }
 
 resource "aws_iam_policy" "bedrock_agent" {
+  count = var.enable_bedrock_agent ? 1 : 0
+
   name = "${local.name_prefix}-bedrock-agent-policy"
 
   policy = jsonencode({
@@ -189,20 +195,24 @@ resource "aws_iam_policy" "bedrock_agent" {
 }
 
 resource "aws_iam_role_policy_attachment" "bedrock_agent" {
-  role       = aws_iam_role.bedrock_agent.name
-  policy_arn = aws_iam_policy.bedrock_agent.arn
+  count = var.enable_bedrock_agent ? 1 : 0
+
+  role       = aws_iam_role.bedrock_agent[0].name
+  policy_arn = aws_iam_policy.bedrock_agent[0].arn
 }
 
 # -----------------------------------------------------------------
 # Bedrock Agent
 # -----------------------------------------------------------------
 resource "aws_bedrockagent_agent" "main" {
-  agent_name              = "${local.name_prefix}-agent"
-  description             = "Infrastructure operations AI agent with RAG and action groups"
-  agent_resource_role_arn = aws_iam_role.bedrock_agent.arn
-  foundation_model        = var.agent_model_id
+  count = var.enable_bedrock_agent ? 1 : 0
+
+  agent_name                  = "${local.name_prefix}-agent"
+  description                 = "Infrastructure operations AI agent with RAG and action groups"
+  agent_resource_role_arn     = aws_iam_role.bedrock_agent[0].arn
+  foundation_model            = var.agent_model_id
   idle_session_ttl_in_seconds = var.idle_session_ttl
-  prepare_agent           = true
+  prepare_agent               = true
 
   instruction = <<-EOT
     あなたは AWS インフラ運用アシスタントです。
@@ -226,14 +236,16 @@ resource "aws_bedrockagent_agent" "main" {
     Name = "${local.name_prefix}-bedrock-agent"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.bedrock_agent]
+  depends_on = [aws_iam_role_policy_attachment.bedrock_agent[0]]
 }
 
 # -----------------------------------------------------------------
 # Action Group: infra-ops
 # -----------------------------------------------------------------
 resource "aws_bedrockagent_agent_action_group" "infra_ops" {
-  agent_id          = aws_bedrockagent_agent.main.agent_id
+  count = var.enable_bedrock_agent ? 1 : 0
+
+  agent_id          = aws_bedrockagent_agent.main[0].agent_id
   agent_version     = "DRAFT"
   action_group_name = "infra-ops"
   description       = "Infrastructure operations actions: status, costs, and alert management"
@@ -251,7 +263,9 @@ resource "aws_bedrockagent_agent_action_group" "infra_ops" {
 # Knowledge Base Association
 # -----------------------------------------------------------------
 resource "aws_bedrockagent_agent_knowledge_base_association" "main" {
-  agent_id             = aws_bedrockagent_agent.main.agent_id
+  count = var.enable_bedrock_agent ? 1 : 0
+
+  agent_id             = aws_bedrockagent_agent.main[0].agent_id
   agent_version        = "DRAFT"
   description          = "Infrastructure knowledge base for RAG-based Q&A"
   knowledge_base_id    = var.knowledge_base_id

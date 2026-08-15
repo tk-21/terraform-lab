@@ -23,11 +23,21 @@ resource "aws_security_group" "router_lambda" {
   vpc_id      = var.vpc_id
 
   egress {
-    description = "HTTPS to VPC (Bedrock/DynamoDB endpoints)"
+    description = "HTTPS to VPC interface endpoints (Bedrock Runtime)"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr_block]
+  }
+
+  # Gateway Endpoint の宛先は VPC CIDR 外の AWS 管理プレフィックスとなるため、
+  # DynamoDB のプレフィックスリストを明示許可する。
+  egress {
+    description     = "HTTPS to DynamoDB gateway endpoint"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    prefix_list_ids = [var.dynamodb_endpoint_prefix_list_id]
   }
 
   tags = {
@@ -123,9 +133,9 @@ resource "aws_iam_policy" "router_lambda" {
       },
       # DynamoDB: テナント設定読み取り
       {
-        Sid    = "AllowTenantRead"
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem"]
+        Sid      = "AllowTenantRead"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
         Resource = [var.tenant_table_arn]
       },
       # DynamoDB: 使用量集計の読み書き
@@ -177,12 +187,12 @@ resource "aws_lambda_function" "router" {
 
   environment {
     variables = {
-      TENANT_TABLE    = var.tenant_table_name
-      USAGE_TABLE     = var.usage_table_name
-      GUARDRAIL_ID    = var.guardrail_id
+      TENANT_TABLE      = var.tenant_table_name
+      USAGE_TABLE       = var.usage_table_name
+      GUARDRAIL_ID      = var.guardrail_id
       GUARDRAIL_VERSION = var.guardrail_version
-      HAIKU_MODEL_ID  = var.haiku_model_id
-      SONNET_MODEL_ID = var.sonnet_model_id
+      HAIKU_MODEL_ID    = var.haiku_model_id
+      SONNET_MODEL_ID   = var.sonnet_model_id
     }
   }
 
