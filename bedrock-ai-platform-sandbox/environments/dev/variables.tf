@@ -38,3 +38,9 @@ variable "monthly_budget_usd" {
   type        = string
   default     = "30"
 }
+
+variable "enable_bedrock_agent" {
+  description = "Whether to create Amazon Bedrock Agents Classic resources. Disabled by default because new accounts cannot create Agents Classic."
+  type        = bool
+  default     = false
+}

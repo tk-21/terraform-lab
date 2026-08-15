@@ -101,9 +101,10 @@ resource "aws_dynamodb_table_item" "premium_tenant" {
   hash_key   = "tenant_id"
 
   item = jsonencode({
-    tenant_id           = { S = "tenant-premium" }
-    tier                = { S = "premium" }
-    preferred_model     = { S = "anthropic.claude-3-5-sonnet-20241022-v2:0" }
+    tenant_id = { S = "tenant-premium" }
+    tier      = { S = "premium" }
+    # dev の既定モデルは Marketplace サブスクリプション不要の Amazon Nova Lite。
+    preferred_model     = { S = "amazon.nova-lite-v1:0" }
     token_limit_daily   = { N = "500000" }
     token_limit_monthly = { N = "10000000" }
     guardrail_enabled   = { BOOL = true }

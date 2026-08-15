@@ -39,11 +39,12 @@ module "multi_tenant" {
 module "router_lambda" {
   source = "../../modules/router-lambda"
 
-  project            = var.project
-  environment        = var.environment
-  vpc_id             = module.networking.vpc_id
-  vpc_cidr_block     = module.networking.vpc_cidr_block
-  private_subnet_ids = module.networking.private_subnet_ids
+  project                          = var.project
+  environment                      = var.environment
+  vpc_id                           = module.networking.vpc_id
+  vpc_cidr_block                   = module.networking.vpc_cidr_block
+  private_subnet_ids               = module.networking.private_subnet_ids
+  dynamodb_endpoint_prefix_list_id = module.networking.dynamodb_endpoint_prefix_list_id
 
   guardrail_id      = module.bedrock_foundation.guardrail_id
   guardrail_arn     = module.bedrock_foundation.guardrail_arn
@@ -95,6 +96,8 @@ module "bedrock_agent" {
 
   project     = var.project
   environment = var.environment
+
+  enable_bedrock_agent = var.enable_bedrock_agent
 
   knowledge_base_id = module.knowledge_base.knowledge_base_id
   guardrail_id      = module.bedrock_foundation.guardrail_id
