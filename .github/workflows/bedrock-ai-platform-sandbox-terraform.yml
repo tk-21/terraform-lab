@@ -1,20 +1,22 @@
 name: Terraform
 
 on:
+  # 手動確認用。main へマージせず Plan を実行できる。
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - "environments/**"
-      - "modules/**"
-      - ".github/workflows/terraform.yml"
+      - "bedrock-ai-platform-sandbox/environments/**"
+      - "bedrock-ai-platform-sandbox/modules/**"
+      - ".github/workflows/bedrock-ai-platform-sandbox-terraform.yml"
   pull_request:
     branches:
       - main
     paths:
-      - "environments/**"
-      - "modules/**"
-      - ".github/workflows/terraform.yml"
+      - "bedrock-ai-platform-sandbox/environments/**"
+      - "bedrock-ai-platform-sandbox/modules/**"
+      - ".github/workflows/bedrock-ai-platform-sandbox-terraform.yml"
 
 permissions:
   id-token: write   # OIDC トークン取得に必要
@@ -23,7 +25,7 @@ permissions:
 
 env:
   TF_VERSION: "1.9.0"
-  TF_WORKING_DIR: environments/dev
+  TF_WORKING_DIR: bedrock-ai-platform-sandbox/environments/dev
   AWS_REGION: ap-northeast-1
 
 jobs:
