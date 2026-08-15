@@ -3,6 +3,8 @@
 エンタープライズ相当のAI基盤をAWS個人環境で再現するTerraformプロジェクト。
 マルチテナント・セキュア・可観測・コスト制御を全て実装する。
 
+![AWS Bedrock AI Platform Sandbox の全体構成](docs/readme-hero.png)
+
 ## このハンズオンで得られること
 
 - **AWS上でAI基盤を組み立てる実践力**
@@ -669,11 +671,15 @@ curl -s -X POST "$CHAT_ENDPOINT" \
 
 ### Step 13: GitHub Actions CI/CD セットアップ（オプション）
 
+このプロジェクトは `terraform-lab` モノレポ内にあります。GitHub Actions のワークフローは、GitHub が認識できるモノレポ直下の `.github/workflows` に配置します。
+
 ここまでの手順では `environments/dev` に移動しています。CI/CD 用のファイル操作は、先にプロジェクトルートへ戻ってから行います。
 
 ```bash
 cd ../..
-test -f README.md && pwd
+test -f README.md
+test -f ../.github/workflows/bedrock-ai-platform-sandbox-terraform.yml
+pwd
 ```
 
 #### 13-1. GitHub OIDC Providerの作成
@@ -744,20 +750,18 @@ GitHubリポジトリの `Settings → Secrets and variables → Actions` で以
 
 #### 13-4. CI/CDの動作確認
 
-```bash
-# この時点でプロジェクトルートにいることを確認
-test -f README.md
+README だけの変更は CI の対象外です。ワークフローまたは Terraform 管理対象の変更を含むブランチで PR を作成します。
 
-# テスト用ブランチを作成して PR を作成
-git checkout -b test/cicd-check
-echo "# CI/CD Test $(date)" >> README.md
-git add README.md
-git commit -m "test: GitHub Actions CI/CD動作確認"
+```bash
+# Terraform ワークフローを含む現在の変更をテスト用ブランチへ push
+git status
+git add ../.github/workflows/bedrock-ai-platform-sandbox-terraform.yml
+git commit -m "ci: add monorepo Terraform workflow"
 git push -u origin test/cicd-check
-# → GitHubでPRを作成するとterraform planの結果がPRコメントとして自動投稿される
+# → GitHub で main 向けの PR を作成すると Terraform Plan が実行される
 ```
 
-PRに以下のようなコメントが投稿されれば成功です。
+PR の **Checks** または **Actions** に `Terraform Plan` が緑色で表示され、PR に次のようなコメントが投稿されれば Plan は成功です。
 
 ```
 ## Terraform Plan Result
@@ -766,39 +770,132 @@ PRに以下のようなコメントが投稿されれば成功です。
 Plan: 0 to add, 0 to change, 0 to destroy.
 ```
 
-mainブランチにマージすると `terraform apply` が自動実行されます。
+main ブランチへのマージ後は `Terraform Apply` が自動実行されます。GitHub の **Actions** タブで該当 run を開き、`Terraform Apply` ステップが緑色かつログ末尾に `Apply complete!` が出ていれば成功です。
+
+> `workflow_dispatch` により Actions タブから手動実行もできます。この場合は Plan のみで、Apply は main ブランチへの push でのみ実行されます。
+
+**動作確認済み（2026-08-15）**: `main` への PR マージを契機に Terraform Apply が成功しました（`12 added, 53 changed, 12 destroyed`）。これにより、OIDC 認証を用いた PR 時の Plan と main マージ時の自動 Apply を確認しています。
 
 ---
 
-### Step 14: 後片付け（destroy）
+### Step 14: 完全な後片付け（全リソース削除）
 
-**課金が継続するため、確認が終わったら必ずdestroyしてください。**
+この手順は **環境・State・CI/CD 認証を完全に削除** します。以後の CI 実行や `terraform init` は失敗し、再利用するにはバックエンドと OIDC の再作成が必要です。
+
+> **重要**: `main` に Terraform の変更をマージすると CI がリソースを再作成します。先にワークフローを無効化してから削除してください。
+
+#### 14-1. 検証用ブランチを削除する
+
+PR がマージ済みで、今後使わない `test/cicd-check` を削除します。squash merge 後は Git がマージ済みと判定しないことがあるため、内容を確認済みであれば `-D` を使用します。
 
 ```bash
-cd environments/dev
+# モノレポのルートで、未コミット変更がないことを確認する
+cd ..
+git status
+git switch main
+git pull --ff-only origin main
 
+# ローカル検証ブランチを削除
+git branch -D test/cicd-check
+
+# GitHub 側に同名ブランチが残っている場合のみ削除
+git push origin --delete test/cicd-check
+```
+
+> GitHub の PR マージ時にリモートブランチを自動削除した場合、最後のコマンドは「存在しない」というエラーになります。その場合は削除済みなので対応不要です。
+
+#### 14-2. 自動 Apply を停止する
+
+モノレポのルートで、このプロジェクト用ワークフローを削除する PR を作成し、`main` にマージします。
+
+```bash
+git switch -c chore/remove-bedrock-sandbox-cicd
+git rm .github/workflows/bedrock-ai-platform-sandbox-terraform.yml
+git commit -m "chore: remove Bedrock sandbox Terraform workflow"
+git push -u origin chore/remove-bedrock-sandbox-cicd
+# GitHub で main 向けの PR を作成・マージする
+```
+
+GitHub の **Actions** で、このワークフローが無効になったことを確認します。
+
+#### 14-3. Terraform 管理リソースを削除する
+
+プロジェクトルートから実行します。まず削除対象を確認してから、問題がなければ destroy を実行します。
+
+```bash
+cd bedrock-ai-platform-sandbox/environments/dev
+terraform plan -destroy
 terraform destroy
 ```
 
-確認プロンプトに `yes` と入力します。
+確認プロンプトには `yes` を入力します。Aurora の削除には特に時間がかかります。
 
-```
-Do you really want to destroy all resources?
-  Enter a value: yes
-```
+#### 14-4. Terraform State バックエンドを削除する
 
-> **所要時間**: 約10〜15分  
-> **Aurora削除**には特に時間がかかります。
-
-#### destroyで削除されないリソース（手動削除が必要）
+`terraform destroy` が完了したことを確認してから、State 用 S3 バケットと DynamoDB ロックテーブルを削除します。State バケットはバージョニング有効のため、通常の `aws s3 rb --force` だけでは過去バージョンと削除マーカーを削除できません。
 
 ```bash
-# Terraform Stateバックエンド（Step2で手動作成したもの）
-aws s3 rb s3://tfstate-bedrock-ai-platform-sandbox --force
+# 全オブジェクトバージョンと削除マーカーを削除する
+aws s3api list-object-versions \
+  --bucket tfstate-bedrock-ai-platform-sandbox \
+  --output json \
+| jq '{
+    Objects: ((.Versions // []) + (.DeleteMarkers // []) | map({Key, VersionId})),
+    Quiet: true
+  }' \
+| aws s3api delete-objects \
+    --bucket tfstate-bedrock-ai-platform-sandbox \
+    --delete file:///dev/stdin
+
+# バージョン削除後にバケット本体を削除する
+aws s3 rb s3://tfstate-bedrock-ai-platform-sandbox
+
+# State ロックテーブルを削除する
 aws dynamodb delete-table \
   --table-name tfstate-lock-bedrock-ai-platform \
   --region ap-northeast-1
 ```
+
+#### 14-5. GitHub Actions 用 IAM ロールと OIDC Provider を削除する
+
+以下は `github-actions-terraform` ロールと GitHub OIDC Provider を**このプロジェクト専用に作成した場合のみ**実行します。他リポジトリでも使用している場合は削除しません。
+
+```bash
+# ロールに付与した管理ポリシーを外してからロールを削除
+aws iam detach-role-policy \
+  --role-name github-actions-terraform \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+aws iam delete-role --role-name github-actions-terraform
+
+# OIDC Provider の ARN を一覧表示し、GitHub 用 ARN を確認する
+aws iam list-open-id-connect-providers
+
+# 上の出力で確認した ARN を指定して削除する
+aws iam delete-open-id-connect-provider \
+  --open-id-connect-provider-arn <GITHUB_OIDC_PROVIDER_ARN>
+```
+
+#### 14-6. GitHub Secrets と完全削除用ブランチを削除する
+
+GitHub リポジトリの `Settings → Secrets and variables → Actions` で、`AWS_ROLE_ARN` と `ALERT_EMAIL` を削除します。GitHub CLI を使う場合は、モノレポのルートで次を実行できます。
+
+```bash
+gh secret delete AWS_ROLE_ARN
+gh secret delete ALERT_EMAIL
+```
+
+`chore/remove-bedrock-sandbox-cicd` の PR を main にマージした後、そのブランチも削除します。
+
+```bash
+git switch main
+git pull --ff-only origin main
+git branch -D chore/remove-bedrock-sandbox-cicd
+git push origin --delete chore/remove-bedrock-sandbox-cicd
+```
+
+> GitHub 側で自動削除済みなら、リモートブランチ削除コマンドのエラーは無視して構いません。
+
+これで課金対象のアプリケーションリソース、State backend、CI/CD の認証情報をすべて削除できます。
 
 ---
 
@@ -817,7 +914,7 @@ aws dynamodb delete-table \
 - [ ] Cost Controller Lambda がエラーなく完了する
 - [ ] CloudWatch ダッシュボードにメトリクスが表示されている
 - [ ] Alarm Status が全て OK（緑）
-- [ ] （オプション）GitHub Actions の PR plan コメントが自動投稿される
+- [x] （オプション）GitHub Actions の PR Plan と main マージ後の Apply が成功する
 - [ ] `terraform destroy` が完走する
 
 ---
@@ -1216,4 +1313,3 @@ CostCenter  = "personal"
 | 6 | observability | ✅ 完了 |
 | 7 | GitHub Actions CI/CD | ✅ 完了 |
 | 8 | 統合テスト + Zenn記事化 | 進行中 |
-# CI/CD Test Sat Aug 15 15:38:48 JST 2026
