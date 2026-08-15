@@ -15,19 +15,28 @@ resource "aws_cloudwatch_log_group" "access_logs" {
 }
 
 # -----------------------------------------------------------------
-# WAF v2 WebACL（REGIONAL: API Gateway 用）
+# WAF v2 WebACL（REGIONAL）
+# AWS WAF は API Gateway REST API のみを関連付け先としてサポートし、
+# HTTP API (apigatewayv2) には直接関連付けできない。
+# HTTP API を維持する場合は CloudFront または ALB の前段で WAF を適用する。
 # -----------------------------------------------------------------
 resource "aws_wafv2_web_acl" "main" {
+  count = var.enable_waf ? 1 : 0
+
   name  = "${local.name_prefix}-waf"
   scope = "REGIONAL"
 
-  default_action { allow {} }
+  default_action {
+    allow {}
+  }
 
   # OWASP Top 10 共通ルールセット
   rule {
     name     = "AWSManagedRulesCommonRuleSet"
     priority = 1
-    override_action { none {} }
+    override_action {
+      none {}
+    }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
@@ -45,7 +54,9 @@ resource "aws_wafv2_web_acl" "main" {
   rule {
     name     = "AWSManagedRulesKnownBadInputsRuleSet"
     priority = 2
-    override_action { none {} }
+    override_action {
+      none {}
+    }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesKnownBadInputsRuleSet"
@@ -63,7 +74,9 @@ resource "aws_wafv2_web_acl" "main" {
   rule {
     name     = "RateLimitPerIP"
     priority = 3
-    action { block {} }
+    action {
+      block {}
+    }
     statement {
       rate_based_statement {
         limit              = var.waf_rate_limit
@@ -95,7 +108,7 @@ resource "aws_wafv2_web_acl" "main" {
 resource "aws_apigatewayv2_api" "main" {
   name          = "${local.name_prefix}-api"
   protocol_type = "HTTP"
-  description   = "WAF-protected HTTP API for Bedrock AI Platform router"
+  description   = "HTTP API for Bedrock AI Platform router"
 
   cors_configuration {
     allow_headers = ["content-type", "x-tenant-id", "authorization"]
@@ -144,6 +157,18 @@ resource "aws_apigatewayv2_stage" "default" {
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.access_logs.arn
+    format = jsonencode({
+      requestId         = "$context.requestId"
+      extendedRequestId = "$context.extendedRequestId"
+      ip                = "$context.identity.sourceIp"
+      requestTime       = "$context.requestTime"
+      httpMethod        = "$context.httpMethod"
+      routeKey          = "$context.routeKey"
+      status            = "$context.status"
+      protocol          = "$context.protocol"
+      responseLength    = "$context.responseLength"
+      integrationError  = "$context.integrationErrorMessage"
+    })
   }
 
   tags = {
@@ -160,13 +185,7 @@ resource "aws_lambda_permission" "api_gateway" {
   function_name = var.router_lambda_function_name
   principal     = "apigateway.amazonaws.com"
   # /chat ルートのみ許可（他ルートからの呼び出しを防ぐ）
-  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/chat"
+  source_arn = "${aws_apigatewayv2_api.main.execution_arn}/*/*/chat"
 }
 
 # -----------------------------------------------------------------
-# WAF ↔ API Gateway ステージ の紐付け
-# -----------------------------------------------------------------
-resource "aws_wafv2_web_acl_association" "api" {
-  resource_arn = aws_apigatewayv2_stage.default.arn
-  web_acl_arn  = aws_wafv2_web_acl.main.arn
-}
