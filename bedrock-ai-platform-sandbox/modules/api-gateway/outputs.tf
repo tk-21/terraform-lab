@@ -19,8 +19,8 @@ output "execution_arn" {
 }
 
 output "waf_web_acl_arn" {
-  description = "WAF WebACL ARN"
-  value       = aws_wafv2_web_acl.main.arn
+  description = "WAF WebACL ARN. Null when WAF is disabled."
+  value       = try(aws_wafv2_web_acl.main[0].arn, null)
 }
 
 output "access_log_group" {
