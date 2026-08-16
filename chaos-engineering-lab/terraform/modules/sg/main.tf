@@ -9,7 +9,8 @@ locals {
 # ALB 用セキュリティグループ
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb-sg"
-  description = "ALB へのインターネットからの HTTP アクセスを許可"
+  # EC2 API only accepts ASCII characters in security group descriptions.
+  description = "Allow HTTP access to ALB from the internet"
   vpc_id      = var.vpc_id
 
   # インターネットからの HTTP アクセスを許可
@@ -43,7 +44,8 @@ resource "aws_security_group" "alb" {
 # SSH 開放は不要。アクセスは SSM Session Manager 経由で行う。
 resource "aws_security_group" "ec2" {
   name        = "${local.name_prefix}-ec2-sg"
-  description = "ALB からの HTTP トラフィックのみ受け付ける EC2 用 SG"
+  # EC2 API only accepts ASCII characters in security group descriptions.
+  description = "Allow HTTP traffic to EC2 from ALB only"
   vpc_id      = var.vpc_id
 
   # ALB SG からの HTTP のみ許可（インターネット直接アクセス禁止）

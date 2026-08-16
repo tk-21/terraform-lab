@@ -53,7 +53,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
 }
 
 # ALB ログ配信用のバケットポリシー
-# ap-northeast-1 の ELB サービスアカウント: 582318560864
 resource "aws_s3_bucket_policy" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
 
@@ -63,10 +62,10 @@ resource "aws_s3_bucket_policy" "alb_logs" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::582318560864:root"
+          Service = "logdelivery.elasticloadbalancing.amazonaws.com"
         }
         Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.alb_logs.arn}/AWSLogs/${var.account_id}/*"
+        Resource = "${aws_s3_bucket.alb_logs.arn}/${local.name_prefix}-alb/AWSLogs/${var.account_id}/*"
       }
     ]
   })

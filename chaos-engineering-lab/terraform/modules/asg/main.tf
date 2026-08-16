@@ -122,11 +122,12 @@ resource "aws_autoscaling_policy" "cpu_target_tracking" {
 
   # FIS で CPU ストレスを注入すると CPUUtilization が急上昇し、
   # このポリシーがスケールアウトをトリガーする。
+  # 2 台中 1 台への 100% 負荷（ASG 平均 CPU 約 50%）を検証できる値にする。
   # これがカオス実験の観測ポイント。
   target_tracking_configuration {
     predefined_metric_specification {
       predefined_metric_type = "ASGAverageCPUUtilization"
     }
-    target_value = 70.0
+    target_value = 40.0
   }
 }

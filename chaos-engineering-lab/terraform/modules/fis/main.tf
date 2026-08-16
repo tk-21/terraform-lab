@@ -66,7 +66,6 @@ resource "aws_fis_experiment_template" "cpu_stress" {
       # CPU 全コアに 100% 負荷を 300 秒（5 分）注入
       value = jsonencode({
         CPU             = "0"   # 0 = 全 CPU コア対象
-        Workers         = "0"   # 0 = コア数と同数のワーカー
         LoadPercent     = "100" # 100% 負荷
         DurationSeconds = "300" # 5 分間継続
       })
