@@ -94,9 +94,21 @@ resource "aws_iam_role_policy" "fis_execution" {
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents", # FIS 実験ログを CloudWatch に書き込み
-          "logs:DescribeLogGroups",
         ]
         Resource = "arn:aws:logs:ap-northeast-1:*:log-group:/aws/fis/*"
+      },
+      # FIS 実験ログの初回配信時に、CloudWatch Logs の配送設定と
+      # 配信サービス用リソースポリシーを作成するために必要。
+      # これらの API はロググループ ARN に限定できない。
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogDelivery",
+          "logs:DescribeLogGroups",
+          "logs:DescribeResourcePolicies",
+          "logs:PutResourcePolicy",
+        ]
+        Resource = "*"
       },
       {
         Effect = "Allow"

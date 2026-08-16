@@ -35,7 +35,7 @@ CPU ストレスを EC2 に注入し、ASG が自動スケールアウトする�
 |--------|----------------|
 | **モジュール設計** | 6 モジュール分割と depends_on による明示的な依存管理 |
 | **IaC 完全化** | FIS 実験テンプレートを含むすべてのリソースを Terraform で管理 |
-| **S3 バックエンド** | tfstate の S3 管理 + DynamoDB ロックによる競合防止 |
+| **S3 バックエンド** | tfstate の S3 管理 + S3 ネイティブロックによる競合防止 |
 | **動的 AMI 取得** | `data.aws_ami` で Amazon Linux 2023 の最新 AMI を自動取得 |
 
 ### カオスエンジニアリングの考え方
@@ -52,7 +52,7 @@ CPU ストレスを EC2 に注入し、ASG が自動スケールアウトする�
 - **FIS 実験テンプレートの完全 IaC 化**: `aws_fis_experiment_template` で実験シナリオをバージョン管理
 - **SSM agentless カオス注入**: SSH 不要、`AWSFIS-Run-CPU-Stress` マネージドドキュメントで安全注入
 - **多層安全弁設計**: CloudWatch アラーム停止条件 + IAM 最小権限 + FIS 対象フィルタ（50%）
-- **Target Tracking との連動**: CPU 70% 閾値で ASG スケールアウト → FIS 終了後スケールインまで自動検証
+- **Target Tracking との連動**: CPU 40% 目標で ASG スケールアウト → FIS 終了後スケールインまで自動検証
 - **ADR による設計判断の記録**: ツール選定・ポリシー選定の根拠をコードと同じリポジトリで管理
 
 ---
@@ -67,11 +67,10 @@ graph TD
     TG --> EC2_2["EC2 t3.micro\nInstance 2"]
     TG -.->|Scale Out| EC2_N["EC2 t3.micro\nInstance N (最大6)"]
 
-    FIS["AWS FIS\nExperiment Template"] -->|SSM SendCommand| EC2_1
-    FIS -->|SSM SendCommand| EC2_2
+    FIS["AWS FIS\nExperiment Template"] -->|SSM SendCommand| FISTarget["ASG インスタンスの 50%"]
+    FISTarget --> EC2_1
     EC2_1 -->|stress-ng CPU 100%| CPU["CPU使用率上昇"]
-    CPU -->|CPUUtilization > 70%| CW["CloudWatch\nMetric Alarm"]
-    CW -->|スケールアウト| ASG["Auto Scaling Group\nTarget Tracking CPU 70%"]
+    CPU -->|ASG 平均 CPU 約 50%| ASG["Auto Scaling Group\nTarget Tracking CPU 40%"]
     ASG --> EC2_N
 
     CW2["CloudWatch Alarm\n停止条件: CPU > 90% × 10分"] -->|自動停止| FIS
@@ -89,6 +88,22 @@ graph TD
 ```
 
 詳細なアーキテクチャ解説は [ARCHITECTURE.md](ARCHITECTURE.md) を参照。
+
+---
+
+## 検証済みの実験結果
+
+2026-08-16 に dev 環境で CPU ストレス実験を実施し、以下を確認した。
+
+| 項目 | 結果 |
+|------|------|
+| FIS 実験 | `completed` |
+| 対象範囲 | ASG の 50%（2 台中 1 台） |
+| CPU 負荷 | 対象インスタンスに 100% を 5 分間注入 |
+| ALB ヘルスチェック | 正常応答を維持 |
+| ASG 容量 | `2 → 3` インスタンスへスケールアウト |
+
+1 台だけへの 100% 負荷では ASG 平均 CPU が約 50% となるため、ターゲット追跡の目標値を 40% に設定している。
 
 ---
 
@@ -162,7 +177,6 @@ aws sts get-caller-identity
 | Auto Scaling | ASG・スケーリングポリシー構築 |
 | IAM | ロール・ポリシー・インスタンスプロファイル作成 |
 | S3 | アクセスログバケット・tfstate バケット操作 |
-| DynamoDB | tfstate ロックテーブル操作 |
 | FIS | 実験テンプレート作成 |
 | CloudWatch | アラーム・ロググループ作成 |
 | SSM | SendCommand 権限（FIS 経由） |
@@ -194,7 +208,7 @@ echo "Account ID: $AWS_ACCOUNT_ID"
 
 ### Step 3: Terraform State 用バックエンドの事前構築
 
-Terraform の状態ファイル (tfstate) を保管する S3 バケットと、ロック用の DynamoDB テーブルを作成する。
+Terraform の状態ファイル (tfstate) を保管する S3 バケットを作成する。ロックには Terraform の S3 ネイティブロックを使用する。
 
 > **なぜ必要か**: `terraform apply` を複数人・複数端末から同時に実行したときの競合を防ぐため。
 
@@ -213,14 +227,6 @@ aws s3api put-public-access-block \
   --public-access-block-configuration \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
-# DynamoDB テーブル作成（ステートロック用）
-aws dynamodb create-table \
-  --table-name cel-tfstate-lock \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region ap-northeast-1
-
 echo "✅ バックエンド構築完了"
 ```
 
@@ -230,22 +236,16 @@ echo "✅ バックエンド構築完了"
 aws s3 ls | grep cel-tfstate
 # → 2026-xx-xx xx:xx:xx cel-tfstate-123456789012
 
-aws dynamodb describe-table --table-name cel-tfstate-lock --region ap-northeast-1 \
-  --query 'Table.TableStatus' --output text
-# → ACTIVE
 ```
 
 ---
 
 ### Step 4: versions.tf のバックエンド設定を更新
 
-`terraform/environments/dev/versions.tf` の `REPLACE_ME` を実際の AWS アカウント ID に置換する。
+`terraform/environments/dev/versions.tf` の backend `bucket` を実際の AWS アカウント ID に合わせて更新する。
 
 ```bash
-# REPLACE_ME を実際のアカウント ID に置換
-sed -i "s/REPLACE_ME/${AWS_ACCOUNT_ID}/g" terraform/environments/dev/versions.tf
-
-# 置換結果を確認
+# bucket がアカウント ID と一致することを確認
 grep "bucket" terraform/environments/dev/versions.tf
 # → bucket = "cel-tfstate-123456789012" のように表示されること
 ```
@@ -544,14 +544,14 @@ done
 
 ```
 [CPU 使用率（直近 5 分の平均）]
-CPUUtilization (ASG 平均): 78.4%   ← 70% を超えたらスケールアウト開始
+CPUUtilization (ASG 平均): 50.0%   ← 40% 目標を超えるためスケールアウト開始
 ```
 
 **〜3 分後: スケールアウト発動**
 
 ```
 [容量]
-最小 / 希望 / 最大: 2 / 4 / 6     ← DesiredCapacity が増加
+最小 / 希望 / 最大: 2 / 3 / 6     ← DesiredCapacity が増加
 実際のインスタンス数: 3             ← 新インスタンスが起動中
 
 [インスタンス詳細]
@@ -594,8 +594,8 @@ CPUUtilization (ASG 平均): 12.1%   ← stress-ng 終了後に低下
  実験 ID        : EXPxxxxxxxxxxxxxxxxx
  最終ステータス : completed
  実験前インスタンス数: 2
- 実験後インスタンス数: 4
- [SUCCESS] スケールアウト成功！(2 -> 4 インスタンス)
+ 実験後インスタンス数: 3
+ [SUCCESS] スケールアウト成功！(2 -> 3 インスタンス)
 
  FIS ログ          : CloudWatch Logs /aws/fis/cel-dev-cpu-stress
  ALB エンドポイント: http://cel-dev-alb-xxx.ap-northeast-1.elb.amazonaws.com/health
@@ -671,15 +671,20 @@ aws elbv2 describe-load-balancers \
   && echo "ALB 削除済み"
 ```
 
-> **バックエンドリソース（S3・DynamoDB）は手動で削除**する。これらは Terraform 管理外のため `terraform destroy` では削除されない。
+> **バックエンドリソース（S3 バケット）は手動で削除**する。これは Terraform 管理外のため `terraform destroy` では削除されない。
 
 ```bash
-# tfstate バケットの削除（バージョン管理されている場合は --force が必要）
-aws s3 rm s3://cel-tfstate-${AWS_ACCOUNT_ID} --recursive
-aws s3 rb s3://cel-tfstate-${AWS_ACCOUNT_ID}
+# 注意: バージョニングを有効にしたバケットは、通常の `aws s3 rm` では
+# 過去バージョンと削除マーカーが残るため削除できない。
+STATE_BUCKET="cel-tfstate-${AWS_ACCOUNT_ID}"
 
-# DynamoDB テーブルの削除
-aws dynamodb delete-table --table-name cel-tfstate-lock --region ap-northeast-1
+# 全オブジェクトバージョンと削除マーカーを削除
+STATE_OBJECTS=$(aws s3api list-object-versions --bucket "$STATE_BUCKET" --output json | \
+  jq '{Objects: [((.Versions // [])[] | {Key, VersionId}), ((.DeleteMarkers // [])[] | {Key, VersionId})]}')
+aws s3api delete-objects --bucket "$STATE_BUCKET" --delete "$STATE_OBJECTS"
+
+# 空になったバケットを削除
+aws s3 rb "s3://${STATE_BUCKET}"
 
 echo "✅ バックエンドリソース削除完了"
 ```
@@ -697,7 +702,7 @@ echo "✅ バックエンドリソース削除完了"
 | NAT Gateway | ~$45 | **最大コスト要因** |
 | S3 (ALB ログ) | ~$1 | 30日後 Glacier 移行 |
 | CloudWatch Logs | ~$0 | 少量 |
-| FIS・DynamoDB | $0 | 無料 |
+| FIS・S3 ロック | $0 | 無料枠・少量利用を想定 |
 | **合計** | **~$84** | |
 
 ### 実験 1 回あたりの追加コスト
@@ -719,7 +724,7 @@ echo "✅ バックエンドリソース削除完了"
 | **FIS 対象フィルタ** | ASG 内インスタンスの 50% のみ選択 | 全インスタンス同時障害を防止 |
 | **FIS 停止条件** | CPUUtilization > 90% が 10 分継続で自動停止 | 暴走実験を自動制御 |
 | **FIS duration** | stress-ng が 5 分で自動終了 | 停止条件未発動でも必ず終了 |
-| **IAM 最小権限** | SSM SendCommand と Describe 系のみ | FIS ロールの過剰操作を防止 |
+| **IAM 最小権限** | SSM・参照系・FIS ログ配送に限定 | FIS ロールの過剰操作を防止 |
 
 ---
 
