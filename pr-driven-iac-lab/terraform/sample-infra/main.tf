@@ -24,6 +24,7 @@ locals {
     ManagedBy   = "terraform"
     Project     = "pr-driven-iac-lab"
     CostCenter  = "lab-01"
+    LabRun      = "atlantis"
   }
 }
 
@@ -84,7 +85,7 @@ resource "aws_iam_policy" "s3_reader" {
 # ロール名は64文字以内のAWSハード制限に対応した命名にしている
 resource "aws_iam_role" "s3_reader" {
   name        = "sample-infra-s3-reader-${var.environment}"
-  description = "EC2からsample-infraバケットを読み取るデモ用ロール"
+  description = "Demo role for EC2 to read the sample-infra bucket"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -22,12 +22,11 @@ projects:
         - "*.tfvars"
       enabled: true
     apply_requirements:
-      # approved: PR に1名以上のApproveが付いていないとapplyできない
-      # → "誰でもatlantis applyできてしまう"問題を防ぐセーフガード
-      - approved
       # mergeable: コンフリクトなし、かつブランチ保護の必須ステータスチェックが全て通過していること
       # → CIが通っていないコードをapplyさせない。terraform fmtチェックなどのGitHub Actionsと連携して機能する
       - mergeable
+      # 学習環境では1人でapplyを体験できるよう approved を一時的に外している。
+      # 複数人・本番運用へ移行する前に `- approved` を追加して必ず他者レビューを必須化する。
     workflow: default
 
 workflows:
