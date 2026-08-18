@@ -24,6 +24,7 @@ locals {
     ManagedBy   = "terraform"
     Project     = "pr-driven-iac-lab"
     CostCenter  = "lab-01"
+    LabRun      = "atlantis"
   }
 }
 
