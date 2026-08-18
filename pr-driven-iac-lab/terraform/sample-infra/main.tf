@@ -23,7 +23,7 @@ locals {
     Environment = var.environment
     ManagedBy   = "terraform"
     Project     = "pr-driven-iac-lab"
-    CostCenter  = "lab-001"
+    CostCenter  = "lab-01"
   }
 }
 
