@@ -10,7 +10,7 @@ terraform {
 
   backend "s3" {
     # bootstrap apply後にAWSアカウントIDを確認して置き換える
-    bucket         = "tfstate-pr-driven-iac-lab-PLACEHOLDER"
+    bucket         = "tfstate-pr-driven-iac-lab-999828867039"
     key            = "atlantis-infra/terraform.tfstate"
     region         = "ap-northeast-1"
     dynamodb_table = "tfstate-lock-pr-driven-iac-lab"

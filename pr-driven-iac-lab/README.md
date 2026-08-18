@@ -11,7 +11,7 @@ Self-hosted（Atlantis on ECS Fargate）と SaaS（Terraform Cloud）の両方�
 
 | スキル | 具体的な内容 |
 |---|---|
-| **PR-driven IaC の設計** | PR open → plan コメント → approve → apply → merge の完全フローを手で動かす |
+| **PR-driven IaC の設計** | PR open → plan コメント → review → apply → merge の完全フローを手で動かす |
 | **Atlantis の構築・運用** | ECS Fargate（arm64 + FARGATE_SPOT）への Self-hosted デプロイ、atlantis.yaml 設計 |
 | **ECS Fargate 本番相当の設計** | NAT Gateway + VPC Endpoints、IAM Task Role 分離、Graviton2 最適化 |
 | **Terraform State 管理** | S3 + DynamoDB によるリモートステート、TFC への移行（`-migrate-state`）、ロック機構の理解 |
@@ -154,18 +154,22 @@ s3_bucket_name     = "tfstate-pr-driven-iac-lab-123456789012"
 dynamodb_table_name = "tfstate-lock-pr-driven-iac-lab"
 ```
 
-**Step 2: atlantis-infra の backend.tf を更新**
+**Step 2: atlantis-infra と sample-infra の backend.tf を更新**
 
 ```bash
 # 出力されたバケット名で PLACEHOLDER を置き換える
 BUCKET_NAME="tfstate-pr-driven-iac-lab-${ACCOUNT_ID}"
 
-# terraform/atlantis-infra/backend.tf の PLACEHOLDER を実際のバケット名に変更
+# 両方の backend.tf でステートバケット名を実際の値に変更
 sed -i "s/tfstate-pr-driven-iac-lab-PLACEHOLDER/${BUCKET_NAME}/" \
   terraform/atlantis-infra/backend.tf
 
+sed -i "s/tfstate-pr-driven-iac-lab-[0-9]*/${BUCKET_NAME}/" \
+  terraform/sample-infra/backend.tf
+
 # 確認
 cat terraform/atlantis-infra/backend.tf
+cat terraform/sample-infra/backend.tf
 ```
 
 **Step 3: atlantis-infra の初期化確認**
@@ -194,6 +198,7 @@ aws dynamodb describe-table \
 - [ ] `s3://tfstate-pr-driven-iac-lab-{account_id}` が存在する
 - [ ] DynamoDB テーブル `tfstate-lock-pr-driven-iac-lab` が `ACTIVE` 状態
 - [ ] `terraform/atlantis-infra/backend.tf` の PLACEHOLDER が実際のバケット名に置き換わっている
+- [ ] `terraform/sample-infra/backend.tf` が同じ S3 バケットと DynamoDB テーブルを参照している
 - [ ] `terraform validate` がエラーなく完了する
 
 ---
@@ -355,11 +360,24 @@ gh pr create \
 **確認手順:**
 
 1. PR 作成後 30 秒以内に Atlantis が plan コメントを投稿することを確認
-2. `Plan: 0 to add, 1 to change, 0 to destroy` が含まれることを確認
+2. plan の変更内容が想定どおりであることを確認
 3. PR の差分が想定どおりであることを確認（複数人運用ではレビュアーが **Approve**）
 4. PR コメント欄に **`atlantis apply`** と入力
 5. Atlantis が apply を実行し、結果コメントが投稿されることを確認
 6. PR を **merge**
+
+> 初回 apply では S3 バケット、バージョニング、公開アクセスブロック、IAM ポリシー／ロールなどが作成されるため、複数の `to add` が表示されます。作成済みの環境でタグだけを変更した場合は、`0 to add, 1 to change, 0 to destroy` が想定結果です。
+
+apply 成功時の出力例：
+
+```text
+Apply complete! Resources: 6 added, 0 changed, 0 destroyed.
+
+Outputs:
+iam_role_arn   = "arn:aws:iam::<account-id>:role/sample-infra-s3-reader-dev"
+s3_bucket_arn = "arn:aws:s3:::sample-infra-dev-<account-id>"
+s3_bucket_name = "sample-infra-dev-<account-id>"
+```
 
 ```bash
 # apply後: タグが付いたか確認
@@ -570,23 +588,82 @@ gh pr create \
 
 ### Step 3: リソースのクリーンアップ（必須）
 
-**ALB・ECS・VPC Interface Endpoints は放置するとコストが発生します。必ず実行してください。**
+**ALB・NAT Gateway・ECS・VPC Interface Endpoints は放置するとコストが発生します。完全削除は元に戻せないため、再開予定がある場合は ECS サービスを停止するだけにしてください。**
+
+#### 明日以降に再開する場合
+
+```bash
+aws ecs update-service \
+  --cluster atlantis-cluster \
+  --service atlantis \
+  --desired-count 0 \
+  --region ap-northeast-1
+```
+
+再開時は `--desired-count 1` に戻します。この方法では ALB・NAT Gateway・VPC Endpoints の料金は継続します。
+
+#### 完全に削除する場合
+
+次の順で実行します。`sample-infra` と `atlantis-infra` の state は S3 バケットにあるため、state バケットを先に削除してはいけません。
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-# 1. sample-infra を先に destroy（AtlantisまたはTFCが管理しているリソース）
-cd terraform/sample-infra
-terraform destroy -auto-approve
+# 1. sample-infra を先に destroy
+# backend を変更した直後は、S3 backend を再設定してから実行する
+terraform -chdir=terraform/sample-infra init -reconfigure
+terraform -chdir=terraform/sample-infra destroy
 
 # 2. atlantis-infra を destroy
-cd ../atlantis-infra
-terraform destroy -var="github_repo_owner=あなたのGitHubユーザー名" -auto-approve
+terraform -chdir=terraform/atlantis-infra init -reconfigure
+terraform -chdir=terraform/atlantis-infra destroy \
+  -var="github_repo_owner=あなたのGitHubユーザー名"
+```
 
-# 3. bootstrap の S3 バケットを空にしてから destroy
-aws s3 rm s3://tfstate-pr-driven-iac-lab-${ACCOUNT_ID} --recursive
-cd ../bootstrap
-terraform destroy -var="aws_account_id=${ACCOUNT_ID}" -auto-approve
+3. AWS コンソールで `tfstate-pr-driven-iac-lab-${ACCOUNT_ID}` を開き、**Empty** を実行します。バージョニングが有効なので、すべてのオブジェクトバージョンと削除マーカーを削除してください。
+
+   CLI を使う場合は、先にそれぞれの一覧を確認し、結果が1件以上あるものだけを削除します。削除対象がない場合は対応する `delete-objects` コマンドを実行しません。
+
+   ```bash
+   BUCKET="tfstate-pr-driven-iac-lab-${ACCOUNT_ID}"
+
+   # オブジェクトバージョンを確認し、表示された場合だけ次の削除コマンドを実行
+   aws s3api list-object-versions \
+     --bucket "${BUCKET}" \
+     --output table \
+     --query 'Versions[].{Key:Key,VersionId:VersionId}'
+
+   aws s3api delete-objects \
+     --bucket "${BUCKET}" \
+     --delete "$(aws s3api list-object-versions \
+       --bucket "${BUCKET}" \
+       --output json \
+       --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')"
+
+   # 削除マーカーを確認し、表示された場合だけ次の削除コマンドを実行
+   aws s3api list-object-versions \
+     --bucket "${BUCKET}" \
+     --output table \
+     --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}'
+
+   aws s3api delete-objects \
+     --bucket "${BUCKET}" \
+     --delete "$(aws s3api list-object-versions \
+       --bucket "${BUCKET}" \
+       --output json \
+       --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}')"
+
+   # Versions と DeleteMarkers が空または null なら完了
+   aws s3api list-object-versions \
+     --bucket "${BUCKET}" \
+     --output json \
+     --query '{Versions: Versions, DeleteMarkers: DeleteMarkers}'
+   ```
+
+```bash
+# 4. state バケットを空にした後で bootstrap を destroy
+terraform -chdir=terraform/bootstrap destroy \
+  -var="aws_account_id=${ACCOUNT_ID}"
 ```
 
 > **順番が重要**: sample-infra → atlantis-infra → bootstrap の順に destroy すること。
@@ -634,8 +711,9 @@ aws s3 ls | grep pr-driven-iac-lab
 | Atlantis が plan コメントを投稿しない | GitHub Webhook の Recent Deliveries を確認。ECS タスクのログ: `aws logs tail /ecs/atlantis --follow` |
 | `curl /healthz` が 503 を返す | ALB に正常ターゲットがない状態。ECS タスクが `RUNNING` か確認: `aws ecs describe-services --cluster atlantis-cluster --services atlantis` |
 | `CannotPullContainerError` | private route table が NAT Gateway を経由しているか確認。`ghcr.io` のイメージ取得には外部通信が必要 |
-| `apply requirement not met: approved` | PR に Approve が付いているか確認 |
+| `apply requirement not met: approved` | `approved` を有効化した複数人運用では、PR 作成者以外の Approve を取得する |
 | `apply requirement not met: mergeable` | `atlantis-status-check.yml`（terraform fmt）が通過しているか確認 |
+| `dynamodb_table` の Deprecated Parameter 警告 | 現行の DynamoDB ロックは利用可能。S3 lockfile への移行を行うまでの警告であり、apply 失敗の原因ではない |
 | State lock が解放されない | DynamoDB の lock アイテムを確認・手動削除（[runbook.md](./docs/runbook.md) 参照） |
 | TFC plan が走らない | `TF_API_TOKEN` が GitHub Secrets に設定されているか確認 |
 | TFC apply が承認待ちのまま | GitHub Environments > production のレビュアーが承認待ちか確認 |

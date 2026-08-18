@@ -16,7 +16,7 @@
 resource "aws_iam_role" "task_execution" {
   # 64文字以内のAWSハード制限に対応
   name        = "atlantis-task-execution-role"
-  description = "ECS Fargateがコンテナ起動時に使用するExecution Role"
+  description = "Execution role used by ECS Fargate to start containers"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -86,7 +86,7 @@ resource "aws_iam_role_policy" "task_execution_ssm" {
 
 resource "aws_iam_role" "task_role" {
   name        = "atlantis-task-role"
-  description = "AtlantisコンテナがTerraformを実行するためのTask Role"
+  description = "Task role used by the Atlantis container to run Terraform"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
