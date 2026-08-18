@@ -63,8 +63,7 @@ resource "aws_subnet" "private" {
 }
 
 # ──────────────────────────────────────────
-# Internet Gateway (ALBのインターネット疎通用)
-# NAT GatewayはVPC Endpointで代替するため作成しない
+# Internet Gateway (ALB と NAT Gateway のインターネット疎通用)
 # ──────────────────────────────────────────
 
 resource "aws_internet_gateway" "atlantis" {
@@ -95,10 +94,33 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# プライベートサブネット用ルートテーブル (デフォルトルートなし)
-# VPC Endpoint経由でAWSサービスにアクセスするため、インターネットへのルートは不要
+# NAT Gateway (単一 AZ 構成でコストを抑える)
+# ECS が GHCR からイメージを取得し、Atlantis が GitHub と通信するために必要。
+# 高可用性が必要な環境では AZ ごとに NAT Gateway と private route table を作成する。
+resource "aws_eip" "nat" {
+  domain = "vpc"
+
+  tags = merge(local.common_tags, { Name = "atlantis-nat-eip" })
+}
+
+resource "aws_nat_gateway" "atlantis" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public["a"].id
+
+  depends_on = [aws_route_table_association.public]
+
+  tags = merge(local.common_tags, { Name = "atlantis-nat" })
+}
+
+# プライベートサブネット用ルートテーブル
+# AWS API への通信は VPC Endpoint を優先し、GHCR と GitHub などの外部通信は NAT Gateway を経由する。
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.atlantis.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.atlantis.id
+  }
 
   tags = merge(local.common_tags, { Name = "atlantis-private-rt" })
 }
@@ -112,7 +134,7 @@ resource "aws_route_table_association" "private" {
 
 # ──────────────────────────────────────────
 # VPC Endpoints
-# NAT Gateway ($45/月) を使わずプライベートサブネットからAWSサービスにアクセスする
+# VPC Endpoint を利用して AWS サービスへの通信をプライベートに保つ
 # ──────────────────────────────────────────
 
 # S3 Gateway Endpoint (無料)
@@ -141,11 +163,11 @@ resource "aws_vpc_endpoint" "dynamodb" {
 # VPC内からのHTTPS通信のみ許可
 resource "aws_security_group" "vpce" {
   name        = "atlantis-vpce-sg"
-  description = "VPC Interface Endpointへのアクセスを許可"
+  description = "Allow access to VPC Interface Endpoints"
   vpc_id      = aws_vpc.atlantis.id
 
   ingress {
-    description = "VPC内からのHTTPS"
+    description = "HTTPS from within VPC"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
