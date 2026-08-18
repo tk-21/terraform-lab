@@ -6,7 +6,7 @@ variable "github_repo_owner" {
 variable "github_repo_name" {
   description = "AtlantisがwebhookをリッスンするGitHubリポジトリ名"
   type        = string
-  default     = "pr-driven-iac-lab"
+  default     = "terraform-lab"
 }
 
 variable "atlantis_image" {

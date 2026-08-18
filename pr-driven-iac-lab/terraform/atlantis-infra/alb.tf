@@ -5,11 +5,11 @@
 # ALB用: GitHubからのwebhook受信のためHTTP/HTTPSをインターネットに公開
 resource "aws_security_group" "alb" {
   name        = "atlantis-alb-sg"
-  description = "AtlantisのALBにGitHub webhookを受け付けるSG"
+  description = "Allow GitHub webhooks to the Atlantis ALB"
   vpc_id      = aws_vpc.atlantis.id
 
   ingress {
-    description = "HTTP (ACM未設定時の動作確認用)"
+    description = "HTTP for testing before ACM is configured"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -17,7 +17,7 @@ resource "aws_security_group" "alb" {
   }
 
   ingress {
-    description = "HTTPS (ACM証明書設定後に有効化)"
+    description = "HTTPS enabled after ACM certificate is configured"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -37,11 +37,11 @@ resource "aws_security_group" "alb" {
 # ECS用: ALBからのトラフィックのみ許可 (直接インターネットアクセス禁止)
 resource "aws_security_group" "ecs" {
   name        = "atlantis-ecs-sg"
-  description = "AtlantisのECSタスクへのアクセスをALBのみに制限"
+  description = "Restrict access to Atlantis ECS tasks to the ALB"
   vpc_id      = aws_vpc.atlantis.id
 
   ingress {
-    description     = "ALBからのみAtlantisポートへのアクセスを許可"
+    description     = "Allow Atlantis port access only from the ALB"
     from_port       = var.atlantis_port
     to_port         = var.atlantis_port
     protocol        = "tcp"
@@ -49,7 +49,7 @@ resource "aws_security_group" "ecs" {
   }
 
   egress {
-    description = "AWS APIへのアウトバウンド (VPC Endpoint経由)"
+    description = "AWS API outbound via VPC Endpoint"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
