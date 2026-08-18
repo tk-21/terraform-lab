@@ -1,13 +1,12 @@
-# Phase 4以降: Terraform CloudがS3+DynamoDBに代わってステート管理を担う
-# 移行手順: terraform login → terraform init -migrate-state
-# ステート移行後はTFC UI > Workspace > States で履歴を確認すること
+# Phase 1〜3: Atlantis が S3 + DynamoDB でステートとロックを管理する
+# Phase 4 で HCP Terraform へ移行する際は cloud ブロックへ変更し、
+# terraform init -migrate-state を実行すること
 terraform {
-  cloud {
-    # terraform login実行後に自動設定されるOrg名
-    organization = "takuya-iac-lab"
-
-    workspaces {
-      name = "sample-infra-dev"
-    }
+  backend "s3" {
+    bucket         = "tfstate-pr-driven-iac-lab-999828867039"
+    key            = "sample-infra/terraform.tfstate"
+    region         = "ap-northeast-1"
+    dynamodb_table = "tfstate-lock-pr-driven-iac-lab"
+    encrypt        = true
   }
 }
