@@ -13,7 +13,7 @@ Self-hosted（Atlantis on ECS Fargate）と SaaS（Terraform Cloud）の両方�
 |---|---|
 | **PR-driven IaC の設計** | PR open → plan コメント → approve → apply → merge の完全フローを手で動かす |
 | **Atlantis の構築・運用** | ECS Fargate（arm64 + FARGATE_SPOT）への Self-hosted デプロイ、atlantis.yaml 設計 |
-| **ECS Fargate 本番相当の設計** | NAT Gateway 不使用・VPC Endpoints のみ、IAM Task Role 分離、Graviton2 最適化 |
+| **ECS Fargate 本番相当の設計** | NAT Gateway + VPC Endpoints、IAM Task Role 分離、Graviton2 最適化 |
 | **Terraform State 管理** | S3 + DynamoDB によるリモートステート、TFC への移行（`-migrate-state`）、ロック機構の理解 |
 | **IAM 最小権限設計** | Task Execution Role と Task Role の分離、wildcard 禁止の具体的な実装 |
 | **GitHub Actions × TFC 連携** | `TF_API_TOKEN` 認証、GitHub Environment 承認ゲート、PRコメントへの plan 結果投稿 |
@@ -117,7 +117,7 @@ gh auth status
 
 ### 目的
 
-Terraform のリモートステートを管理する S3 + DynamoDB を構築します。
+Atlantis のリモートステートを管理する S3 + DynamoDB を構築します。
 この「bootstrap」は**手動で1回だけ apply** します。以降の変更はすべて PR 経由になります。
 
 ### なぜ bootstrap を先に作るのか
@@ -154,24 +154,24 @@ s3_bucket_name     = "tfstate-pr-driven-iac-lab-123456789012"
 dynamodb_table_name = "tfstate-lock-pr-driven-iac-lab"
 ```
 
-**Step 2: sample-infra の backend.tf を更新**
+**Step 2: atlantis-infra の backend.tf を更新**
 
 ```bash
 # 出力されたバケット名で PLACEHOLDER を置き換える
 BUCKET_NAME="tfstate-pr-driven-iac-lab-${ACCOUNT_ID}"
 
-# terraform/sample-infra/backend.tf の PLACEHOLDER を実際のバケット名に変更
+# terraform/atlantis-infra/backend.tf の PLACEHOLDER を実際のバケット名に変更
 sed -i "s/tfstate-pr-driven-iac-lab-PLACEHOLDER/${BUCKET_NAME}/" \
-  terraform/sample-infra/backend.tf
+  terraform/atlantis-infra/backend.tf
 
 # 確認
-cat terraform/sample-infra/backend.tf
+cat terraform/atlantis-infra/backend.tf
 ```
 
-**Step 3: sample-infra の初期化確認**
+**Step 3: atlantis-infra の初期化確認**
 
 ```bash
-cd terraform/sample-infra
+cd terraform/atlantis-infra
 terraform init
 terraform validate
 ```
@@ -193,7 +193,7 @@ aws dynamodb describe-table \
 
 - [ ] `s3://tfstate-pr-driven-iac-lab-{account_id}` が存在する
 - [ ] DynamoDB テーブル `tfstate-lock-pr-driven-iac-lab` が `ACTIVE` 状態
-- [ ] `terraform/sample-infra/backend.tf` の PLACEHOLDER が実際のバケット名に置き換わっている
+- [ ] `terraform/atlantis-infra/backend.tf` の PLACEHOLDER が実際のバケット名に置き換わっている
 - [ ] `terraform validate` がエラーなく完了する
 
 ---
@@ -203,7 +203,10 @@ aws dynamodb describe-table \
 ### 目的
 
 Atlantis を ECS Fargate（arm64 + FARGATE_SPOT）でホスティングし、
-GitHub Webhook と接続します。NAT Gateway を使わず VPC Endpoints のみでコストを最適化します。
+GitHub Webhook と接続します。AWS サービスへの通信は VPC Endpoints を優先し、
+GHCR からのイメージ取得と GitHub への通信には NAT Gateway を使用します。
+
+> **ネットワーク設計**: ECS タスクはプライベートサブネットに配置します。外部レジストリ `ghcr.io` のイメージ取得と GitHub API への通信にはインターネット到達性が必要なため、private route table のデフォルトルートは NAT Gateway を経由します。S3、DynamoDB、ECR、CloudWatch Logs、SSM への通信は既存の VPC Endpoints を利用します。
 
 ### Step 1: GitHub PAT と Webhook シークレットを SSM に保存
 
@@ -240,10 +243,8 @@ aws ssm put-parameter \
 ```bash
 cd terraform/atlantis-infra
 
-# PLACEHOLDERをバケット名に置き換え（backend.tf）
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-sed -i "s/tfstate-pr-driven-iac-lab-PLACEHOLDER/tfstate-pr-driven-iac-lab-${ACCOUNT_ID}/" \
-  backend.tf
+# Phase 1 で backend.tf の PLACEHOLDER を置き換え済みであることを確認
+grep 'bucket.*tfstate-pr-driven-iac-lab-' backend.tf
 
 terraform init
 
@@ -269,13 +270,14 @@ atlantis_url  = "http://atlantis-alb-xxxxxxxxxx.ap-northeast-1.elb.amazonaws.com
 ALB_DNS="atlantis-alb-xxxxxxxxxx.ap-northeast-1.elb.amazonaws.com"  # 実際の値に変更
 
 # ヘルスチェック（{"status":"ok"} が返れば起動成功）
-curl http://${ALB_DNS}/healthz
+curl "http://${ALB_DNS}/healthz"
 
 # ECSタスクのログ確認
 aws logs tail /ecs/atlantis --follow --region ap-northeast-1
 ```
 
 > **ヒント**: ECS タスクが起動するまで 1〜2 分かかります。`{"status":"ok"}` が返るまで待ちましょう。
+> `503 Service Temporarily Unavailable` の場合は、ALB に正常な ECS ターゲットが登録されていません。Step 3 のログと ECS サービスイベントを確認してください。
 
 ### Step 4: GitHub Webhook の設定
 
@@ -283,7 +285,7 @@ GitHub リポジトリ > Settings > Webhooks > Add webhook
 
 | 項目 | 値 |
 |---|---|
-| Payload URL | `http://{alb_dns_name}/events` |
+| Payload URL | `http://${ALB_DNS}/events` |
 | Content type | `application/json` |
 | Secret | Step 1 でメモした Webhook Secret |
 | Events | `Pull requests`, `Issue comments`, `Push` |
@@ -301,13 +303,13 @@ aws ecs describe-services \
   --query "services[0].{Status:status,RunningCount:runningCount}"
 
 # Atlantisヘルスチェック
-curl http://{alb_dns_name}/healthz
+curl "http://${ALB_DNS}/healthz"
 ```
 
 - [ ] ECS タスクが `RUNNING` 状態
 - [ ] `curl /healthz` が `{"status":"ok"}` を返す
 - [ ] GitHub Webhook の Recent Deliveries が成功（緑チェック）
-- [ ] VPC に NAT Gateway が存在しない（VPC Endpoints のみ）
+- [ ] NAT Gateway 経由で ECS タスクが GHCR イメージを取得できる
 
 ---
 
@@ -315,7 +317,7 @@ curl http://{alb_dns_name}/healthz
 
 ### 目的
 
-PR open → plan → approve → apply → merge の完全フローを実際に動かします。
+PR open → plan → review → apply → merge の完全フローを実際に動かします。
 3つのシナリオで Atlantis の動作パターンを確認します。
 
 ### Atlantis のフロー
@@ -324,7 +326,7 @@ PR open → plan → approve → apply → merge の完全フローを実際に�
 1. feature/* ブランチで変更 → PR open
 2. Atlantis が自動で terraform plan を実行
 3. PR に plan 結果がコメントされる
-4. レビュアーが PR を Approve
+4. PR の内容をレビュー（複数人運用ではレビュアーが Approve）
 5. PR のコメントに「atlantis apply」と入力
 6. Atlantis が terraform apply を実行
 7. PR を merge
@@ -354,7 +356,7 @@ gh pr create \
 
 1. PR 作成後 30 秒以内に Atlantis が plan コメントを投稿することを確認
 2. `Plan: 0 to add, 1 to change, 0 to destroy` が含まれることを確認
-3. GitHub UI で PR を **Approve**
+3. PR の差分が想定どおりであることを確認（複数人運用ではレビュアーが **Approve**）
 4. PR コメント欄に **`atlantis apply`** と入力
 5. Atlantis が apply を実行し、結果コメントが投稿されることを確認
 6. PR を **merge**
@@ -403,7 +405,10 @@ git branch -D feature/intentional-error
 
 ---
 
-### シナリオ 3: apply 要件未達（Approve なしでの apply 試行）
+### シナリオ 3: apply 要件未達（複数人運用での Approve なし apply 試行）
+
+> 現在の学習用設定では、1人で apply を体験できるよう `approved` 要件を外しています。
+> このシナリオを実行する場合は、先に `atlantis.yaml` の `apply_requirements` へ `- approved` を戻してください。
 
 ```bash
 git checkout -b feature/no-approve-test
@@ -432,9 +437,9 @@ git checkout main
 
 ### Phase 3 完了チェック
 
-- [ ] シナリオ 1: plan → approve → `atlantis apply` → merge が完走した
+- [ ] シナリオ 1: plan → review → `atlantis apply` → merge が完走した
 - [ ] シナリオ 2: plan 失敗時に Atlantis のエラーコメントを確認した
-- [ ] シナリオ 3: Approve なしで apply が拒否されることを確認した
+- [ ] シナリオ 3: `approved` を有効化した場合に、Approve なしで apply が拒否されることを確認した
 - [ ] CloudWatch Logs で webhook 受信〜plan コメント投稿の流れを追えた
 
 ---
@@ -478,32 +483,24 @@ TFC Workspace > Variables タブ > Add variable
 > aws iam create-access-key --user-name tfc-sample-infra-deployer
 > ```
 
-### Step 2: State を S3 から TFC に移行
+### Step 2: Terraform Cloud バックエンドを初期化
 
 ```bash
 cd terraform/sample-infra
 
-# backend.tf を TFC 用に書き換え（cloud ブロックに変更）
-cat > backend.tf << 'EOF'
-terraform {
-  cloud {
-    organization = "takuya-iac-lab"  # 自分のOrg名に変更
-
-    workspaces {
-      name = "sample-infra-dev"
-    }
-  }
-}
-EOF
+# backend.tf の organization は作成した TFC Organization 名と一致させる
+# 必要に応じて backend.tf を編集してから実行する
 
 # TFC にログイン（ブラウザが自動で開く）
 terraform login
 
-# S3 から TFC へ State を移行
-terraform init -migrate-state
+# 現在の backend.tf は Terraform Cloud 用の cloud ブロックを定義済み
+terraform init
 ```
 
-移行後、TFC UI > Workspace > States タブで移行された State を確認してください。
+TFC UI > Workspace > States タブで State が管理されていることを確認してください。
+
+> Phase 3 で sample-infra の State を S3 に作成している場合は、`terraform init -migrate-state` を実行して TFC へ移行します。
 
 ### Step 3: GitHub Secrets と Environment の設定
 
@@ -552,7 +549,7 @@ gh pr create \
 - [ ] TFC Organization と Workspace が作成済み
 - [ ] PR 作成後に TFC が自動で plan を実行した
 - [ ] TFC UI の Runs タブで実行履歴を確認した
-- [ ] State が S3 から TFC に移行済み（TFC UI の States タブで確認）
+- [ ] State が TFC UI の States タブで管理されている
 - [ ] GitHub Secrets に `TF_API_TOKEN` が設定済み
 - [ ] GitHub Environment `production` の承認ゲートが動作した
 - [ ] Atlantis と比較した際の相違点を 5 つ以上メモしている
@@ -635,7 +632,8 @@ aws s3 ls | grep pr-driven-iac-lab
 | 症状 | 確認コマンド / 対処 |
 |---|---|
 | Atlantis が plan コメントを投稿しない | GitHub Webhook の Recent Deliveries を確認。ECS タスクのログ: `aws logs tail /ecs/atlantis --follow` |
-| `curl /healthz` が返らない | ECS タスクが RUNNING か確認: `aws ecs describe-services --cluster atlantis-cluster --services atlantis` |
+| `curl /healthz` が 503 を返す | ALB に正常ターゲットがない状態。ECS タスクが `RUNNING` か確認: `aws ecs describe-services --cluster atlantis-cluster --services atlantis` |
+| `CannotPullContainerError` | private route table が NAT Gateway を経由しているか確認。`ghcr.io` のイメージ取得には外部通信が必要 |
 | `apply requirement not met: approved` | PR に Approve が付いているか確認 |
 | `apply requirement not met: mergeable` | `atlantis-status-check.yml`（terraform fmt）が通過しているか確認 |
 | State lock が解放されない | DynamoDB の lock アイテムを確認・手動削除（[runbook.md](./docs/runbook.md) 参照） |
@@ -651,8 +649,8 @@ aws s3 ls | grep pr-driven-iac-lab
 | フェーズ | 起動中のリソース | 月額概算 |
 |---|---|---|
 | Phase 1 | S3 + DynamoDB のみ | ほぼ無料 |
-| Phase 2〜3 | ECS Fargate + ALB + VPC Endpoints | 約 $55/月 |
-| Phase 4 | 上記 + TFC | $55/月（TFC Free Tier） |
+| Phase 2〜3 | ECS Fargate + ALB + VPC Endpoints + NAT Gateway | 約 $55/月 + NAT Gateway の時間・データ処理料金 |
+| Phase 4 | 上記 + TFC | Phase 2〜3 と同額（TFC Free Tier） |
 
 **ラボを使わない日はスケールダウンを推奨：**
 
