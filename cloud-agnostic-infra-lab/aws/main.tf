@@ -136,8 +136,10 @@ data "aws_ami" "amazon_linux_arm" {
   owners      = ["amazon"]
 
   filter {
-    name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    name = "name"
+    # ECS 最適化 AMI も一致するため、通常の AL2023 AMI に限定する。
+    # t4g.nano では ECS の Docker/Containerd 常駐プロセスがメモリを圧迫する。
+    values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
   }
 }
 

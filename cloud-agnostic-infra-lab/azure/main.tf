@@ -158,13 +158,12 @@ resource "azurerm_linux_virtual_machine_scale_set" "nginx" {
   name                = "${var.project}-vmss"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
-  sku                 = "Standard_B1s" # 1vCPU, 1GiB RAM — コスト最小
+  sku                 = "Standard_D2s_v5" # 2vCPU, 8GiB RAM — 容量確保を優先
   instances           = 1
   admin_username      = "azureuser"
 
-  # Spot VM（AWS Spot / GCP Preemptibleに相当）
-  priority        = "Spot"
-  eviction_policy = "Deallocate" # Deleteより安全（データ保持）
+  # japanwest で Regular を使用し、検証を確実に完了させる。
+  priority = "Regular"
 
   admin_ssh_key {
     username   = "azureuser"
@@ -174,8 +173,9 @@ resource "azurerm_linux_virtual_machine_scale_set" "nginx" {
   source_image_reference {
     publisher = "Canonical"
     offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts-arm64" # arm64でコスト最適化
-    version   = "latest"
+    # Standard_D2s_v5 は x64 のため、互換性のある Gen2 イメージを使用する。
+    sku     = "22_04-lts-gen2"
+    version = "latest"
   }
 
   os_disk {
@@ -202,7 +202,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "nginx" {
     apt-get install -y nginx
     cat > /var/www/html/index.html << 'HTML'
     <h1>cloud-agnostic-infra-lab: Azure</h1>
-    <p>Location: Japan East | IaC: Terraform | Compute: B1s Spot (arm64)</p>
+    <p>Location: Japan West | IaC: Terraform | Compute: D2s v5 Regular (x64)</p>
     HTML
     systemctl enable --now nginx
   EOF

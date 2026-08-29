@@ -29,7 +29,7 @@
 │                                                                 │
 │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
 │   │     AWS      │  │     GCP      │  │    Azure     │        │
-│   │  ap-northeast│  │asia-northeast│  │  japaneast   │        │
+│   │  ap-northeast│  │asia-northeast│  │  japanwest   │        │
 │   │      -1      │  │      1       │  │              │        │
 │   └──────┬───────┘  └──────┬───────┘  └──────┬───────┘        │
 │          │                 │                  │                 │
@@ -378,7 +378,7 @@ Azure Subscription
 | 変数名 | デフォルト | 説明 |
 |--------|-----------|------|
 | `subscription_id` | なし（必須） | AzureサブスクリプションID |
-| `location` | `japaneast` | Azureリージョン（"location"と呼ぶ） |
+| `location` | `japanwest` | Azureリージョン（"location"と呼ぶ） |
 | `project` | `cail` | タグ・リソース名のプレフィックス |
 | `env` | `dev` | 環境名 |
 | `ssh_public_key` | なし（必須） | VMSSのSSH公開鍵 |
@@ -403,7 +403,7 @@ Azure Subscription
                   ↕ リージョン単位  ↕ グローバル      ↕ リージョン単位
 
 サブネット単位     AZ単位           リージョン単位    リージョン単位
-                  ap-northeast-1a  asia-northeast1  japaneast
+                  ap-northeast-1a  asia-northeast1  japanwest
                   ap-northeast-1c
                   （複数必要）      （1つでOK）       （1つでOK）
 
@@ -432,7 +432,7 @@ Azure Subscription
 | ヘルスチェック | TG内包 | 独立リソース | Probe（LB内） |
 | SSHの安全な接続 | Session Manager | IAP Tunnel | Azure Bastion |
 | ログ | CloudWatch Logs | Cloud Logging | Azure Monitor |
-| ARM アーキテクチャ | Graviton2 (arm64) | arm64対応 | arm64対応 |
+| ARM アーキテクチャ | Graviton2 (arm64) | arm64対応 | D2s v5 は x64 |
 | Spot / 割り込みVM | Spot Instance | Preemptible VM | Spot VM |
 | リソースグループ概念 | なし（タグで代替） | なし（プロジェクトで代替） | Resource Group |
 
@@ -500,7 +500,7 @@ Azure LB（L4/L7が分離）
 |------------|-----|-----|-------|
 | NAT Gateway回避 | パブリックサブネット直接配置 | Cloud NAT不使用・外部IP直付け | パブリックサブネット配置 |
 | Computeコスト | Spot（最大70%削減） | Preemptible（最大80%削減） | Spot（最大90%削減） |
-| アーキテクチャ | arm64 Graviton2（x86比20%安） | e2-micro（無料枠対象） | arm64対応B1s |
+| アーキテクチャ | arm64 Graviton2（x86比20%安） | e2-micro（無料枠対象） | D2s v5 は x64 |
 | インスタンスサイズ | t4g.nano（最小） | e2-micro（最小） | B1s（最小） |
 
 ### NAT Gateway を使わない設計の意図

@@ -4,7 +4,7 @@
 
 | 項目 | AWS | GCP | Azure |
 |------|-----|-----|-------|
-| Compute | t4g.nano Spot (arm64) ~$1 | e2-micro Preemptible ~$0（無料枠） | B1s Spot (arm64) ~$3 |
+| Compute | t4g.nano Spot (arm64) ~$1 | e2-micro Preemptible ~$0（無料枠） | B1s Spot (x64) ~$3 |
 | LB | ALB ~$16 | Global LB ~$18 | Standard LB ~$18 |
 | データ転送 | ~$0.01 | ~$0.01 | ~$0.01 |
 | **合計（概算）** | **~$17** | **~$18** | **~$21** |
@@ -16,7 +16,7 @@
 | 削減ポイント | AWS | GCP | Azure |
 |------------|-----|-----|-------|
 | NAT Gateway回避 | パブリックサブネット配置 | Cloud NAT不使用 | パブリックサブネット配置 |
-| コンピュートコスト | Spot + arm64 | Preemptible + 無料枠 | Spot + arm64 |
+| コンピュートコスト | Spot + arm64 | Preemptible + 無料枠 | Spot + x64 |
 | ストレージ | gp3最小 | Standard PD | Standard LRS |
 
 ## 所感（自分の言葉で書くこと）

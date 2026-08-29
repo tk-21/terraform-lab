@@ -6,7 +6,7 @@ variable "subscription_id" {
 variable "location" {
   description = "Azureリージョン（Locationと呼ぶ点がAWS/GCPと異なる）"
   type        = string
-  default     = "japaneast"
+  default     = "japanwest"
 }
 
 variable "project" {
