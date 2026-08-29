@@ -87,7 +87,7 @@ Internet
 | ネットワーク | VPC（リージョン） | VPC Network（グローバル） | VNet（リージョン） |
 | ロードバランサー | ALB | Global LB | Standard LB |
 | オートスケーリング | ASG | MIG（Regional） | VMSS |
-| VM スペック | t4g.nano Spot（arm64） | e2-micro Preemptible | B1s Spot（arm64） |
+| VM スペック | t4g.nano Spot（arm64） | e2-micro Preemptible | D2s v5 Regular（x64） |
 | ファイアウォール | Security Group | Firewall Rules（タグ） | NSG |
 
 ---
@@ -120,11 +120,12 @@ curl --version
 ### SSH キーペア（Azure のみ必要）
 
 ```bash
-# まだ鍵がない場合は生成する
-ssh-keygen -t ed25519 -C "cloud-agnostic-infra-lab" -f ~/.ssh/cail_key
+# Azure VMSS 用の RSA 鍵を生成する（Ed25519 はこの構成で使用不可）
+ssh-keygen -t rsa -b 4096 -C "cloud-agnostic-infra-lab-azure" -f ~/.ssh/cail_azure_rsa
 
 # 公開鍵の内容を確認（後で使う）
-cat ~/.ssh/cail_key.pub
+cat ~/.ssh/cail_azure_rsa.pub
+# → ssh-rsa AAAA... cloud-agnostic-infra-lab-azure
 ```
 
 ---
@@ -221,6 +222,7 @@ curl http://$ALB_DNS
 ```
 
 応答がすぐ返らない場合は 1〜2 分待ってから再実行する（EC2の起動とヘルスチェック通過に時間がかかる）。
+`502 Bad Gateway` が続く場合は、ターゲットグループの状態を確認し、`healthy` になるまで待つ。
 
 ### 4-5. コンソールで確認すべきポイント
 
@@ -239,6 +241,16 @@ curl http://$ALB_DNS
 2. セキュリティグループとNACLの役割の違いは何か
 3. なぜNAT Gatewayを使わなかったか。代替手段は何か
 4. ALBとGCP Cloud Load Balancingのアーキテクチャ上の違いは何か
+
+<details>
+<summary>回答例を表示</summary>
+
+1. AWS の VPC はリージョン単位で、サブネットは AZ 単位に作る。一方、GCP の VPC はグローバルリソースで、サブネットだけがリージョン単位である。そのため GCP は複数リージョンでネットワーク境界を共有しやすい。
+2. Security Group は ENI に関連付けるステートフルな許可型ファイアウォールで、戻り通信を自動許可する。NACL はサブネットに関連付けるステートレスなルールで、番号順に allow/deny を評価し、戻り通信も明示的に許可する必要がある。
+3. 学習・検証用途で NAT Gateway の固定費を避けるためである。EC2 をパブリックサブネットに配置し、パブリック IP と IGW を経由してパッケージを取得する。本番では EC2 をプライベートサブネットに置き、NAT Gateway または VPC Endpoint を使う。
+4. ALB は Listener、Rule、Target Group を 1 サービスで提供するリージョン L7 LB である。GCP Cloud Load Balancing は Forwarding Rule、HTTP Proxy、URL Map、Backend Service を組み合わせるグローバル L7 LB で、各部品を独立して差し替え・再利用できる。
+
+</details>
 
 ---
 
@@ -321,6 +333,12 @@ curl http://$LB_IP
 > GCPのLBは `plan` 完了後も 5〜10 分ほど 404 や接続エラーが出ることがある。
 > `curl` を繰り返し実行して待つ。
 
+5〜10 分後も応答しない場合は、バックエンドが `HEALTHY` か確認する。
+
+```bash
+gcloud compute backend-services get-health cail-backend --global
+```
+
 ### 5-6. AWSとの差異を観察するポイント
 
 | 観察ポイント | AWS | GCP |
@@ -336,6 +354,15 @@ curl http://$LB_IP
 1. GCPのVPCが「グローバルリソース」であることの実務上のメリットは何か
 2. GCPのFirewall RulesとAWSのSGの「適用方式の違い」を説明できるか
 3. GCPのLBが複数リソースの連鎖構成である理由は何か
+
+<details>
+<summary>回答例を表示</summary>
+
+1. 1 つの VPC を複数リージョンで共有できるため、アドレス空間・Firewall Rules・ピアリングを一貫して管理しやすい。リージョンごとに VPC を作って接続する運用を減らせる。ただしサブネットはリージョン単位で設計する。
+2. GCP Firewall Rules はネットワーク全体に定義し、ネットワークタグまたはサービスアカウントで対象 VM を選ぶ。AWS Security Group は ENI に直接関連付ける。どちらもステートフルだが、GCP は同じタグを持つ VM 群に一括適用しやすく、AWS はリソース単位で明示的に適用する。
+3. 受付、プロトコル処理、URL ルーティング、バックエンド管理を分離し、用途に応じて個別に構成・再利用するためである。これによりグローバルな負荷分散と柔軟なパスベースルーティングを実現する。
+
+</details>
 
 ---
 
@@ -358,15 +385,20 @@ az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
 
 # 設定を確認
 az account show --query "{name:name, id:id}" --output table
+
+# 必要な Azure Resource Provider を登録する（初回のみ）
+az provider register --namespace Microsoft.Network
+az provider register --namespace Microsoft.Compute
+az provider register --namespace Microsoft.Resources
 ```
 
 ### 6-2. SSH 公開鍵の準備
 
 ```bash
-# 公開鍵の内容を変数に格納
-SSH_PUB_KEY=$(cat ~/.ssh/cail_key.pub)
+# RSA 公開鍵の内容を変数に格納する
+SSH_PUB_KEY=$(cat ~/.ssh/cail_azure_rsa.pub)
 echo $SSH_PUB_KEY
-# → ssh-ed25519 AAAA... cloud-agnostic-infra-lab
+# → ssh-rsa AAAA... cloud-agnostic-infra-lab-azure
 ```
 
 ### 6-3. 初期化・計画
@@ -377,6 +409,9 @@ cd ../azure   # gcp/ から移動する場合
 cd azure      # プロジェクトルートから
 
 terraform init
+
+# VM 容量を確保しやすい Japan West を明示する
+export TF_VAR_location="japanwest"
 
 # subscription_id と ssh_public_key は必須変数
 terraform plan \
@@ -397,7 +432,9 @@ Plan: 11 to add, 0 to change, 0 to destroy.
 - `azurerm_public_ip` — **独立リソース**（AWS/GCPとの大きな違い）
 - `azurerm_lb` — Standard Load Balancer（L4）
 - `azurerm_lb_backend_address_pool` + `azurerm_lb_probe` + `azurerm_lb_rule`
-- `azurerm_linux_virtual_machine_scale_set` — VMSS（B1s Spot, arm64）
+- `azurerm_linux_virtual_machine_scale_set` — VMSS（D2s v5 Regular, x64）
+
+> `Standard_D2s_v5` の容量が不足する場合は、別の利用可能な SKU を選択する。VM サイズと Ubuntu イメージはどちらも x64 にする必要がある。
 
 ### 6-4. デプロイ
 
@@ -439,6 +476,15 @@ curl http://$LB_IP
 1. Resource Groupという概念を知って、AWSのリソース管理と何が違うと感じたか
 2. AzureのLBがL4で、L7にApplication Gatewayが別途必要な設計判断の背景は何か
 3. NSGの「優先度番号」による制御は、AWSのどの概念に近いか
+
+<details>
+<summary>回答例を表示</summary>
+
+1. Azure Resource Group はリソースの配置・RBAC・削除をまとめて扱う明示的なライフサイクル単位である。AWS では通常、アカウント、タグ、CloudFormation スタックなどを組み合わせて論理的に管理するため、同じ強制的な入れ物はない。
+2. Azure Load Balancer は TCP/UDP を扱う L4 サービスで、低コストで単純な負荷分散に向く。HTTP のパスベースルーティング、TLS 終端、WAF などの L7 機能が必要な場合だけ Application Gateway を選び、機能とコストを分離する。AWS の ALB はこの L7 の役割を 1 サービスで提供する。
+3. AWS の NACL に近い。どちらも番号で評価順を制御し、先に一致したルールが適用される。AWS Security Group は許可ルールのみで優先度を持たない点が異なる。
+
+</details>
 
 ---
 
@@ -555,12 +601,12 @@ cloud-agnostic-infra-lab/
 
 | コンポーネント | AWS | GCP | Azure |
 |--------------|-----|-----|-------|
-| Compute | t4g.nano Spot 〜$1 | e2-micro 〜$0（無料枠） | B1s Spot 〜$3 |
+| Compute | t4g.nano Spot 〜$1 | e2-micro 〜$0（無料枠） | D2s v5 Regular（料金はリージョン・契約で要確認） |
 | ロードバランサー | ALB 〜$16 | Global LB 〜$18 | Standard LB 〜$18 |
 | データ転送 | 〜$0.01 | 〜$0.01 | 〜$0.01 |
-| **合計** | **〜$17** | **〜$18** | **〜$21** |
+| **合計** | **〜$17** | **〜$18** | **料金要確認** |
 
-> 少量トラフィック前提。3クラウド同時起動で最大 〜$56/月。
+> 少量トラフィック前提。Azure は D2s v5 Regular を使うため、料金計算ツールで現在のリージョン・契約に基づく見積もりを確認する。
 > 検証時間を最小にして destroy することでコストを抑える。
 
 ### コスト削減の設計判断
@@ -569,8 +615,9 @@ cloud-agnostic-infra-lab/
 ❌ 禁止: NAT Gateway（月 $32 の固定費）
 ✅ 代替: パブリックサブネット直接配置 + IGW
 
-❌ 禁止: x86_64 オンデマンドインスタンス
-✅ 採用: arm64 + Spot（AWS） / Preemptible（GCP） / Spot（Azure）で 70〜90% 削減
+AWS: arm64 + Spot を採用
+GCP: Preemptible を採用
+Azure: 容量確保を優先し、Regular x64（D2s v5）を採用
 ```
 
 ---
@@ -579,12 +626,34 @@ cloud-agnostic-infra-lab/
 
 ### AWS
 
-**`curl` でタイムアウトする**
+**ALB が `502 Bad Gateway` を返す**
+
 ```
-原因: ASGのEC2がヘルスチェックを通過するまで時間がかかっている
-対処: 2〜3分待ってから再試行する
+原因: ターゲット EC2 で nginx が起動していない、またはヘルスチェックが未完了
 確認: EC2 → ターゲットグループ → ターゲット の Status が "healthy" になるまで待つ
 ```
+
+まず 2〜3 分待って再試行する。`unhealthy` が続く場合は、ターゲットの状態を確認する。
+
+```bash
+TG_ARN=$(jq -r '.resources[] | select(.type == "aws_lb_target_group" and .name == "nginx") | .instances[0].attributes.arn' terraform.tfstate)
+aws elbv2 describe-target-health --target-group-arn "$TG_ARN" --output table
+```
+
+**ALB ターゲットが `Target.FailedHealthChecks` のまま**
+
+```
+原因: AMI の名前フィルターが広すぎて ECS 最適化 AL2023 AMI を選択し、
+      t4g.nano で Docker / containerd と dnf がメモリを競合した
+結果: OOM Killer が dnf を停止し、nginx がインストールされない
+対処: 通常の AL2023 arm64 AMI に限定する
+```
+
+```hcl
+values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
+```
+
+修正を apply した後は、ASG の Instance refresh で既存インスタンスを新しい Launch Template のものへ置き換える。
 
 **Spotインスタンスが起動しない**
 ```
@@ -597,9 +666,17 @@ cloud-agnostic-infra-lab/
 **`terraform apply` 後も LB に接続できない**
 ```
 原因: Global LBのプロビジョニングには 5〜10 分かかる
-対処: curl を繰り返しながら待つ（404 → 502 → 200 の順に変化する）
+対処: curl を繰り返しながら待つ（接続リセットや 5xx が一時的に出ることがある）
 確認: GCPコンソール → Network Services → Load Balancing → Backend の Status が "Healthy"
 ```
+
+バックエンドの状態は次でも確認できる。
+
+```bash
+gcloud compute backend-services get-health cail-backend --global
+```
+
+`HEALTHY` なら VM と nginx は正常であり、LB の反映待ちである。
 
 **`compute.googleapis.com` が有効化されていないエラー**
 ```
@@ -615,17 +692,97 @@ gcloud services enable compute.googleapis.com
 対処: az account show でIDを確認し、コマンドに追加する
 ```
 
+**Resource Provider の登録エラー**
+
+```
+原因: 必要な Azure Resource Provider の自動登録が未完了、または処理を中断した
+対処: Provider を手動登録し、状態が Registered になってから plan を再実行する
+```
+
+```bash
+az provider register --namespace Microsoft.Network
+az provider register --namespace Microsoft.Compute
+az provider register --namespace Microsoft.Resources
+```
+
+**`ssh-ed25519 SSH key is not supported`**
+
+```
+原因: この VMSS 構成は Ed25519 公開鍵を受け付けない
+対処: Azure 用の RSA 鍵を作成して TF_VAR_ssh_public_key に設定する
+```
+
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/azure_vmss_rsa -C "azure-vmss"
+export TF_VAR_ssh_public_key="$(cat ~/.ssh/azure_vmss_rsa.pub)"
+```
+
+**VM サイズとイメージの CPU アーキテクチャが一致しない**
+
+```
+原因: x64 専用 SKU に Arm64 イメージを指定した
+対処: VM サイズと同じアーキテクチャのイメージを選ぶ
+```
+
+この構成では `Standard_D2s_v5` と Ubuntu 22.04 Gen2（x64）の組み合わせを使用する。
+
+```hcl
+sku = "Standard_D2s_v5"
+
+source_image_reference {
+  publisher = "Canonical"
+  offer     = "0001-com-ubuntu-server-jammy"
+  sku       = "22_04-lts-gen2"
+  version   = "latest"
+}
+```
+
 **VMSSのインスタンスが LB に登録されない**
 ```
 原因: VMSS のプロビジョニングに時間がかかっている（3〜5分）
 確認: Azure Portal → Load Balancer → Backend Pools → VM が "Succeeded" になるまで待つ
 ```
 
-**Spot VMが起動できない**
+**`SkuNotAvailable` で VMSS を作成できない**
+
 ```
-原因: japaneast で B1s の Spot 在庫がない
-対処: location を "japanwest" に変更するか、priority を "Regular" に変更して再実行
+原因: 対象リージョンで指定 VM サイズの空き容量を確保できない
+対処: 別リージョンまたは別 SKU を選ぶ。クォータと容量不足は別問題である
 ```
+
+```bash
+az vm list-usage --location japanwest --output table
+```
+
+SKU を変更する場合は x64 イメージとの互換性を維持する。Resource Group の location を変更する場合は、既存リソースが置き換えになるため plan を必ず確認する。
+
+**`Provider produced inconsistent result after apply` / `already exists`**
+
+```
+原因: Azure の非同期作成中に provider の読み取りが 404 となり、
+      Azure に作成済みのリソースが Terraform state に記録されなかった
+対処: まず Azure の実体を確認し、残存リソースは import する
+```
+
+例えば VNet と Load Balancer が残っている場合は、ユーザー自身で次を実行する。
+
+```bash
+SUBSCRIPTION_ID=$(az account show --query id --output tsv)
+
+terraform import azurerm_virtual_network.main \
+  "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/cail-rg/providers/Microsoft.Network/virtualNetworks/cail-vnet"
+
+terraform import azurerm_lb.main \
+  "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/cail-rg/providers/Microsoft.Network/loadBalancers/cail-lb"
+
+terraform import azurerm_public_ip.lb \
+  "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/cail-rg/providers/Microsoft.Network/publicIPAddresses/cail-pip-lb"
+
+terraform import azurerm_subnet_network_security_group_association.public \
+  "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/cail-rg/providers/Microsoft.Network/virtualNetworks/cail-vnet/subnets/cail-subnet-public"
+```
+
+部分作成リソースが多い場合は、`cail-rg` が lab 専用であることを確認して Resource Group を削除し、削除完了後に `terraform apply -refresh-only` → `terraform plan` → `terraform apply` の順に作り直す。
 
 ---
 
