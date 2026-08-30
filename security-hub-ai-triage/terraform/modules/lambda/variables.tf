@@ -23,18 +23,12 @@ variable "s3_bucket_name" {
   type        = string
 }
 
-variable "chatwork_secret_arn" {
-  description = "Chatwork Token を格納した Secrets Manager の ARN"
-  type        = string
-  sensitive   = true
-}
-
-variable "chatwork_room_id" {
-  description = "通知先 Chatwork ルーム ID"
+variable "sns_topic_arn" {
+  description = "高優先度 Finding の通知先 SNS Topic ARN"
   type        = string
 }
 
 variable "bedrock_model_id" {
-  description = "使用する Bedrock モデル ID"
+  description = "使用する Bedrock 推論プロファイル ID"
   type        = string
 }

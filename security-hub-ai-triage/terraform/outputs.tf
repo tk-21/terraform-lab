@@ -22,3 +22,8 @@ output "eventbridge_rule_arn" {
   description = "EventBridge ルールの ARN"
   value       = module.eventbridge.rule_arn
 }
+
+output "sns_topic_arn" {
+  description = "高優先度 Finding の通知先 SNS Topic ARN"
+  value       = module.sns.topic_arn
+}

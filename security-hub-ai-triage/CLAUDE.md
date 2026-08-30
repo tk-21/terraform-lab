@@ -3,13 +3,13 @@
 ## プロジェクト概要
 
 Security Hub の検出結果を EventBridge で受け取り、Lambda + Amazon Bedrock（Claude Haiku）で
-自動トリアージ（即対応 / 監視継続 / 無視可能）を行い、Chatwork へ日本語通知するシステム。
+自動トリアージ（即対応 / 監視継続 / 無視可能）を行い、Amazon SNS でメール通知するシステム。
 重複排除に DynamoDB、フルレポート保存に S3 を使用する。
 
 ## ゴール
 
 - Security Hub のアラートノイズを AI で自動分類し、対応優先度を明確化する
-- CRITICAL/HIGH のみ Chatwork 通知し、エンジニアの疲弊を防ぐ
+- CRITICAL/HIGH のみ Amazon SNS 通知し、エンジニアの疲弊を防ぐ
 - すべてのインフラを Terraform で管理し、GitHub Actions（OIDC）で自動デプロイする
 
 ---
@@ -43,14 +43,14 @@ security-hub-ai-triage/
 │   │       ├── variables.tf
 │   │       └── outputs.tf
 │   ├── main.tf                  # モジュール呼び出し
-│   ├── variables.tf             # 共通変数（region, project_name, chatwork_token 等）
+│   ├── variables.tf             # 共通変数（region, project_name, SNS 通知先等）
 │   ├── outputs.tf
 │   └── terraform.tfvars.example # .gitignore 対象の example ファイル
 ├── lambda/
 │   └── triage_handler/
 │       ├── handler.py           # メインエントリーポイント
 │       ├── bedrock_client.py    # Bedrock 呼び出しラッパー
-│       ├── chatwork_notifier.py # Chatwork 通知
+│       ├── sns_notifier.py      # Amazon SNS 通知
 │       ├── dedup_checker.py     # DynamoDB 重複チェック
 │       ├── report_saver.py      # S3 保存
 │       └── requirements.txt
@@ -71,8 +71,8 @@ security-hub-ai-triage/
 | AWS リージョン | ap-northeast-1（東京）|
 | Terraform バージョン | ~> 1.7 |
 | Python バージョン | 3.12 |
-| Bedrock モデル | anthropic.claude-haiku-4-5 |
-| 通知先 | Chatwork（Slack ではない） |
+| Bedrock 推論プロファイル | jp.anthropic.claude-haiku-4-5-20251001-v1:0 |
+| 通知先 | Amazon SNS（メール） |
 | 認証方式 | GitHub Actions OIDC（アクセスキー不使用）|
 | Lambda アーキテクチャ | arm64（Graviton / コスト削減）|
 | Lambda メモリ | 256MB |
@@ -103,19 +103,17 @@ Lambda 実行ロールに付与する権限：
 - `dynamodb:GetItem`, `dynamodb:PutItem` - 重複排除テーブル操作
 - `s3:PutObject` - レポート保存
 - `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` - CloudWatch Logs
-- `secretsmanager:GetSecretValue` - Chatwork トークン取得
+- `sns:Publish` - SNS Topic への通知
 
 **禁止**: `*` ワイルドカード、`AdministratorAccess` の使用
 
-### Secrets Manager
-Chatwork トークンは Secrets Manager で管理する。
-Lambda の環境変数には Secret の ARN のみ渡し、コード内で取得する。
+### Amazon SNS
+Terraform で SNS Topic とメール購読を作成する。Lambda の環境変数には Topic ARN のみ渡し、`sns:Publish` はその Topic に限定する。
 ```hcl
 # terraform/variables.tf に追加
-variable "chatwork_secret_arn" {
-  description = "Chatwork Token を格納した Secrets Manager の ARN"
+variable "sns_notification_email" {
+  description = "SNS メール通知先"
   type        = string
-  sensitive   = true
 }
 ```
 
@@ -129,7 +127,7 @@ import json
 import logging
 import os
 from bedrock_client import BedrockClient
-from chatwork_notifier import ChatworkNotifier
+from sns_notifier import SnsNotifier
 from dedup_checker import DedupChecker
 from report_saver import ReportSaver
 
@@ -167,7 +165,7 @@ response = dynamodb.get_item(
 
 ### エラーハンドリング
 - Bedrock 呼び出しは `ThrottlingException` を考慮し、指数バックオフでリトライ（最大3回）
-- Chatwork 通知失敗はログ記録のみ（処理を止めない）
+- SNS 通知失敗はログ記録のみ（処理を止めない）
 - DynamoDB / S3 エラーは `raise` して Lambda エラーとして記録する
 
 ---
@@ -201,7 +199,7 @@ response = dynamodb.get_item(
 
 ---
 
-## Chatwork 通知フォーマット
+## SNS 通知フォーマット
 
 CRITICAL / HIGH のみ通知する（MEDIUM 以下は S3 保存のみ）。
 
@@ -237,7 +235,7 @@ Security Hub の CRITICAL / HIGH のみをトリガーとする（Lambda の無�
 }
 ```
 
-※ EventBridge ではすべて受け取り、Lambda 内で CRITICAL/HIGH のみ Chatwork 通知する設計とする。
+※ EventBridge ではすべて受け取り、Lambda 内で CRITICAL/HIGH のみ SNS 通知する設計とする。
   （通知要否の判断ロジックをコードで管理するため）
 
 ---
@@ -281,7 +279,7 @@ findings/{year}/{month}/{day}/{finding_id}.json
     "risk_score": 9
   },
   "processed_at": "2025-08-01T10:00:00+09:00",
-  "model_id": "anthropic.claude-haiku-4-5"
+  "model_id": "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 ```
 
@@ -322,7 +320,7 @@ jobs:
 
 ## 実装時の注意事項
 
-1. **Bedrock モデル ID**: `anthropic.claude-haiku-4-5` を使用する（コスト最適化）
+1. **Bedrock 推論プロファイル ID**: `jp.anthropic.claude-haiku-4-5-20251001-v1:0` を使用する（日本リージョン向け）
 2. **JSON パース**: Bedrock レスポンスに Markdown コードブロックが混入する場合があるため、
    `json.loads()` 前に ` ```json ` と ` ``` ` を除去する処理を入れること
 3. **Security Hub の FindingId**: ARN 形式で長いため、DynamoDB のキーとして使用する際は

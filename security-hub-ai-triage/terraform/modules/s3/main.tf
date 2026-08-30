@@ -1,7 +1,8 @@
 data "aws_caller_identity" "current" {}
 
 resource "aws_s3_bucket" "reports" {
-  bucket = "${var.project_name}-reports-${data.aws_caller_identity.current.account_id}"
+  bucket        = "${var.project_name}-reports-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.force_destroy
 
   tags = {
     Project     = var.project_name
