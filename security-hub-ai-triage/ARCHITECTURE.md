@@ -22,7 +22,7 @@ README のセットアップ手順を補完し、以下を一つの場所にま�
 
 ## 2. システム概要
 
-このプロジェクトは、AWS Security Hub の Finding をイベント駆動で受け取り、Amazon Bedrock で自動トリアージし、重要なものだけを Chatwork に通知しつつ、全件を S3 に保存するサーバレスシステムです。
+このプロジェクトは、AWS Security Hub の Finding をイベント駆動で受け取り、Amazon Bedrock で自動トリアージし、重要なものだけを Amazon SNS（メール）で通知しつつ、全件を S3 に保存するサーバレスシステムです。
 
 ### 解決したい課題
 
@@ -37,7 +37,7 @@ Security Hub は継続的に多数の Finding を出力します。すべてを�
 - EventBridge で Findings を自動受信する
 - DynamoDB で重複処理を防ぐ
 - Bedrock で日本語の運用判断を補助する
-- Chatwork 通知は `CRITICAL` / `HIGH` に絞る
+- SNS 通知は `CRITICAL` / `HIGH` に絞る
 - 全件の詳細レポートは S3 に残す
 
 ---
@@ -51,29 +51,27 @@ flowchart LR
     L[Lambda<br/>triage-handler]
     DDB[(DynamoDB<br/>dedup table)]
     BR[Amazon Bedrock<br/>Claude Haiku]
-    CW[Chatwork]
+    SNS[Amazon SNS<br/>email notification]
     S3[(S3<br/>triage reports)]
-    SM[Secrets Manager<br/>Chatwork token]
     GH[GitHub Actions<br/>OIDC deploy]
 
     SH -->|Finding event| EB
     EB -->|invoke| L
     L -->|GetItem / PutItem| DDB
     L -->|InvokeModel| BR
-    L -->|GetSecretValue| SM
-    L -->|POST message| CW
+    L -->|Publish| SNS
     L -->|PutObject| S3
     GH -->|terraform plan/apply| EB
     GH -->|terraform plan/apply| L
     GH -->|terraform plan/apply| DDB
     GH -->|terraform plan/apply| S3
-    GH -->|terraform plan/apply| SM
+    GH -->|terraform plan/apply| SNS
 ```
 
 ### 一言でいうと
 
 - 実行面は「`Security Hub -> EventBridge -> Lambda`」の一直線なイベント処理です
-- 判定補助は Bedrock、状態管理は DynamoDB、証跡保管は S3、外部通知は Chatwork が担います
+- 判定補助は Bedrock、状態管理は DynamoDB、証跡保管は S3、外部通知は Amazon SNS が担います
 - 構築面は Terraform と GitHub Actions による自動化です
 
 ---
@@ -96,7 +94,7 @@ Lambda `triage-handler` は以下を順番に行います。
 1. EventBridge イベントから `detail.findings` を取得
 2. Finding ID ごとに DynamoDB を見て重複確認
 3. 未処理なら Bedrock にトリアージ依頼
-4. `CRITICAL` / `HIGH` のみ Chatwork 通知
+4. `CRITICAL` / `HIGH` のみ SNS 通知
 5. Finding 原文 + AI 判定結果を S3 に保存
 6. 処理済みメタデータを DynamoDB に記録
 
@@ -112,8 +110,7 @@ sequenceDiagram
     participant L as Lambda handler
     participant D as DynamoDB
     participant B as Bedrock
-    participant S as Secrets Manager
-    participant C as Chatwork
+    participant N as Amazon SNS
     participant R as S3
 
     EB->>L: Security Hub Findings event
@@ -126,10 +123,8 @@ sequenceDiagram
         L->>B: InvokeModel(finding summary)
         B-->>L: verdict / reason / action / risk_score
         alt Severity is CRITICAL or HIGH
-            L->>S: GetSecretValue(chatwork token)
-            S-->>L: token
-            L->>C: POST message
-            C-->>L: success/failure
+            L->>N: Publish(message)
+            N-->>L: message ID
         end
         L->>R: PutObject(report json)
         L->>D: PutItem(processed result + ttl)
@@ -189,7 +184,7 @@ Lambda は最後に集計結果を返します。
 内部依存:
 
 - `BedrockClient`
-- `ChatworkNotifier`
+- `SnsNotifier`
 - `DedupChecker`
 - `ReportSaver`
 
@@ -238,7 +233,7 @@ Lambda は最後に集計結果を返します。
 
 重要な実装上の事実:
 
-- README では「Claude Haiku」と説明されており、コードでもデフォルトモデルは `anthropic.claude-haiku-4-5`
+- README では「Claude Haiku」と説明されており、コードでもデフォルトの推論プロファイルは `jp.anthropic.claude-haiku-4-5-20251001-v1:0`
 - Terraform 変数 `bedrock_model_id` から Lambda 環境変数へ注入されるため、モデル差し替えはコード変更なしで可能
 
 ## 5.4 DedupChecker
@@ -276,22 +271,22 @@ Lambda は最後に集計結果を返します。
 - 条件付き書き込みではなく単純な `PutItem` なので、完全な同時実行競合回避まではしていません
 - ただし一般的な単発イベント処理では十分実用的です
 
-## 5.5 ChatworkNotifier
+## 5.5 SnsNotifier
 
 役割:
 
-- 高優先度 Finding のみ Chatwork へ送る
+- 高優先度 Finding のみ SNS Topic へ送る
 
 設計ポイント:
 
-- トークンは環境変数に直書きせず Secrets Manager から取得
-- 同一 Lambda 実行中はトークンをインスタンス内キャッシュ
+- Lambda 環境変数には Topic ARN のみを設定し、認証情報は AWS IAM ロールに委譲
+- メール購読は Terraform が作成し、受信者が購読確認を完了する
 - 通知失敗時も Lambda 全体を失敗させない
 - 通知文面は日本語で、AI 判定と推奨アクションまで含める
 
 対象実装:
 
-- `lambda/triage_handler/chatwork_notifier.py`
+- `lambda/triage_handler/sns_notifier.py`
 
 通知条件:
 
@@ -300,7 +295,7 @@ Lambda は最後に集計結果を返します。
 つまり:
 
 - `MEDIUM` / `LOW` は AI 判定と S3 保存までは行う
-- ただし Chatwork には送らない
+- ただし SNS には送らない
 
 ## 5.6 ReportSaver
 
@@ -334,7 +329,7 @@ findings/YYYY/MM/DD/<safe_finding_id>.json
 価値:
 
 - 後から AI 判断の妥当性を見直せる
-- Chatwork 通知に出なかった `MEDIUM` / `LOW` も監査可能
+- SNS 通知に出なかった `MEDIUM` / `LOW` も監査可能
 
 ## 5.7 IAM
 
@@ -351,14 +346,14 @@ findings/YYYY/MM/DD/<safe_finding_id>.json
 - `logs:CreateLogGroup`
 - `logs:CreateLogStream`
 - `logs:PutLogEvents`
-- `secretsmanager:GetSecretValue`
+- `sns:Publish`
 
 設計ポイント:
 
 - Bedrock は指定モデル ARN のみに制限
 - DynamoDB は dedup テーブル ARN のみに制限
 - S3 は対象バケット配下のオブジェクト書き込みのみに制限
-- Secrets Manager は Chatwork 用シークレット ARN のみに制限
+- SNS は通知先 Topic ARN のみに `Publish` を制限
 
 対象実装:
 
@@ -401,17 +396,21 @@ flowchart TD
     IAM[modules/iam]
     DDB[modules/dynamodb]
     S3M[modules/s3]
+    SNSM[modules/sns]
     LMD[modules/lambda]
     EBM[modules/eventbridge]
 
     ROOT --> DDB
     ROOT --> S3M
+    ROOT --> SNSM
     ROOT --> IAM
     ROOT --> LMD
     ROOT --> EBM
 
     DDB -->|table_arn, table_name| IAM
     S3M -->|bucket_arn, bucket_name| IAM
+    SNSM -->|topic_arn| IAM
+    SNSM -->|topic_arn| LMD
     IAM -->|lambda_role_arn| LMD
     LMD -->|function_arn, function_name| EBM
 ```
@@ -431,6 +430,7 @@ flowchart TD
 |---|---|---|
 | `modules/dynamodb` | 重複排除テーブル | `table_name`, `table_arn` |
 | `modules/s3` | レポート保管バケット | `bucket_name`, `bucket_arn` |
+| `modules/sns` | 高優先度 Finding のメール通知 | `topic_arn` |
 | `modules/iam` | Lambda 実行ロール | `lambda_role_arn` |
 | `modules/lambda` | triage-handler 本体 | `function_name`, `function_arn` |
 | `modules/eventbridge` | Security Hub 起動ルール | `rule_name`, `rule_arn` |
@@ -442,11 +442,10 @@ flowchart TD
 - `project_name`
 - `environment`
 - `aws_region`
-- `chatwork_secret_arn`
-- `chatwork_room_id`
+- `sns_notification_email`
 - `bedrock_model_id`
 
-このうち `chatwork_secret_arn`, `chatwork_room_id`, `bedrock_model_id` は最終的に Lambda の環境変数へ流れます。
+このうち SNS Topic ARN と `bedrock_model_id` は最終的に Lambda の環境変数へ流れます。メールアドレスは SNS 購読の作成にのみ使われます。
 
 ### 6.4 Lambda パッケージング
 
@@ -520,7 +519,7 @@ flowchart LR
 ## 8.1 良い点
 
 - IAM 権限が用途別に絞られている
-- Chatwork トークンを Secrets Manager に置いている
+- SNS Topic は AWS 管理キーで暗号化し、メール購読を Terraform で管理している
 - S3 バケットは公開ブロック + 暗号化 + バージョニング
 - Finding 原文を保持するため、判断根拠の監査がしやすい
 - Bedrock エラー時に処理停止せず、安全側のデフォルト判定へフォールバックする
@@ -537,9 +536,9 @@ flowchart LR
 AI の出力は便利ですが誤判定の可能性は残ります。  
 そのため、元の Finding を丸ごと S3 に保存し、後から人が再確認できる設計になっています。
 
-### トークンは Secrets Manager から遅延取得
+### IAM ロールで SNS 発行を認可
 
-Lambda の環境変数に直接 API トークンを置かないため、漏えいリスクを下げています。
+Lambda は Topic ARN にのみ `sns:Publish` でき、外部サービスの API トークンを管理しません。
 
 ---
 
@@ -552,7 +551,7 @@ CloudWatch Logs に以下が出ます。
 - 処理対象 Finding の開始ログ
 - 重複スキップログ
 - Bedrock リトライ警告
-- Chatwork 通知失敗ログ
+- SNS 通知失敗ログ
 - S3 保存ログ
 - 最終サマリログ
 
@@ -563,11 +562,11 @@ CloudWatch Logs に以下が出ます。
 | DynamoDB | 処理済み記録、判定、TTL | 重複排除 |
 | S3 | 元 Finding + AI 判定結果 | 監査、後追い分析 |
 | CloudWatch Logs | 実行ログ | 障害解析 |
-| Chatwork | 高優先度通知 | 即応 |
+| Amazon SNS | 高優先度メール通知 | 即応 |
 
 ### 運用者が追うべき観点
 
-- Chatwork 通知失敗が増えていないか
+- SNS 通知失敗が増えていないか
 - Bedrock のスロットリングが多発していないか
 - Lambda タイムアウトが起きていないか
 - S3 レポートが継続保存されているか
@@ -604,7 +603,7 @@ CI では `pip install -t ./package` を使って同梱しています。
 実装を確認すると、少なくとも次の点は「README を読むだけでは見落としやすい」部分です。
 
 - EventBridge ルール名は README の記述と完全一致ではなく、実装では `-findings-rule-` を含む
-- Lambda 関数は README 説明どおり Chatwork を `CRITICAL/HIGH` のみに限定している
+- Lambda 関数は README 説明どおり SNS 通知を `CRITICAL/HIGH` のみに限定している
 - CI は plan だけでなく `main` push 時に apply まで自動実行する
 
 この `ARCHITECTURE.md` は、README より実装を優先して説明しています。
@@ -619,7 +618,7 @@ CI では `pip install -t ./package` を使って同梱しています。
 2. EventBridge が Lambda を起動
 3. DynamoDB に記録がない
 4. Bedrock が `即対応` を返す
-5. Chatwork に通知
+5. SNS に通知
 6. S3 に詳細レポート保存
 7. DynamoDB に 7 日 TTL 付きで記録
 
@@ -636,14 +635,14 @@ CI では `pip install -t ./package` を使って同梱しています。
 
 結果:
 
-- Bedrock も Chatwork も S3 保存も実行されない
+- Bedrock も SNS 通知も S3 保存も実行されない
 - `skipped=1`
 
 ### シナリオ C: Bedrock 失敗
 
 1. Bedrock 呼び出しで例外、または JSON パース失敗
 2. デフォルト結果 `監視継続 / risk_score=5` を返す
-3. 重大度が `HIGH` 以上ならその結果で Chatwork 通知
+3. 重大度が `HIGH` 以上ならその結果で SNS 通知
 4. S3 と DynamoDB には処理記録を残す
 
 結果:
@@ -660,7 +659,7 @@ CI では `pip install -t ./package` を使って同梱しています。
 ├── lambda/triage_handler/
 │   ├── handler.py                       # オーケストレーター
 │   ├── bedrock_client.py                # AI トリアージ
-│   ├── chatwork_notifier.py             # Chatwork 通知
+│   ├── sns_notifier.py                  # Amazon SNS 通知
 │   ├── dedup_checker.py                 # 重複排除
 │   ├── report_saver.py                  # S3 保存
 │   └── requirements.txt                 # Lambda 依存
@@ -673,7 +672,8 @@ CI では `pip install -t ./package` を使って同梱しています。
         ├── eventbridge/                 # 受信ルール
         ├── iam/                         # Lambda 実行権限
         ├── lambda/                      # 関数デプロイ
-        └── s3/                          # レポート保管
+        ├── s3/                          # レポート保管
+        └── sns/                         # 高優先度 Finding のメール通知
 ```
 
 ---

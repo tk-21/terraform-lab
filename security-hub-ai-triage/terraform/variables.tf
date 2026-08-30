@@ -16,19 +16,25 @@ variable "aws_region" {
   default     = "ap-northeast-1"
 }
 
-variable "chatwork_secret_arn" {
-  description = "Chatwork Token を格納した Secrets Manager の ARN"
+variable "sns_notification_email" {
+  description = "高優先度 Finding の SNS メール通知先"
   type        = string
   sensitive   = true
 }
 
-variable "chatwork_room_id" {
-  description = "通知先 Chatwork ルーム ID"
+variable "bedrock_model_id" {
+  description = "使用する Bedrock 推論プロファイル ID"
   type        = string
+  default     = "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+  validation {
+    condition     = can(regex("^jp\\.anthropic\\.claude-haiku-4-5-20251001-v1:0$", var.bedrock_model_id))
+    error_message = "東京リージョン向けの Claude Haiku 4.5 推論プロファイル ID を指定してください。"
+  }
 }
 
-variable "bedrock_model_id" {
-  description = "使用する Bedrock モデル ID"
-  type        = string
-  default     = "anthropic.claude-haiku-4-5"
+variable "s3_force_destroy" {
+  description = "true の場合、destroy 時にレポートバケット内の全オブジェクト・全バージョンを削除する"
+  type        = bool
+  default     = false
 }

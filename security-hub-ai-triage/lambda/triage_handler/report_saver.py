@@ -24,7 +24,7 @@ class ReportSaver:
         # iam: s3:PutObject
         self._s3 = boto3.client("s3")
         self._bucket_name = os.environ.get("S3_BUCKET_NAME", "")
-        self._model_id = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5")
+        self._model_id = os.environ.get("BEDROCK_MODEL_ID", "jp.anthropic.claude-haiku-4-5-20251001-v1:0")
 
     def save(self, finding: dict, triage_result: dict) -> str:
         """

@@ -21,8 +21,7 @@ resource "aws_lambda_function" "triage_handler" {
     variables = {
       DYNAMODB_TABLE_NAME = var.dynamodb_table_name
       S3_BUCKET_NAME      = var.s3_bucket_name
-      CHATWORK_SECRET_ARN = var.chatwork_secret_arn
-      CHATWORK_ROOM_ID    = var.chatwork_room_id
+      SNS_TOPIC_ARN       = var.sns_topic_arn
       BEDROCK_MODEL_ID    = var.bedrock_model_id
     }
   }

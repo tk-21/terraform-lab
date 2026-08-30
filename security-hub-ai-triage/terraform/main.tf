@@ -28,13 +28,13 @@ provider "aws" {
 module "iam" {
   source = "./modules/iam"
 
-  project_name        = var.project_name
-  environment         = var.environment
-  bedrock_model_id    = var.bedrock_model_id
-  aws_region          = var.aws_region
-  dynamodb_table_arn  = module.dynamodb.table_arn
-  s3_bucket_arn       = module.s3.bucket_arn
-  chatwork_secret_arn = var.chatwork_secret_arn
+  project_name       = var.project_name
+  environment        = var.environment
+  bedrock_model_id   = var.bedrock_model_id
+  aws_region         = var.aws_region
+  dynamodb_table_arn = module.dynamodb.table_arn
+  s3_bucket_arn      = module.s3.bucket_arn
+  sns_topic_arn      = module.sns.topic_arn
 }
 
 module "dynamodb" {
@@ -47,8 +47,17 @@ module "dynamodb" {
 module "s3" {
   source = "./modules/s3"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name  = var.project_name
+  environment   = var.environment
+  force_destroy = var.s3_force_destroy
+}
+
+module "sns" {
+  source = "./modules/sns"
+
+  project_name       = var.project_name
+  environment        = var.environment
+  notification_email = var.sns_notification_email
 }
 
 module "lambda" {
@@ -59,8 +68,7 @@ module "lambda" {
   lambda_role_arn     = module.iam.lambda_role_arn
   dynamodb_table_name = module.dynamodb.table_name
   s3_bucket_name      = module.s3.bucket_name
-  chatwork_secret_arn = var.chatwork_secret_arn
-  chatwork_room_id    = var.chatwork_room_id
+  sns_topic_arn       = module.sns.topic_arn
   bedrock_model_id    = var.bedrock_model_id
 }
 

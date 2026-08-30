@@ -10,6 +10,13 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
+locals {
+  # jp. プレフィックスを外し、推論プロファイル配下の基盤モデル ID を取得する。
+  bedrock_foundation_model_id = trimprefix(var.bedrock_model_id, "jp.")
+}
+
 resource "aws_iam_role" "lambda_role" {
   name               = "${var.project_name}-lambda-role-${var.environment}"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
@@ -22,7 +29,7 @@ resource "aws_iam_role" "lambda_role" {
 }
 
 data "aws_iam_policy_document" "lambda_policy" {
-  # Bedrock: モデル呼び出し（対象モデルの ARN のみ）
+  # Bedrock: 日本向け推論プロファイルと、その配下の基盤モデル ARN のみに限定する。
   statement {
     sid    = "BedrockInvokeModel"
     effect = "Allow"
@@ -30,7 +37,9 @@ data "aws_iam_policy_document" "lambda_policy" {
       "bedrock:InvokeModel"
     ]
     resources = [
-      "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.bedrock_model_id}"
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_id}",
+      "arn:aws:bedrock:ap-northeast-1::foundation-model/${local.bedrock_foundation_model_id}",
+      "arn:aws:bedrock:ap-northeast-3::foundation-model/${local.bedrock_foundation_model_id}"
     ]
   }
 
@@ -73,15 +82,15 @@ data "aws_iam_policy_document" "lambda_policy" {
     ]
   }
 
-  # Secrets Manager: Chatwork トークン取得（指定 ARN のみ）
+  # SNS: 高優先度 Finding の通知（対象 Topic のみ）
   statement {
-    sid    = "SecretsManagerGetChatwork"
+    sid    = "SnsPublishAlert"
     effect = "Allow"
     actions = [
-      "secretsmanager:GetSecretValue"
+      "sns:Publish"
     ]
     resources = [
-      var.chatwork_secret_arn
+      var.sns_topic_arn
     ]
   }
 }

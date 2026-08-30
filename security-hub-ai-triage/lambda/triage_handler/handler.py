@@ -2,7 +2,7 @@
 triage_handler - Security Hub Findings の自動トリアージメインエントリーポイント
 
 EventBridge から Security Hub Findings を受け取り、Bedrock で AI トリアージを行い、
-CRITICAL/HIGH のみ Chatwork へ通知し、全件 S3 に保存する。
+CRITICAL/HIGH のみ Amazon SNS へ通知し、全件 S3 に保存する。
 """
 
 import json
@@ -10,7 +10,7 @@ import logging
 import os
 
 from bedrock_client import BedrockClient
-from chatwork_notifier import ChatworkNotifier
+from sns_notifier import SnsNotifier
 from dedup_checker import DedupChecker
 from report_saver import ReportSaver
 
@@ -35,7 +35,7 @@ def lambda_handler(event: dict, context) -> dict:
         return {"processed": 0, "skipped": 0, "notified": 0}
 
     bedrock = BedrockClient()
-    notifier = ChatworkNotifier()
+    notifier = SnsNotifier()
     dedup = DedupChecker()
     saver = ReportSaver()
 
@@ -80,7 +80,7 @@ def lambda_handler(event: dict, context) -> dict:
         verdict = triage_result.get("verdict", "監視継続")
         risk_score = triage_result.get("risk_score", 5)
 
-        # CRITICAL または HIGH の場合のみ Chatwork 通知
+        # CRITICAL または HIGH の場合のみ Amazon SNS 通知
         if severity_label in ("CRITICAL", "HIGH"):
             success = notifier.notify(
                 title=title,

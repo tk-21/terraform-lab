@@ -42,7 +42,7 @@ class BedrockClient:
         """Bedrock ランタイムクライアントを初期化する。"""
         # iam: bedrock:InvokeModel
         self._client = boto3.client("bedrock-runtime")
-        self._model_id = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5")
+        self._model_id = os.environ.get("BEDROCK_MODEL_ID", "jp.anthropic.claude-haiku-4-5-20251001-v1:0")
 
     def triage(
         self,

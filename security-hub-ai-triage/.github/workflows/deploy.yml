@@ -54,8 +54,7 @@ jobs:
         id: plan
         run: |
           terraform plan \
-            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
-            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -var="sns_notification_email=${{ secrets.SNS_NOTIFICATION_EMAIL }}" \
             -no-color \
             -out=tfplan 2>&1 | tee plan_output.txt
         continue-on-error: true
@@ -99,7 +98,6 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           terraform apply \
-            -var="chatwork_secret_arn=${{ secrets.CHATWORK_SECRET_ARN }}" \
-            -var="chatwork_room_id=${{ secrets.CHATWORK_ROOM_ID }}" \
+            -var="sns_notification_email=${{ secrets.SNS_NOTIFICATION_EMAIL }}" \
             -auto-approve \
             tfplan
