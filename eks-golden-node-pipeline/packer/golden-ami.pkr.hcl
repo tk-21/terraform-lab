@@ -114,8 +114,14 @@ source "amazon-ebs" "golden_ami" {
   }
   subnet_id = var.subnet_id != "" ? var.subnet_id : null
 
+  # GitHub-hosted Runner が SSH で一時ビルドインスタンスへ到達するために必要
+  # public subnet を subnet_id で明示指定して使用する
+  associate_public_ip_address = true
+
   communicator = "ssh"
-  ssh_username = "ec2-user"
+  # Packer が private IP ではなく一時インスタンスの public IP に SSH 接続する
+  ssh_interface = "public_ip"
+  ssh_username  = "ec2-user"
 
   # IMDSv2 強制（セキュリティベストプラクティス）
   metadata_options {
