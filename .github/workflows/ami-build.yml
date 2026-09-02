@@ -117,12 +117,20 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}/packer
         run: packer init golden-ami.pkr.hcl
 
+      - name: Verify Packer subnet secret
+        run: |
+          if [ -z "${{ secrets.PACKER_SUBNET_ID }}" ]; then
+            echo "PACKER_SUBNET_ID secret is required for the AMI build." >&2
+            exit 1
+          fi
+
       - name: Build Golden AMI
         working-directory: ${{ env.PROJECT_DIR }}/packer
         run: |
           packer build \
             -var "aws_region=${{ env.AWS_REGION }}" \
             -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
+            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
             golden-ami.pkr.hcl
         env:
           PACKER_LOG: "1"
