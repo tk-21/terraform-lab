@@ -27,7 +27,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  PACKER_VERSION: "1.10.3"
+  PACKER_VERSION: "1.16.0"
   PROJECT_DIR: eks-golden-node-pipeline
 
 jobs:
