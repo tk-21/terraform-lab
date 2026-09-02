@@ -147,6 +147,10 @@ build {
   # Step 1: Ansible プロビジョニング
   provisioner "ansible" {
     playbook_file = "../ansible/playbooks/golden-ami.yml"
+    # AL2023 の SFTP サーバーの実パスを指定する
+    sftp_command = "/usr/libexec/openssh/sftp-server -e"
+    # provisioner のデフォルトは Packer 実行ユーザーのため、EC2 ユーザーを明示する
+    user = "ec2-user"
 
     extra_arguments = [
       "--extra-vars", "eks_version=${var.eks_version}",
