@@ -104,12 +104,13 @@ graph TB
 1. ローカル作業環境を用意する（Step 0）
 2. Terraform のバックエンドを準備する（Step 1）
 3. GitHub Actions 用 OIDC ロールを設定する（Step 2）
-4. Golden AMI をビルドする（Step 3）
-5. EKS / Karpenter 基盤を Terraform で構築する（Step 4）
-6. kubeconfig を更新して Karpenter の起動を確認する（Step 5）
-7. EC2NodeClass / NodePool を Kubernetes に適用する（Step 6）
-8. テスト用 Pod を起動して Karpenter が Golden AMI ノードを使うことを確認する（Step 7〜8）
-9. 後片付けをする（Step 9）
+4. VPC を bootstrap する（Step 3）
+5. Golden AMI をビルドする（Step 4）
+6. EKS / Karpenter 基盤を Terraform で構築する（Step 5）
+7. kubeconfig を更新して Karpenter の起動を確認する（Step 6）
+8. EC2NodeClass / NodePool を Kubernetes に適用する（Step 7）
+9. テスト用 Pod を起動して Karpenter が Golden AMI ノードを使うことを確認する（Step 8〜9）
+10. 後片付けをする（Step 10）
 
 ---
 
@@ -131,7 +132,7 @@ graph TB
 # バージョン確認コマンド
 aws --version          # aws-cli/2.x
 terraform version      # Terraform v1.7 以上
-packer version         # Packer v1.10 以上
+packer version         # Packer v1.16 以上
 ansible --version      # ansible [core 2.15 以上]
 kubectl version --client
 jq --version
@@ -141,7 +142,7 @@ jq --version
 > - AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 > - Terraform: https://developer.hashicorp.com/terraform/install
 > - Packer: https://developer.hashicorp.com/packer/install
-> - Ansible: `pip install ansible` または `brew install ansible`
+> - Ansible: プロジェクトの仮想環境に `ansible-core==2.15.13` をインストールします。システム Python への `pip install` は行いません。
 
 #### GitHub（CI/CD を使う場合のみ）
 
@@ -153,8 +154,8 @@ jq --version
 ### Step 0: リポジトリを取得してツールを確認する（所要時間: 5 分）
 
 ```bash
-git clone https://github.com/tk-21/eks-golden-node-pipeline.git
-cd eks-golden-node-pipeline
+git clone https://github.com/tk-21/terraform-lab.git
+cd terraform-lab/eks-golden-node-pipeline
 ```
 
 ツールのバージョンをまとめて確認します。
@@ -286,7 +287,9 @@ aws iam create-open-id-connect-provider \
 
 #### 2-2. IAM ロールを作成する
 
-以下の trust policy を `trust-policy.json` として保存してから実行します（`YOUR_ACCOUNT_ID` と `YOUR_REPO` を自分のものに置き換えてください）。
+以下の trust policy を `trust-policy.json` として保存してから実行します。`YOUR_ACCOUNT_ID` は 12 桁の AWS アカウント ID、`YOUR_REPO` は `OWNER/REPOSITORY` 形式の GitHub リポジトリ名です。
+
+このプロジェクトが monorepo `https://github.com/tk-21/terraform-lab` 内にある場合、`YOUR_REPO` は `tk-21/terraform-lab` です。サブディレクトリ名の `eks-golden-node-pipeline` は含めません。
 
 ```json
 {
@@ -300,7 +303,7 @@ aws iam create-open-id-connect-provider \
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:YOUR_REPO/eks-golden-node-pipeline:*"
+          "token.actions.githubusercontent.com:sub": "repo:YOUR_REPO:ref:refs/heads/main"
         },
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
@@ -317,17 +320,129 @@ aws iam create-role \
   --assume-role-policy-document file://trust-policy.json
 ```
 
+#### 2-3. Packer 用の permissions policy を追加する
+
+Trust policy は「GitHub Actions がロールを引き受けられるか」を制御するだけです。Packer が AMI を検索・作成するための EC2 権限は、Role の **Permissions** に別途追加します。
+
+IAM コンソールで `eks-golden-node-pipeline-github-actions-role` を開き、**Add permissions** → **Create inline policy** → **JSON** を選択し、次のポリシーを貼り付けます。Policy name は `PackerGoldenAmiBuild` とします。
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PackerAmazonEbsBuild",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AttachVolume",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CopyImage",
+        "ec2:CreateImage",
+        "ec2:CreateKeyPair",
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateSnapshot",
+        "ec2:CreateTags",
+        "ec2:CreateVolume",
+        "ec2:DeleteKeyPair",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DeleteSnapshot",
+        "ec2:DeleteVolume",
+        "ec2:DeregisterImage",
+        "ec2:DescribeImageAttribute",
+        "ec2:DescribeImages",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeRegions",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:DescribeVolumes",
+        "ec2:DetachVolume",
+        "ec2:GetPasswordData",
+        "ec2:ModifyImageAttribute",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifySnapshotAttribute",
+        "ec2:RegisterImage",
+        "ec2:RunInstances",
+        "ec2:StopInstances",
+        "ec2:TerminateInstances"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+詳細なアクション一覧は [HashiCorp の Amazon plugin IAM 権限](https://developer.hashicorp.com/packer/integrations/hashicorp/amazon) を参照してください。テンプレートで既存の IAM Instance Profile や顧客管理 KMS キーを指定する場合は、追加の `iam:PassRole` または KMS 権限が必要になることがあります。
+
+#### 2-4. GitHub Secrets を登録する
+
+GitHub リポジトリの **Settings** → **Secrets and variables** → **Actions** で、次の Repository Secret を作成します。
+
+| Name | 値 |
+|---|---|
+| `AWS_ACCOUNT_ID` | AWS アカウント ID（12 桁の数字のみ） |
+| `PACKER_SUBNET_ID` | Packer ビルド用 public subnet の ID |
+
+`AWS_ACCOUNT_ID` が未設定の場合、workflow が生成する Role ARN が不正になり、OIDC 認証が失敗します。
+
+`PACKER_SUBNET_ID` には public subnet の `subnet-...` を設定します。GitHub-hosted Runner は VPC 外部にあるため、SSH communicator を使う現在の構成では private subnet を指定できません。
+
 詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
 
 ---
 
-### Step 3: Golden AMI をビルドする（所要時間: 20〜30 分）
+### Step 3: VPC を bootstrap する（所要時間: 10〜15 分）
+
+Packer はビルド用 EC2 を起動するため、先に VPC と subnet が必要です。一方、通常の Terraform plan は Golden AMI を参照するため、AMI をまだ作成していない初回は 0 件検索で失敗します。
+
+初回だけ VPC モジュールを対象指定して plan し、内容を確認します。
+
+```bash
+cd terraform/environments/dev
+terraform init
+terraform plan -target=module.vpc
+```
+
+> **注意**: `-target` の警告は想定どおりです。これは VPC を先行作成する bootstrap 用の一回限りの操作です。通常運用では使いません。
+
+内容を確認した上で、VPC の apply はユーザー自身で実行してください。
+
+```bash
+terraform apply -target=module.vpc
+cd ../../..
+```
+
+GitHub-hosted Runner から SSH communicator を使う場合、Packer のビルドインスタンスには到達可能な subnet が必要です。private subnet を使う場合は self-hosted Runner または SSM communicator を利用してください。public subnet を使う場合は、一時インスタンスの公開範囲を最小化してください。
+
+#### Packer ビルド用 public subnet の ID を確認する
+
+`vpc-...` ではなく、`subnet-...` で始まる **Subnet ID** を使います。VPC を作成した後、次のコマンドで public subnet を確認します。`YOUR_VPC_ID` は `terraform output vpc_id` の値に置き換えてください。
+
+```bash
+aws ec2 describe-subnets \
+  --region ap-northeast-1 \
+  --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
+  --query 'Subnets[?State==`available`].[SubnetId,AvailabilityZone,MapPublicIpOnLaunch,Tags[?Key==`Name`]|[0].Value]' \
+  --output table
+```
+
+出力の `Name` に `public` を含む subnet を 1 つ選びます。AWS Console では **VPC** → **Subnets** から対象 subnet を開き、**Subnet ID** をコピーできます。さらに、その subnet の Route Table に Internet Gateway（`igw-...`）への `0.0.0.0/0` ルートがあることを確認してください。
+
+`PACKER_SUBNET_ID` Secret に選んだ subnet を 1 つだけ登録します。`MapPublicIpOnLaunch` が `false` でも、Packer テンプレートの `associate_public_ip_address = true` により、一時ビルドインスタンスには public IPv4 が付与されます。さらに `ssh_interface = "public_ip"` により、GitHub-hosted Runner はその public IP へ SSH 接続します。
+
+---
+
+### Step 4: Golden AMI をビルドする（所要時間: 20〜30 分）
 
 Golden AMI のビルドは 2 通りあります。どちらか一方を選んで実施してください。
 
 #### 方法 A: GitHub Actions でビルドする（推奨）
 
 Step 2 の OIDC 設定が完了している場合はこちらを使います。
+
+workflow は monorepo のリポジトリ直下、`.github/workflows/ami-build.yml` に配置します。`eks-golden-node-pipeline/.github/workflows/` に置いても GitHub Actions には認識されません。
 
 ```bash
 # ワークフローをトリガー
@@ -337,6 +452,34 @@ gh workflow run ami-build.yml -f eks_version=1.30
 gh run list --workflow ami-build.yml
 gh run watch  # リアルタイムログ
 ```
+
+#### workflow が失敗した場合のログ確認
+
+まず workflow の実行一覧を確認します。
+
+```bash
+gh run list --workflow ami-build.yml --limit 10
+```
+
+失敗した実行の ID を指定して、失敗したステップのログだけを表示します。
+
+```bash
+gh run view RUN_ID --log-failed
+```
+
+例:
+
+```bash
+gh run view 1234567890 --log-failed
+```
+
+実行中の workflow を監視する場合は、次を使います。
+
+```bash
+gh run watch RUN_ID
+```
+
+`RUN_ID` を省略して `gh run watch` を実行すると、対話形式で対象の実行を選択できます。
 
 ワークフローが成功したら、AMI ID を GitHub Actions のサマリーまたは以下のコマンドで取得します。
 
@@ -403,11 +546,14 @@ aws ec2 describe-images \
 > **ビルドに失敗した場合**
 > - Packer は失敗時に一時 EC2 インスタンスを自動で削除します
 > - ログを確認して Ansible のエラーを特定してください
-> - IAM 権限が不足している場合は `ec2:RunInstances` 等が含まれているか確認してください
+> - IAM 権限が不足している場合は Role の permissions policy に `ec2:DescribeImages`、`ec2:RunInstances`、`ec2:CreateImage` などが含まれているか確認してください
+> - `No Subnets was found matching filters` と表示された場合は、Packer の `subnet_id` を明示指定するか、テンプレートの subnet filter に一致する subnet を用意してください
+> - `/usr/lib/sftp-server: No such file or directory` と表示された場合は、Ansible provisioner の `sftp_command` を AL2023 の `/usr/libexec/openssh/sftp-server -e` に設定してください
+> - `failed to transfer file` が続く場合は、`ansible/ansible.cfg` の `[ssh_connection]` に `ssh_transfer_method = piped` を設定してください。Packer の SFTP proxy を使わず、SSH の通常コマンド経路で転送します。このプロジェクトでは設定済みです
 
 ---
 
-### Step 4: Terraform で EKS 基盤を作る（所要時間: 20〜30 分）
+### Step 5: Terraform で EKS 基盤を作る（所要時間: 20〜30 分）
 
 `terraform/environments/dev` が dev 環境のエントリーポイントです。
 
@@ -439,13 +585,14 @@ terraform fmt -check -recursive
 AMI ID を環境変数に設定しておくと便利です。
 
 ```bash
-# Step 3 で取得した AMI ID を設定
+# Step 4 で取得した AMI ID を設定
 export TF_VAR_golden_ami_id="ami-0123456789abcdef0"
 
 terraform plan
 ```
 
 > **Tips**
+> - Golden AMI を作成する前は `golden_ami_id` を省略しないでください。AMI 検索が 0 件となり plan が失敗します
 > - `golden_ami_id` を省略すると `golden-ami-eks-1.30-*` の最新 AMI を自動検索します
 > - ハンズオンでは AMI ID を明示することを推奨します（どの AMI を使ったか明確になるため）
 > - Plan で `60 to add, 0 to change, 0 to destroy` のように表示されれば正常です
@@ -485,7 +632,7 @@ vpc_id                     = "vpc-0123456789abcdef0"
 
 > **確認ポイント**
 > - `cluster_name` が `eks-golden-node-pipeline-dev` になっている
-> - `resolved_golden_ami_id` が Step 3 でビルドした AMI ID と一致している
+> - `resolved_golden_ami_id` が Step 4 でビルドした AMI ID と一致している
 
 ```bash
 # 作業ディレクトリを戻す
@@ -494,7 +641,7 @@ cd ../../..
 
 ---
 
-### Step 5: kubeconfig を更新して Karpenter を確認する（所要時間: 5 分）
+### Step 6: kubeconfig を更新して Karpenter を確認する（所要時間: 5 分）
 
 EKS クラスターに接続できるよう kubeconfig を更新します。
 
@@ -533,7 +680,7 @@ karpenter-xxxxxxxxxx-xxxxx   1/1     Running   0          5m
 
 ---
 
-### Step 6: EC2NodeClass / NodePool を適用する（所要時間: 5 分）
+### Step 7: EC2NodeClass / NodePool を適用する（所要時間: 5 分）
 
 Karpenter がノードを起動するには、どの AMI を使うか（EC2NodeClass）と、どのような条件でノードを追加するか（NodePool）を Kubernetes に登録する必要があります。
 
@@ -575,7 +722,7 @@ kubectl describe nodepool golden-ami-node-pool
 
 ---
 
-### Step 7: テスト用 Pod でノード起動を確認する（所要時間: 5〜10 分）
+### Step 8: テスト用 Pod でノード起動を確認する（所要時間: 5〜10 分）
 
 Pod の需要がなければ Karpenter はノードを起動しません。動作確認用に軽い Deployment を作ります。
 
@@ -630,7 +777,7 @@ inflate-xxxx   1/1   Running   0   4m
 
 ---
 
-### Step 8: 起動したノードが Golden AMI 由来か確認する（所要時間: 5 分）
+### Step 9: 起動したノードが Golden AMI 由来か確認する（所要時間: 5 分）
 
 #### 8-1. Kubernetes 側でノードのアーキテクチャを確認する
 
@@ -685,7 +832,7 @@ cd ../../..
 
 ---
 
-### Step 9: 後片付け（所要時間: 10〜15 分）
+### Step 10: 後片付け（所要時間: 10〜15 分）
 
 **費用の発生を防ぐため、ハンズオン完了後は必ず後片付けをしてください。**
 
