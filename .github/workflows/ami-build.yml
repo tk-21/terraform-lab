@@ -1,0 +1,128 @@
+name: Golden AMI Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      eks_version:
+        description: "EKS version (e.g. 1.30)"
+        required: true
+        default: "1.30"
+        type: string
+      dry_run:
+        description: "Validate only; do not build an AMI"
+        required: false
+        default: false
+        type: boolean
+
+  push:
+    branches: [main]
+    paths:
+      - "eks-golden-node-pipeline/ansible/**"
+      - "eks-golden-node-pipeline/packer/**"
+      - ".github/workflows/ami-build.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  PACKER_VERSION: "1.10.3"
+  PROJECT_DIR: eks-golden-node-pipeline
+
+defaults:
+  run:
+    working-directory: eks-golden-node-pipeline
+
+jobs:
+  validate:
+    name: Validate Packer template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Set up Python environment
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
+          pip install "ansible==2.15.*" ansible-lint
+
+      - name: Initialize Packer plugins
+        run: packer init packer/golden-ami.pkr.hcl
+
+      - name: Validate Packer template
+        run: |
+          packer validate \
+            -var "aws_region=${{ env.AWS_REGION }}" \
+            -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
+            packer/golden-ami.pkr.hcl
+
+      - name: Check Ansible syntax
+        run: |
+          . .venv/bin/activate
+          ansible-playbook \
+            --syntax-check \
+            -i ansible/inventory/packer_hosts \
+            ansible/playbooks/golden-ami.yml
+
+  build:
+    name: Build Golden AMI
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/eks-golden-node-pipeline-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-AMIBuild-${{ github.run_id }}
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Initialize Packer plugins
+        run: packer init packer/golden-ami.pkr.hcl
+
+      - name: Build Golden AMI
+        run: |
+          packer build \
+            -var "aws_region=${{ env.AWS_REGION }}" \
+            -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
+            packer/golden-ami.pkr.hcl
+        env:
+          PACKER_LOG: "1"
+
+      - name: Get AMI ID
+        id: ami
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Write build summary
+        run: |
+          {
+            echo "## Golden AMI Build Result"
+            echo ""
+            echo "| Key | Value |"
+            echo "|---|---|"
+            echo "| AMI ID | ${{ steps.ami.outputs.ami_id }} |"
+            echo "| EKS Version | ${{ inputs.eks_version || '1.30' }} |"
+            echo "| Region | ${{ env.AWS_REGION }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
