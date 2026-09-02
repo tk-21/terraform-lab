@@ -549,7 +549,7 @@ aws ec2 describe-images \
 > - IAM 権限が不足している場合は Role の permissions policy に `ec2:DescribeImages`、`ec2:RunInstances`、`ec2:CreateImage` などが含まれているか確認してください
 > - `No Subnets was found matching filters` と表示された場合は、Packer の `subnet_id` を明示指定するか、テンプレートの subnet filter に一致する subnet を用意してください
 > - `/usr/lib/sftp-server: No such file or directory` と表示された場合は、Ansible provisioner の `sftp_command` を AL2023 の `/usr/libexec/openssh/sftp-server -e` に設定してください
-> - `failed to transfer file` が続く場合は、`ansible/ansible.cfg` の `[ssh_connection]` に `ssh_transfer_method = piped` を設定してください。Packer の SFTP proxy を使わず、SSH の通常コマンド経路で転送します。このプロジェクトでは設定済みです
+> - `failed to transfer file` が続く場合は、Packer の Ansible provisioner に `use_sftp = false`、`ansible/ansible.cfg` の `[ssh_connection]` に `ssh_transfer_method = piped` を設定してください。Packer の SFTP proxy を使わず、SSH の通常コマンド経路で転送します。このプロジェクトでは設定済みです
 
 ---
 
