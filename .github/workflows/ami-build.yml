@@ -30,10 +30,6 @@ env:
   PACKER_VERSION: "1.10.3"
   PROJECT_DIR: eks-golden-node-pipeline
 
-defaults:
-  run:
-    working-directory: eks-golden-node-pipeline
-
 jobs:
   validate:
     name: Validate Packer template
@@ -48,26 +44,29 @@ jobs:
         with:
           version: ${{ env.PACKER_VERSION }}
 
-      - name: Set up Python environment
+      - name: Set up Ansible
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           python3 -m venv .venv
-          . .venv/bin/activate
-          pip install --upgrade pip
-          pip install "ansible-core==2.15.13" ansible-lint
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install "ansible-core==2.15.13"
+          echo "${{ github.workspace }}/${{ env.PROJECT_DIR }}/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Initialize Packer plugins
-        run: packer init packer/golden-ami.pkr.hcl
+        working-directory: ${{ env.PROJECT_DIR }}/packer
+        run: packer init golden-ami.pkr.hcl
 
       - name: Validate Packer template
+        working-directory: ${{ env.PROJECT_DIR }}/packer
         run: |
           packer validate \
             -var "aws_region=${{ env.AWS_REGION }}" \
             -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
-            packer/golden-ami.pkr.hcl
+            golden-ami.pkr.hcl
 
       - name: Check Ansible syntax
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          . .venv/bin/activate
           ansible-playbook \
             --syntax-check \
             -i ansible/inventory/packer_hosts \
@@ -80,6 +79,9 @@ jobs:
     if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
 
     environment: production
+
+    outputs:
+      ami_id: ${{ steps.ami.outputs.ami_id }}
 
     steps:
       - name: Checkout
@@ -97,20 +99,31 @@ jobs:
         with:
           version: ${{ env.PACKER_VERSION }}
 
+      - name: Set up Ansible
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install "ansible-core==2.15.13"
+          echo "${{ github.workspace }}/${{ env.PROJECT_DIR }}/.venv/bin" >> "$GITHUB_PATH"
+
       - name: Initialize Packer plugins
-        run: packer init packer/golden-ami.pkr.hcl
+        working-directory: ${{ env.PROJECT_DIR }}/packer
+        run: packer init golden-ami.pkr.hcl
 
       - name: Build Golden AMI
+        working-directory: ${{ env.PROJECT_DIR }}/packer
         run: |
           packer build \
             -var "aws_region=${{ env.AWS_REGION }}" \
             -var "eks_version=${{ inputs.eks_version || '1.30' }}" \
-            packer/golden-ami.pkr.hcl
+            golden-ami.pkr.hcl
         env:
           PACKER_LOG: "1"
 
       - name: Get AMI ID
         id: ami
+        working-directory: ${{ env.PROJECT_DIR }}/packer
         run: |
           AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
           echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
