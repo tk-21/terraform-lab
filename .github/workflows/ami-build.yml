@@ -53,7 +53,7 @@ jobs:
           python3 -m venv .venv
           . .venv/bin/activate
           pip install --upgrade pip
-          pip install "ansible==2.15.*" ansible-lint
+          pip install "ansible-core==2.15.13" ansible-lint
 
       - name: Initialize Packer plugins
         run: packer init packer/golden-ami.pkr.hcl
