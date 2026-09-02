@@ -256,15 +256,13 @@ SFTP のパスを修正しても、次のようにファイル転送が失敗す
 failed to transfer file to .../source
 ```
 
-このケースでは、SFTP サーバーは起動しているものの、Packer の Ansible proxy 経由の SFTP 転送が完了しない。Packer provisioner が生成する inventory は SFTP を優先するため、`golden-ami.pkr.hcl` で SFTP を無効化し、`ansible/ansible.cfg` で SSH の通常コマンド経路（`dd`）を使う `piped` 転送へ切り替える。
+このケースでは、SFTP サーバーは起動しているものの、Packer の Ansible proxy 経由の SFTP 転送が完了しない。GitHub-hosted Runner から一時インスタンスの public IP へ到達できる構成では、Packer の proxy を使わずに直接 SSH 接続する。
 
 ```hcl
-use_sftp = false
+use_proxy = false
 ```
 
-```ini
-ssh_transfer_method = piped
-```
+`use_proxy = false` は、Packer の SSH communicator が使用する接続先・ユーザー・鍵を Ansible 接続に使用する。したがって `ssh_interface = "public_ip"` と `associate_public_ip_address = true` が必要である。
 
 workflow は Packer 1.16 を使用し、テンプレートでは Amazon plugin 1.8 と Ansible plugin 1.1.6 系を指定する。変更後は必ず `packer init` を実行して plugin を更新する。
 

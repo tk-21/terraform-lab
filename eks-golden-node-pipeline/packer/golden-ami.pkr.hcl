@@ -149,9 +149,9 @@ build {
     playbook_file = "../ansible/playbooks/golden-ami.yml"
     # AL2023 の SFTP サーバーの実パスを指定する
     sftp_command = "/usr/libexec/openssh/sftp-server -e"
-    # Packer が生成する inventory が SFTP を強制するため、SFTP proxy を無効化する
-    # Ansible 側では ansible.cfg の ssh_transfer_method = piped を使用する
-    use_sftp = false
+    # public IP へ直接 SSH できるため、Packer のローカル SSH proxy を使用しない
+    # proxy 経由で発生する Ansible のファイル転送失敗を回避する
+    use_proxy = false
     # provisioner のデフォルトは Packer 実行ユーザーのため、EC2 ユーザーを明示する
     user = "ec2-user"
 
