@@ -65,12 +65,12 @@ jobs:
             golden-ami.pkr.hcl
 
       - name: Check Ansible syntax
-        working-directory: ${{ env.PROJECT_DIR }}
+        working-directory: ${{ env.PROJECT_DIR }}/ansible
         run: |
           ansible-playbook \
             --syntax-check \
-            -i ansible/inventory/packer_hosts \
-            ansible/playbooks/golden-ami.yml
+            -i inventory/packer_hosts \
+            playbooks/golden-ami.yml
 
   build:
     name: Build Golden AMI
