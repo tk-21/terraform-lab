@@ -256,7 +256,11 @@ SFTP のパスを修正しても、次のようにファイル転送が失敗す
 failed to transfer file to .../source
 ```
 
-このケースでは、SFTP サーバーは起動しているものの、Packer の Ansible proxy 経由の SFTP 転送が完了しない。`ansible/ansible.cfg` の `[ssh_connection]` に次を設定して、SSH の通常コマンド経路（`dd`）を使う `piped` 転送へ切り替える。
+このケースでは、SFTP サーバーは起動しているものの、Packer の Ansible proxy 経由の SFTP 転送が完了しない。Packer provisioner が生成する inventory は SFTP を優先するため、`golden-ami.pkr.hcl` で SFTP を無効化し、`ansible/ansible.cfg` で SSH の通常コマンド経路（`dd`）を使う `piped` 転送へ切り替える。
+
+```hcl
+use_sftp = false
+```
 
 ```ini
 ssh_transfer_method = piped
