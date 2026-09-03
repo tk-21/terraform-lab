@@ -19,7 +19,6 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 # Lambda Layer (/opt/python) 経由でインポート
 from audit_logger import generate_remediation_id, record_remediation
-from chatwork_notifier import notify_remediation_result
 
 logger = Logger(service="csar-remediation-s3")
 tracer = Tracer(service="csar-remediation-s3")
@@ -133,15 +132,6 @@ def handler(event: dict, context: LambdaContext) -> dict:
             status="SUCCESS",
             trigger_source=trigger_source,
             aws_account_id=aws_account_id,
-        )
-
-        notify_remediation_result(
-            resource_type="S3バケット",
-            resource_id=bucket_name,
-            rule_name=rule_name,
-            remediation_action=remediation_action,
-            status="SUCCESS",
-            remediation_id=remediation_id,
         )
 
         metrics.add_metric(name="RemediationSuccess", unit=MetricUnit.Count, value=1)

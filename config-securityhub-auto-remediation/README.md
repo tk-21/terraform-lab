@@ -2,7 +2,7 @@
 
 AWS Config Rules + Security Hub Custom Action による**セキュリティコンプライアンス自動修復基盤**。
 
-コンプライアンス違反を検知してから自動修復・監査ログ記録・Chatwork 通知までをフルサイクルで実装。
+コンプライアンス違反を検知してから自動修復・監査ログ記録・CloudWatch 監視までをフルサイクルで実装。
 
 ---
 
@@ -24,7 +24,6 @@ AWS Config Rules + Security Hub Custom Action による**セキュリティコ�
 ### セキュリティ設計の実践
 
 - IAM 最小権限設計（ワイルドカードを排除しつつ AWS の制約と折り合いをつける）
-- SSM Parameter Store を使ったシークレット管理
 - S3 バケットポリシーによる HTTPS 強制
 - DynamoDB + S3 への監査ログ二重書き設計の判断根拠
 
@@ -59,7 +58,7 @@ Config Rule 違反検知         Security Hub Finding
        ↓
   DynamoDB 修復ログ + S3 監査証跡
        ↓
-  Chatwork 通知
+  CloudWatch メトリクス・アラーム
 ```
 
 ## 修復対象リソース
@@ -69,7 +68,7 @@ Config Rule 違反検知         Security Hub Finding
 | S3 | s3-bucket-public-read-prohibited | Public Access Block 無効 | Block Public Access を全有効化 |
 | S3 | s3-bucket-server-side-encryption-enabled | SSE 未設定 | AES256 SSE を強制設定 |
 | IAM | iam-user-mfa-enabled | MFA デバイス未設定 | コンソールアクセス (LoginProfile) を削除 |
-| IAM | iam-user-no-policies-check | 直接ポリシーアタッチ | Chatwork 警告通知のみ (自動修復不可) |
+| IAM | iam-user-no-policies-check | 直接ポリシーアタッチ | 監査ログに記録し手動対応 (自動修復不可) |
 | EC2/SG | restricted-ssh | 0.0.0.0/0:22 開放 | 該当インバウンドルール削除 |
 | EC2/SG | restricted-rdp | 0.0.0.0/0:3389 開放 | 該当インバウンドルール削除 |
 | RDS | rds-instance-public-access-check | PubliclyAccessible=true | PubliclyAccessible=false に変更 |
@@ -109,16 +108,7 @@ aws sts get-caller-identity
 
 実行ユーザーに以下のサービスへのフル権限が必要です（管理者権限または同等の権限）:
 
-`S3` / `DynamoDB` / `Lambda` / `IAM` / `EC2` / `RDS` / `Config` / `SecurityHub` / `EventBridge` / `SQS` / `SSM` / `CloudWatch` / `VPC`
-
-### Chatwork の事前準備
-
-Chatwork 通知を使う場合、以下を取得しておいてください。
-
-1. **API トークン**: Chatwork の「サービス連携」→「API トークン」から取得
-2. **ルーム ID**: 通知したいルームの URL `https://www.chatwork.com/#!rid{ROOM_ID}` から取得
-
-> Chatwork を使わない場合はセットアップ手順 3 をスキップできます。Lambda は通知失敗をベストエフォートで扱うため、修復自体は正常に動作します。
+`S3` / `DynamoDB` / `Lambda` / `IAM` / `EC2` / `RDS` / `Config` / `SecurityHub` / `EventBridge` / `SQS` / `CloudWatch` / `VPC`
 
 ---
 
@@ -195,7 +185,7 @@ terraform plan
 ```
 # 主要リソース一覧
 module.networking   → VPC, Subnet ×2, Route Table, SG ×2, VPC Endpoint ×7
-module.audit        → S3 ×2 (監査ログ/アクセスログ), DynamoDB, SQS DLQ, SSM Parameter ×2
+module.audit        → S3 ×2 (監査ログ/アクセスログ), DynamoDB, SQS DLQ
 module.iam          → IAM Role ×3, IAM Policy ×5
 module.remediation  → Lambda ×4, Lambda Layer ×2, Lambda Permission ×8
 module.config       → Config Recorder, Config Rules ×8, EventBridge Rule ×4
@@ -228,28 +218,7 @@ Outputs:
   dashboard_url         = "https://ap-northeast-1.console.aws.amazon.com/cloudwatch/home#dashboards:name=CSAR-AutoRemediation"
 ```
 
-### Step 6. Chatwork シークレットの登録
-
-```bash
-# API トークンを登録（SecureString で暗号化保存）
-aws ssm put-parameter \
-  --name "/csar/chatwork/token" \
-  --value "YOUR_CHATWORK_API_TOKEN" \
-  --type SecureString \
-  --overwrite
-
-# 通知先ルーム ID を登録
-aws ssm put-parameter \
-  --name "/csar/chatwork/room_id" \
-  --value "YOUR_CHATWORK_ROOM_ID" \
-  --type SecureString \
-  --overwrite
-
-# 登録確認
-aws ssm get-parameter --name "/csar/chatwork/token" --with-decryption --query "Parameter.Value" --output text
-```
-
-### Step 7. デプロイ確認
+### Step 6. デプロイ確認
 
 すべてのリソースが正常に作成されたか確認します。
 
@@ -291,6 +260,27 @@ aws cloudwatch get-dashboard --dashboard-name CSAR-AutoRemediation > /dev/null &
 
 実際に違反を発生させ、自動修復が動くことを確認します。
 
+### テスト前の確認: AWS Config の初期リソース検出
+
+AWS Config を初めて有効化した直後は、既存リソースの初期検出が完了するまで評価結果が空になることがあります。初期検出は AWS 側の非同期処理であり、ケースによっては最大 24 時間かかることがあります。
+
+> `start-config-rules-evaluation` は最後に記録された構成を再評価するだけで、新しいリソース検出は実行しません。
+
+以下を実行し、Recorder が起動済みで、少なくとも 1 件のリソースが検出されていることを確認してからテストしてください。
+
+```bash
+# Recorder が稼働中であることを確認する
+aws configservice describe-configuration-recorder-status \
+  --configuration-recorder-names csar-config-recorder \
+  --region ap-northeast-1
+
+# totalDiscoveredResources が 1 以上になるまで待つ
+aws configservice get-discovered-resource-counts \
+  --region ap-northeast-1
+```
+
+期待値は `recording: true`、`lastStatus: SUCCESS`、および `totalDiscoveredResources: 1` 以上です。初期検出中は数分おきに再確認してください。
+
 ### テスト 1: S3 Public Access 自動修復
 
 **所要時間: 約 5〜10 分**
@@ -310,11 +300,12 @@ bash tests/integration/create_violation_s3.sh
 
 **Step 2 — Config Rule の評価を手動トリガーする**
 
-Config Rule は通常、変更検知から数分以内に自動評価されますが、手動でトリガーすることもできます:
+初期リソース検出の完了後は、Config Rule は通常、変更検知から数分以内に自動評価されます。必要に応じて、手動で再評価できます:
 
 ```bash
 aws configservice start-config-rules-evaluation \
-  --config-rule-names csar-s3-bucket-public-read-prohibited
+  --config-rule-names csar-s3-bucket-public-read-prohibited \
+  --region ap-northeast-1
 ```
 
 **Step 3 — 評価結果を確認する (2〜3 分後)**
@@ -397,6 +388,12 @@ aws s3 rb s3://${BUCKET_NAME} --force
 bash tests/integration/create_violation_sg.sh
 ```
 
+デフォルトでは `dev` 環境の VPC (`csar-vpc-dev`) を使用します。別環境をテストする場合は `ENVIRONMENT` を指定してください。
+
+```bash
+ENVIRONMENT=prod bash tests/integration/create_violation_sg.sh
+```
+
 SG ID を控えてください:
 ```
 対象VPC: vpc-xxxxxxxxxxxxxxxxx
@@ -408,7 +405,8 @@ SSH 0.0.0.0/0 インバウンドルール追加完了 (違反状態)
 
 ```bash
 aws configservice start-config-rules-evaluation \
-  --config-rule-names csar-restricted-ssh
+  --config-rule-names csar-restricted-ssh \
+  --region ap-northeast-1
 ```
 
 **Step 3 — 修復結果を確認する (2〜3 分後)**
@@ -501,10 +499,10 @@ https://ap-northeast-1.console.aws.amazon.com/securityhub/home#/findings
 
 - 画面上部の **[アクション]** をクリック
 - ドロップダウンから修復アクションを選択:
-  - `CSAR: S3自動修復`
-  - `CSAR: IAM自動修復`
-  - `CSAR: SG自動修復`
-  - `CSAR: RDS修復通知`
+  - `CSAR: S3 Remediate`
+  - `CSAR: IAM Remediate`
+  - `CSAR: SG Remediate`
+  - `CSAR: RDS Review`
 
 **Step 4 — ログで `SECURITY_HUB_CUSTOM_ACTION` トリガーを確認する**
 
@@ -610,7 +608,44 @@ cd terraform/environments/dev
 terraform destroy
 ```
 
-`yes` を入力して実行します。完了まで約 5〜10 分かかります。
+`yes` を入力して実行します。完了まで通常は 5〜10 分です。Lambda が VPC に接続されているため、削除済みの Lambda 関数に紐づく VPC ENI の解放待ちで、Subnet と Lambda 用 Security Group の削除に最大 20 分程度かかることがあります。
+
+> `AWS Lambda VPC ENI` が `in-use` の場合は AWS が非同期で回収中です。手動で ENI を削除したり、`terraform destroy` を中断したりせず、そのまま完了またはエラーになるまで待機してください。
+
+### `BucketNotEmpty` で destroy が失敗した場合
+
+監査ログバケットとアクセスログバケットは、誤削除を防ぐため `force_destroy = false`、かつバージョニング有効で作成しています。そのため、バケット内にオブジェクトの過去バージョンまたは削除マーカーが残っていると、Terraform はバケットを削除できません。
+
+エラーに表示されたバケット名を指定して、全バージョンを削除してから `terraform destroy` を再実行してください。以下は開発環境の少量のログを削除する手順です。
+
+```bash
+BUCKET="csar-audit-logs-$(aws sts get-caller-identity --query Account --output text)"
+VERSIONS_FILE=$(mktemp)
+DELETE_FILE=$(mktemp)
+
+aws s3api list-object-versions \
+  --bucket "${BUCKET}" \
+  --output json > "${VERSIONS_FILE}"
+
+jq -c \
+  '{Objects: ((.Versions // []) + (.DeleteMarkers // []) | map({Key, VersionId})), Quiet: true}' \
+  "${VERSIONS_FILE}" > "${DELETE_FILE}"
+
+cat "${DELETE_FILE}"
+
+if jq -e '.Objects | length > 0' "${DELETE_FILE}" > /dev/null; then
+  aws s3api delete-objects \
+    --bucket "${BUCKET}" \
+    --delete "file://${DELETE_FILE}"
+else
+  echo "削除対象のオブジェクトバージョンはありません"
+fi
+
+rm -f "${VERSIONS_FILE}" "${DELETE_FILE}"
+terraform destroy
+```
+
+`csar-access-logs-<AWSアカウントID>` で同じエラーが出た場合は、`BUCKET` をそのバケット名に変更して同じ手順を実行します。`NoSuchBucket` はバケットがすでに削除済みであることを示すため、次のリソースの削除を続けてください。
 
 ```bash
 # バックエンド用リソースも削除する場合（tfstate も削除されます）
@@ -655,15 +690,50 @@ aws lambda get-policy --function-name csar-remediation-s3 \
   --query "Policy" --output text | python3 -m json.tool
 ```
 
-### `ChatWork通知エラー: HTTPError` が Lambda ログに出る
+### SG 修復 Lambda が EC2 API の接続タイムアウトで失敗する
+
+`Connect timeout on endpoint URL: "https://ec2.ap-northeast-1.amazonaws.com/"` が Lambda ログに出る場合、Lambda から EC2 API へ到達できていません。SG 修復は `DescribeSecurityGroups` と `RevokeSecurityGroupIngress` を呼び出すため、NAT Gateway を使用しない本構成では EC2 用 Interface VPC Endpoint が必要です。
+
+本リポジトリには `com.amazonaws.ap-northeast-1.ec2` を追加済みです。既存環境には、次の変更を適用してください。
 
 ```bash
-# SSM パラメータが正しく登録されているか確認
-aws ssm get-parameter --name "/csar/chatwork/token" --with-decryption
-aws ssm get-parameter --name "/csar/chatwork/room_id" --with-decryption
+cd terraform/environments/dev
+terraform plan
+terraform apply
 ```
 
-Lambda は通知失敗をベストエフォートで扱うため、修復自体は正常完了します。
+過去に失敗した非同期呼び出しは再実行されないため、適用後に Config Rule を再評価します。
+
+```bash
+aws configservice start-config-rules-evaluation \
+  --config-rule-names csar-restricted-ssh \
+  --region ap-northeast-1
+
+aws logs tail /aws/lambda/csar-remediation-ec2-sg \
+  --since 10m \
+  --region ap-northeast-1
+```
+
+### Config Rule の評価結果が空
+
+`get-compliance-details-by-config-rule` の `EvaluationResults` が空の場合、AWS Config が対象リソースをまだ記録していない可能性があります。まず Recorder と検出件数を確認します。
+
+```bash
+aws configservice describe-configuration-recorder-status \
+  --configuration-recorder-names csar-config-recorder \
+  --region ap-northeast-1
+
+aws configservice get-discovered-resource-counts \
+  --region ap-northeast-1
+```
+
+`recording: true` かつ `totalDiscoveredResources: 0` の場合は、初期リソース検出中です。`start-config-rules-evaluation` は検出を促進しないため、検出件数が増えてから再評価してください。初期検出が長時間進まない場合は、Delivery Channel の状態を確認します。
+
+```bash
+aws configservice describe-delivery-channel-status \
+  --delivery-channel-names csar-config-delivery \
+  --region ap-northeast-1
+```
 
 ---
 
@@ -676,7 +746,7 @@ Lambda は通知失敗をベストエフォートで扱うため、修復自体�
 | **ルーティング** | Amazon EventBridge (Rule × 8) |
 | **修復** | AWS Lambda (Python 3.12 / arm64 / Lambda Powertools v3) |
 | **記録** | Amazon DynamoDB (修復ログ, TTL 90日) + Amazon S3 (監査証跡) |
-| **通知** | Chatwork REST API |
+| **監視** | CloudWatch Metrics / Alarms + SNS Topic |
 | **ネットワーク** | VPC Endpoints (Gateway × 2, Interface × 5) |
 | **IaC** | Terraform >= 1.7.0 |
 | **コスト** | ~$16〜21/月 (NAT Gateway 排除で ~$35/月削減) |
@@ -702,7 +772,7 @@ config-securityhub-auto-remediation/
 │   ├── environments/dev/       # 環境設定・モジュール呼び出し
 │   └── modules/
 │       ├── networking/         # VPC / Subnet / VPC Endpoints
-│       ├── audit/              # S3監査ログ / DynamoDB / SQS DLQ / SSM
+│       ├── audit/              # S3監査ログ / DynamoDB / SQS DLQ
 │       ├── iam/                # 最小権限 IAM ロール群
 │       ├── remediation/        # Lambda × 4 / Lambda Layer
 │       ├── config/             # Config Recorder / Rules × 8 / EventBridge
@@ -710,7 +780,7 @@ config-securityhub-auto-remediation/
 │       └── dashboard/          # CloudWatch Dashboard / Alarms
 ├── lambda/
 │   ├── remediation/            # 修復 Lambda × 4 (S3 / IAM / EC2-SG / RDS)
-│   └── shared/                 # 共通モジュール (監査ログ / Chatwork 通知)
+│   └── shared/                 # 共通モジュール (監査ログ)
 ├── tests/
 │   └── integration/            # 違反シミュレーションスクリプト × 3
 ├── scripts/

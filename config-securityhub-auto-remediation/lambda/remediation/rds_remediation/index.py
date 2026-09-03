@@ -6,7 +6,7 @@ RDS自動修復Lambda
 
 設計意図:
   - RDSの暗号化はインプレースで変更不可 (DBを再作成する必要がある)
-  - そのためスナップショットを取得してChatworkで通知し、手動対応を促す
+  - そのためスナップショットを取得して監査ログに記録し、手動対応を促す
   - PubliclyAccessibleはModifyDBInstanceで変更可能なため即時修復する
 """
 import json
@@ -19,7 +19,6 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from audit_logger import generate_remediation_id, record_remediation
-from chatwork_notifier import notify_remediation_result
 
 logger = Logger(service="csar-remediation-rds")
 tracer = Tracer(service="csar-remediation-rds")
@@ -114,15 +113,6 @@ def handler(event: dict, context: LambdaContext) -> dict:
             status=status,
             trigger_source=trigger_source,
             aws_account_id=aws_account_id,
-        )
-
-        notify_remediation_result(
-            resource_type="RDS DBインスタンス",
-            resource_id=db_identifier,
-            rule_name=rule_name,
-            remediation_action=action,
-            status=status,
-            remediation_id=remediation_id,
         )
 
         metric_name = "RemediationSuccess" if status == "SUCCESS" else "RemediationManualRequired"

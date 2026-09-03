@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Lambda Layer: 共有モジュール (audit_logger + chatwork_notifier)
+# Lambda Layer: 共有監査ログモジュール
 # ─────────────────────────────────────────────────────────────────────────────
 
 # python/ プレフィックスを付けてzipすることで /opt/python/ にマウントされる
@@ -12,10 +12,6 @@ data "archive_file" "shared_layer" {
     filename = "python/audit_logger.py"
   }
 
-  source {
-    content  = file("${path.module}/../../../lambda/shared/chatwork_notifier.py")
-    filename = "python/chatwork_notifier.py"
-  }
 }
 
 resource "aws_lambda_layer_version" "csar_shared" {
@@ -24,7 +20,7 @@ resource "aws_lambda_layer_version" "csar_shared" {
   source_code_hash         = data.archive_file.shared_layer.output_base64sha256
   compatible_runtimes      = ["python3.12"]
   compatible_architectures = ["arm64"]
-  description              = "CSAR共有モジュール: audit_logger + chatwork_notifier"
+  description              = "CSAR共有モジュール: audit_logger"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

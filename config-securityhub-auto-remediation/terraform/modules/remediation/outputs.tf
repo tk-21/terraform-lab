@@ -19,6 +19,6 @@ output "rds_lambda_arn" {
 }
 
 output "shared_layer_arn" {
-  description = "共有モジュールLayerのARN (audit_logger + chatwork_notifier)"
+  description = "共有監査ログモジュールLayerのARN (audit_logger)"
   value       = aws_lambda_layer_version.csar_shared.arn
 }

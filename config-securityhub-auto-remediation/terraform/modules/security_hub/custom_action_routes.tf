@@ -25,8 +25,6 @@ resource "aws_cloudwatch_event_rule" "s3_custom_action" {
 }
 
 resource "aws_cloudwatch_event_target" "s3_custom_action_lambda" {
-  count = var.s3_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.s3_custom_action.name
   target_id = "csar-s3-custom-action-lambda"
   arn       = var.s3_remediation_lambda_arn
@@ -49,8 +47,6 @@ resource "aws_cloudwatch_event_rule" "iam_custom_action" {
 }
 
 resource "aws_cloudwatch_event_target" "iam_custom_action_lambda" {
-  count = var.iam_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.iam_custom_action.name
   target_id = "csar-iam-custom-action-lambda"
   arn       = var.iam_remediation_lambda_arn
@@ -73,8 +69,6 @@ resource "aws_cloudwatch_event_rule" "sg_custom_action" {
 }
 
 resource "aws_cloudwatch_event_target" "sg_custom_action_lambda" {
-  count = var.sg_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.sg_custom_action.name
   target_id = "csar-sg-custom-action-lambda"
   arn       = var.sg_remediation_lambda_arn
@@ -97,8 +91,6 @@ resource "aws_cloudwatch_event_rule" "rds_custom_action" {
 }
 
 resource "aws_cloudwatch_event_target" "rds_custom_action_lambda" {
-  count = var.rds_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.rds_custom_action.name
   target_id = "csar-rds-custom-action-lambda"
   arn       = var.rds_remediation_lambda_arn

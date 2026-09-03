@@ -1,5 +1,5 @@
 # ===== SNS Topic: アラーム通知ハブ =====
-# Chatworkに直接通知せずSNSを中継する理由:
+# SNSを通知ハブにする理由:
 # SNSサブスクリプションの追加のみで通知先を増やせる (Slack/PagerDuty等への拡張が容易)
 resource "aws_sns_topic" "csar_alerts" {
   name = "csar-alerts"
