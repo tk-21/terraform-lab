@@ -102,7 +102,7 @@ Finding を選択して Custom Action をクリックすると EventBridge イ�
 ```hcl
 # S3修復用 Custom Action
 resource "aws_securityhub_action_target" "s3_remediate" {
-  name        = "CSAR: S3自動修復"
+  name        = "CSAR: S3 Remediate"
   identifier  = "CSARRemediateS3"   # 英数字のみ、20文字以内
   description = "S3バケットのPublic Access/暗号化違反を手動トリガーで修復する"
 
@@ -111,7 +111,7 @@ resource "aws_securityhub_action_target" "s3_remediate" {
 
 # IAM修復用 Custom Action
 resource "aws_securityhub_action_target" "iam_remediate" {
-  name        = "CSAR: IAM自動修復"
+  name        = "CSAR: IAM Remediate"
   identifier  = "CSARRemediateIAM"
   description = "IAMユーザーのMFA未設定/過剰権限違反を手動トリガーで修復する"
 
@@ -120,7 +120,7 @@ resource "aws_securityhub_action_target" "iam_remediate" {
 
 # EC2/SG修復用 Custom Action
 resource "aws_securityhub_action_target" "sg_remediate" {
-  name        = "CSAR: SG自動修復"
+  name        = "CSAR: SG Remediate"
   identifier  = "CSARRemediateSG"
   description = "Security GroupのSSH/RDP 0.0.0.0/0開放を手動トリガーで修復する"
 
@@ -129,7 +129,7 @@ resource "aws_securityhub_action_target" "sg_remediate" {
 
 # RDS修復用 Custom Action
 resource "aws_securityhub_action_target" "rds_remediate" {
-  name        = "CSAR: RDS修復通知"
+  name        = "CSAR: RDS Review"
   identifier  = "CSARRemediateRDS"
   description = "RDSの暗号化/Public Access違反を検知して手動対応を通知する"
 

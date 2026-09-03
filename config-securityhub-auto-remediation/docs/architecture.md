@@ -33,15 +33,14 @@ graph TB
 
     subgraph "修復アクション"
         LS3 -->|Block Public Access\nSSE設定| S3R[S3バケット]
-        LIAM -->|LoginProfile削除\n通知のみ| IAMR[IAMユーザー]
+        LIAM -->|LoginProfile削除\n監査ログ記録| IAMR[IAMユーザー]
         LSG -->|RevokeIngress 0.0.0.0/0:22| SGR[Security Group]
         LRDS -->|PubliclyAccessible=false\nSnapshot取得| RDSR[RDS DB]
     end
 
-    subgraph "記録・通知層"
+    subgraph "記録・監視層"
         LS3 & LIAM & LSG & LRDS --> DDB[(DynamoDB\ncsar-remediation-log)]
         LS3 & LIAM & LSG & LRDS --> S3A[(S3\ncsar-audit-logs)]
-        LS3 & LIAM & LSG & LRDS --> CW[Chatwork通知]
         LS3 & LIAM & LSG & LRDS -->|3回リトライ後失敗| DLQ[SQS DLQ]
     end
 

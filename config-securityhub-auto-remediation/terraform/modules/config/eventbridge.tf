@@ -20,9 +20,6 @@ resource "aws_cloudwatch_event_rule" "s3_noncompliant" {
 }
 
 resource "aws_cloudwatch_event_target" "s3_remediation_lambda" {
-  # Lambda ARNはPhase4で確定する。null の場合はターゲットを作成しない
-  count = var.s3_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.s3_noncompliant.name
   target_id = "csar-s3-remediation-lambda"
   arn       = var.s3_remediation_lambda_arn
@@ -63,8 +60,6 @@ resource "aws_cloudwatch_event_rule" "iam_noncompliant" {
 }
 
 resource "aws_cloudwatch_event_target" "iam_remediation_lambda" {
-  count = var.iam_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.iam_noncompliant.name
   target_id = "csar-iam-remediation-lambda"
   arn       = var.iam_remediation_lambda_arn
@@ -102,8 +97,6 @@ resource "aws_cloudwatch_event_rule" "sg_noncompliant" {
 }
 
 resource "aws_cloudwatch_event_target" "sg_remediation_lambda" {
-  count = var.sg_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.sg_noncompliant.name
   target_id = "csar-sg-remediation-lambda"
   arn       = var.sg_remediation_lambda_arn
@@ -141,8 +134,6 @@ resource "aws_cloudwatch_event_rule" "rds_noncompliant" {
 }
 
 resource "aws_cloudwatch_event_target" "rds_remediation_lambda" {
-  count = var.rds_remediation_lambda_arn != null ? 1 : 0
-
   rule      = aws_cloudwatch_event_rule.rds_noncompliant.name
   target_id = "csar-rds-remediation-lambda"
   arn       = var.rds_remediation_lambda_arn

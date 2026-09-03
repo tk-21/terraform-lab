@@ -2,7 +2,7 @@
 IAMユーザー自動修復Lambda
 対応するConfig Rules:
   - csar-iam-user-mfa-enabled      → コンソールアクセス無効化 (LoginProfile削除)
-  - csar-iam-user-no-policies-check → 直接アタッチポリシーをChatworkで警告
+  - csar-iam-user-no-policies-check → 直接アタッチポリシーを監査ログに記録して手動対応
 
 設計意図:
   - MFA未設定ユーザーのコンソールアクセスを無効化する (ログインプロファイル削除)
@@ -19,7 +19,6 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from audit_logger import generate_remediation_id, record_remediation
-from chatwork_notifier import notify_remediation_result
 
 logger = Logger(service="csar-remediation-iam")
 tracer = Tracer(service="csar-remediation-iam")
@@ -62,7 +61,7 @@ def remediate_mfa_not_enabled(username: str) -> tuple[str, str]:
 
 
 def remediate_inline_policy(username: str) -> tuple[str, str]:
-    """直接アタッチポリシーの修復 (インプレース修復不可のため通知のみ)"""
+    """直接アタッチポリシーの修復 (インプレース修復不可のため手動対応として記録)"""
     resp = iam_client.list_attached_user_policies(UserName=username)
     policies = [p["PolicyName"] for p in resp["AttachedPolicies"]]
 
@@ -117,15 +116,6 @@ def handler(event: dict, context: LambdaContext) -> dict:
             status=status,
             trigger_source=trigger_source,
             aws_account_id=aws_account_id,
-        )
-
-        notify_remediation_result(
-            resource_type="IAMユーザー",
-            resource_id=username,
-            rule_name=rule_name,
-            remediation_action=action,
-            status=status,
-            remediation_id=remediation_id,
         )
 
         metric_name = "RemediationSuccess" if status == "SUCCESS" else "RemediationManualRequired"

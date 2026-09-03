@@ -22,7 +22,7 @@
 
 ## 1. システム概要
 
-AWS Config Rules で検知したコンプライアンス違反を、EventBridge 経由で Lambda へルーティングし、**自動修復 → 監査ログ記録 → Chatwork 通知** までをフルサイクルで実行する基盤。
+AWS Config Rules で検知したコンプライアンス違反を、EventBridge 経由で Lambda へルーティングし、**自動修復 → 監査ログ記録 → CloudWatch 監視** までをフルサイクルで実行する基盤。
 
 | 項目 | 値 |
 |------|-----|
@@ -36,7 +36,7 @@ AWS Config Rules で検知したコンプライアンス違反を、EventBridge 
 ### 設計の差別化ポイント
 
 - **2 トリガーパスの統一**: Config Rule (自動) と Security Hub Custom Action (手動) を同一の Lambda 関数で処理。トリガー種別は `trigger_source` フィールドに記録される。
-- **修復できないものを正直に設計**: RDS 暗号化のインプレース変更が AWS 仕様上不可能なため、「スナップショット取得 + 手動対応通知」に留め、無理な自動化をしない。
+- **修復できないものを正直に設計**: RDS 暗号化のインプレース変更が AWS 仕様上不可能なため、「スナップショット取得 + 監査ログへの手動対応記録」に留め、無理な自動化をしない。
 - **NAT Gateway ゼロ設計**: VPC Endpoints (Gateway × 2、Interface × 5) のみで AWS API 通信を完結。月約 $35 削減。
 - **DLQ 二段構え**: EventBridge レベル (3回リトライ) + Lambda DLQ で修復イベントの取りこぼしを防止。
 
@@ -63,10 +63,10 @@ graph TB
         end
 
         subgraph manual["手動トリガー (Security Hub)"]
-            SH -->|Custom Action| CA1["CSAR: S3自動修復\n(CSARRemediateS3)"]
-            SH -->|Custom Action| CA2["CSAR: IAM自動修復\n(CSARRemediateIAM)"]
-            SH -->|Custom Action| CA3["CSAR: SG自動修復\n(CSARRemediateSG)"]
-            SH -->|Custom Action| CA4["CSAR: RDS修復通知\n(CSARRemediateRDS)"]
+            SH -->|Custom Action| CA1["CSAR: S3 Remediate\n(CSARRemediateS3)"]
+            SH -->|Custom Action| CA2["CSAR: IAM Remediate\n(CSARRemediateIAM)"]
+            SH -->|Custom Action| CA3["CSAR: SG Remediate\n(CSARRemediateSG)"]
+            SH -->|Custom Action| CA4["CSAR: RDS Review\n(CSARRemediateRDS)"]
         end
 
         subgraph routing["ルーティング層 (EventBridge)"]
@@ -96,7 +96,7 @@ graph TB
             subgraph vpce["VPC Endpoints"]
                 GW_S3[Gateway: S3]
                 GW_DDB[Gateway: DynamoDB]
-                IF_SSM[Interface: SSM]
+                IF_EC2[Interface: EC2]
                 IF_LOGS[Interface: CloudWatch Logs]
                 IF_CFG[Interface: Config]
                 IF_SH[Interface: SecurityHub]
@@ -121,16 +121,14 @@ graph TB
         LSG -->|RevokeIngress 0.0.0.0/0| SGR
         LRDS -->|PubliclyAccessible=false / Snapshot| RDSR
 
-        subgraph audit["記録・通知層"]
+        subgraph audit["記録・監視層"]
             DDB[(DynamoDB\ncsar-remediation-log\nTTL: 90日)]
             S3A[(S3\ncsar-audit-logs\n90日→Glacier)]
-            CW[Chatwork\nREST API]
             DLQ[SQS DLQ\ncsar-remediation-dlq]
         end
 
         LS3 & LIAM & LSG & LRDS -->|PutItem| DDB
         LS3 & LIAM & LSG & LRDS -->|PutObject| S3A
-        LS3 & LIAM & LSG & LRDS -->|POST /messages| CW
         LS3 & LIAM & LSG & LRDS -->|3回リトライ後失敗| DLQ
 
         subgraph observe["可視化層"]
@@ -145,7 +143,6 @@ graph TB
         LS3 & LIAM & LSG & LRDS --- vpce
     end
 
-    SSM[(SSM Parameter Store\n/csar/chatwork/token\n/csar/chatwork/room_id)] -.->|GetParameter| IF_SSM
 ```
 
 ---
@@ -164,7 +161,7 @@ Config Recorder が監視対象リソースの設定変更を記録し、8 つ�
 | 修復 | AWS Lambda × 4 | Python 3.12 / arm64 / Lambda Powertools で修復ロジックを実行 |
 | 記録 | Amazon DynamoDB | 修復ログを構造化データで保存 (TTL 90日) |
 | 証跡 | Amazon S3 | 修復ログを JSON で長期保管 (90日後 Glacier → 365日後削除) |
-| 通知 | Chatwork REST API | 修復結果 (成功 / 失敗 / 手動対応要) を即時通知 |
+| 監視 | CloudWatch Metrics / Alarms + SNS Topic | 修復件数・エラー・DLQ 深度を可視化し、アラームを通知先へ配信 |
 | 信頼性 | Amazon SQS (DLQ) | 修復失敗イベントを保全し、手動対応を可能にする |
 | 可視化 | CloudWatch Dashboard | 修復件数・エラー率・DLQ 深度を一画面で確認 |
 
@@ -206,7 +203,7 @@ Config Recorder が監視対象リソースの設定変更を記録し、8 つ�
         ↓
 ⑧  修復結果を DynamoDB + S3 に記録
         ↓
-⑨  Chatwork に通知
+⑨  CloudWatch メトリクスに修復結果を記録
 ```
 
 **評価タイミングの注意点:**
@@ -306,7 +303,7 @@ DLQ からの手動再実行時も同一 Lambda を呼び出す。S3 Block Publi
 | Config Rule | 違反条件 | 修復アクション | ステータス |
 |------------|---------|------------|---------|
 | csar-iam-user-mfa-enabled | MFA デバイス未設定 | LoginProfile (コンソールアクセス) を削除 | SUCCESS |
-| csar-iam-user-no-policies-check | ユーザーに直接ポリシーがアタッチされている | Chatwork 警告通知のみ (自動修復なし) | MANUAL_REQUIRED |
+| csar-iam-user-no-policies-check | ユーザーに直接ポリシーがアタッチされている | 監査ログに記録し手動対応 (自動修復なし) | MANUAL_REQUIRED |
 
 **IAM MFA の修復フロー:**
 ```
@@ -317,7 +314,7 @@ DLQ からの手動再実行時も同一 Lambda を呼び出す。S3 Block Publi
 ```
 
 **直接ポリシーが自動修復できない理由:**
-どのポリシーを IAM グループに移管するか、またはそもそも削除するかは業務文脈に依存する。システムが判断できないため通知に留めた。
+どのポリシーを IAM グループに移管するか、またはそもそも削除するかは業務文脈に依存する。システムが判断できないため、監査ログへ記録して手動対応とする。
 
 ---
 
@@ -350,13 +347,13 @@ for rule in ingress_rules:
 | Config Rule | 違反条件 | 修復アクション | ステータス |
 |------------|---------|------------|---------|
 | csar-rds-instance-public-access-check | PubliclyAccessible = true | `modify_db_instance(PubliclyAccessible=False, ApplyImmediately=True)` | SUCCESS |
-| csar-rds-storage-encrypted | StorageEncrypted = false | スナップショット取得 + Chatwork で手動対応を通知 | MANUAL_REQUIRED |
+| csar-rds-storage-encrypted | StorageEncrypted = false | スナップショット取得 + 監査ログに手動対応を記録 | MANUAL_REQUIRED |
 
 **RDS 暗号化が自動修復できない理由:**
 
 AWS は稼働中の RDS インスタンスの暗号化をインプレースで変更する API を提供していない。
 変更には「スナップショット取得 → 暗号化オプションを指定して新 DB を復元 → エンドポイント切り替え → 旧 DB 削除」という 4 ステップが必要で、エンドポイント切り替え時のダウンタイムが業務影響になる。
-そのため Lambda では「スナップショット取得のみを自動実行し、以降の作業を手動対応として通知する」設計にした。
+そのため Lambda では「スナップショット取得のみを自動実行し、以降の作業を手動対応として監査ログに記録する」設計にした。
 
 **スナップショット命名規則:**
 ```
@@ -386,7 +383,7 @@ Lambda関数
 │
 └── エラーハンドリング
     - 例外発生時は raise して EventBridge リトライを発動
-    - DynamoDB / S3 / Chatwork の記録・通知失敗はベストエフォート
+    - DynamoDB / S3 への監査ログ記録はベストエフォート
       (修復は完了しているため、記録失敗で例外を出す必要はない)
 ```
 
@@ -395,8 +392,7 @@ Lambda関数
 ```
 Lambda関数 (index.py)
     └── Layer 1: csar-shared-modules
-    │       ├── /opt/python/audit_logger.py    ← DynamoDB + S3 への記録
-    │       └── /opt/python/chatwork_notifier.py ← Chatwork 通知
+    │       └── /opt/python/audit_logger.py    ← DynamoDB + S3 への記録
     └── Layer 2: AWSLambdaPowertoolsPythonV3-python312-arm64 (公開 Layer)
 ```
 
@@ -475,15 +471,6 @@ s3://csar-audit-logs-{account_id}/
 - 90日〜365日: Glacier に自動移行 (ストレージコスト最小化)
 - 365日後: 自動削除
 
-### SSM Parameter Store
-
-| パス | 型 | 説明 |
-|-----|---|-----|
-| `/csar/chatwork/token` | SecureString | Chatwork API トークン |
-| `/csar/chatwork/room_id` | SecureString | 通知先ルーム ID |
-
-Lambda 起動時に SSM から取得し、グローバル変数にキャッシュ。同一実行コンテキストの再利用時は SSM を呼ばない。
-
 ---
 
 ## 8. ネットワーク設計
@@ -502,7 +489,7 @@ VPC (10.0.0.0/16)
         │
         ├── Gateway Endpoint: S3      → S3 監査ログ / S3 バケット修復
         ├── Gateway Endpoint: DynamoDB → DynamoDB 修復ログ書き込み
-        ├── Interface Endpoint: SSM   → Chatwork トークン取得
+        ├── Interface Endpoint: EC2   → SG 修復 Lambda の EC2 API 呼び出し
         ├── Interface Endpoint: Logs  → CloudWatch Logs 書き込み
         ├── Interface Endpoint: Config → Config API アクセス
         ├── Interface Endpoint: SecurityHub → Security Hub API アクセス
@@ -514,7 +501,7 @@ VPC (10.0.0.0/16)
 | Endpoint 種別 | 対象サービス | 理由 |
 |------------|-----------|-----|
 | Gateway | S3, DynamoDB | ルートテーブル自動更新・コストゼロ |
-| Interface | SSM, Logs, Config, SecurityHub, Lambda | Gateway 型が対応していないサービス |
+| Interface | EC2, Logs, Config, SecurityHub, Lambda | Gateway 型が対応していないサービス |
 
 Gateway 型は ENI を作らないためコストが発生しない。Interface 型は 1 AZ あたり約 $7.5/月だが、NAT Gateway の $35/月+データ転送費と比較して大幅に安価。
 
@@ -571,9 +558,6 @@ csar-lambda-remediation-role
         │
         ├── s3:PutObject
         │   Resource: arn:aws:s3:::csar-audit-logs-*/remediation-logs/*
-        │
-        ├── ssm:GetParameter
-        │   Resource: arn:aws:ssm:ap-northeast-1:*:parameter/csar/*
         │
         ├── sqs:SendMessage
         │   Resource: {DLQ ARN}
@@ -668,7 +652,7 @@ terraform/
 │
 └── modules/
     ├── networking/       ← VPC / Subnet / Route Table / SG / VPC Endpoints
-    ├── audit/            ← S3監査バケット / DynamoDB / SQS DLQ / SSM Parameter
+    ├── audit/            ← S3監査バケット / DynamoDB / SQS DLQ
     ├── iam/              ← Lambda実行ロール / Configサービスロール / EventBridgeロール
     ├── remediation/      ← Lambda Layer / Lambda × 4 / Lambda Permission
     ├── config/           ← Config Recorder / Config Rules × 8 / EventBridge Rules

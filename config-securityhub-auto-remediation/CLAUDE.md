@@ -3,7 +3,7 @@
 ## プロジェクト概要
 
 AWS Config Rules + Security Hub Custom Action を組み合わせたセキュリティコンプライアンス自動修復基盤。
-検知から修復・監査ログ記録・Chatwork通知までをフルサイクルで実装する。
+検知から修復・監査ログ記録・CloudWatch監視までをフルサイクルで実装する。
 
 **差別化ポイント**:
 - Config Rules → EventBridge → Lambda の自動修復ループ
@@ -62,7 +62,6 @@ config-securityhub-auto-remediation/
 │   │       └── requirements.txt
 │   └── shared/
 │       ├── audit_logger.py      # DynamoDB + S3監査ログ共通モジュール
-│       └── chatwork_notifier.py # Chatwork通知共通モジュール
 ├── tests/
 │   ├── unit/
 │   └── integration/
@@ -94,7 +93,6 @@ config-securityhub-auto-remediation/
 - **IAMロール名は64文字以内** (`csar-` プレフィックスで統一)
 - **ワイルドカード権限禁止** — `Action: "*"` `Resource: "*"` は一切不可
 - **アクセスキー禁止** — GitHub Actions は OIDC のみ
-- **ハードコード禁止** — Chatwork Token は SSM Parameter Store (`/csar/chatwork/token`)
 - Lambda環境変数に機密情報を直接記載禁止
 
 ### 実装品質
@@ -120,7 +118,7 @@ Config Rule 違反検知
     → 修復実行 (AWS API Call)
     → DynamoDB 修復ログ記録
     → S3 監査ログ PUT
-    → Chatwork 通知
+    → CloudWatch メトリクス記録
 
 【手動修復フロー (Security Hub Custom Action起点)】
 Security Hub Finding
@@ -133,7 +131,7 @@ Security Hub Finding
 Lambda 実行失敗 (3回リトライ後)
     → SQS DLQ
     → EventBridge Pipe or Lambda (DLQ監視)
-    → Chatwork エラー通知 + DynamoDB FAILED記録
+    → CloudWatch Alarm + DynamoDB FAILED記録
 ```
 
 ---
@@ -144,48 +142,10 @@ Lambda 実行失敗 (3回リトライ後)
 |---------|------------|---------|------------|
 | S3バケット | s3-bucket-public-read-prohibited | PublicRead ACL | Block Public Access 有効化 |
 | S3バケット | s3-bucket-server-side-encryption-enabled | SSE未設定 | AES256 SSE 強制設定 |
-| IAMユーザー | iam-user-mfa-enabled | MFA未設定 | コンソールアクセス無効化 + Chatwork警告 |
+| IAMユーザー | iam-user-mfa-enabled | MFA未設定 | コンソールアクセス無効化 + 監査ログ記録 |
 | EC2/SG | restricted-ssh | 0.0.0.0/0:22 開放 | 当該インバウンドルール削除 |
-| RDS | rds-storage-encrypted | 暗号化なし | スナップショット取得後Chatwork通知(インプレース修復不可のため) |
+| RDS | rds-storage-encrypted | 暗号化なし | スナップショット取得後に監査ログへ手動対応を記録 (インプレース修復不可のため) |
 | RDS | rds-instance-public-access-check | PubliclyAccessible=true | PubliclyAccessible=false に変更 |
-
----
-
-## 通知フォーマット (Chatwork)
-
-```
-[修復成功]
-リソース種別: S3バケット
-リソースID: my-bucket-name
-違反ルール: s3-bucket-public-read-prohibited
-修復内容: Block Public Access を有効化
-修復時刻: 2025-01-15T10:30:00+09:00
-修復ID: csar-rem-20250115-abc123
-
-[修復失敗/要手動対応]
-リソース種別: RDS
-リソースID: my-db-instance
-違反ルール: rds-storage-encrypted
-修復内容: 暗号化はインプレース変更不可のため手動対応が必要です
-スナップショット: rds:my-db-instance-csar-snap-20250115
-```
-
----
-
-## Chatwork API 仕様
-
-```python
-# エンドポイント
-POST https://api.chatwork.com/v2/rooms/{room_id}/messages
-
-# ヘッダー
-X-ChatWorkToken: {token}
-Content-Type: application/x-www-form-urlencoded
-
-# SSMパラメータパス
-token: /csar/chatwork/token
-room_id: /csar/chatwork/room_id
-```
 
 ---
 

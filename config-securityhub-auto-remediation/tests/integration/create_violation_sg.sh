@@ -5,27 +5,32 @@
 set -euo pipefail
 
 REGION="ap-northeast-1"
+# terraform/environments/dev/terraform.tfvars の environment と合わせる。
+# 他環境をテストする場合は ENVIRONMENT=prod のように指定する。
+ENVIRONMENT="${ENVIRONMENT:-dev}"
+VPC_NAME="csar-vpc-${ENVIRONMENT}"
 
 echo "=== Security Group違反リソース作成 ==="
 
-# csar-vpc のVPC IDを取得する
+# Terraformの命名規則 (csar-vpc-{environment}) からVPC IDを取得する
 VPC_ID=$(aws ec2 describe-vpcs \
   --region "${REGION}" \
-  --filters "Name=tag:Name,Values=csar-vpc" \
+  --filters "Name=tag:Name,Values=${VPC_NAME}" \
   --query "Vpcs[0].VpcId" --output text)
 
 if [ "${VPC_ID}" = "None" ] || [ -z "${VPC_ID}" ]; then
-  echo "ERROR: csar-vpcが見つかりません。Phase1のnetworkingモジュールが適用済みか確認してください。"
+  echo "ERROR: ${VPC_NAME} が見つかりません。networkingモジュールの適用状況と ENVIRONMENT を確認してください。"
   exit 1
 fi
 
 echo "対象VPC: ${VPC_ID}"
 
 SG_NAME="csar-test-violation-sg-$(date +%s)"
+# EC2 Security Group description は AWS の許可文字セットに合わせて ASCII を使う
 SG_ID=$(aws ec2 create-security-group \
   --region "${REGION}" \
   --group-name "${SG_NAME}" \
-  --description "テスト用違反SG (自動修復テスト後に削除)" \
+  --description "Temporary SG for CSAR remediation test" \
   --vpc-id "${VPC_ID}" \
   --query "GroupId" --output text)
 

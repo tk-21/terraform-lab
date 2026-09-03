@@ -57,12 +57,13 @@ resource "aws_route_table_association" "private" {
 # ─────────────────────────────────────────────
 
 resource "aws_security_group" "lambda" {
-  name        = "${local.prefix}-sg-lambda-${var.environment}"
-  description = "Lambda修復関数用SG: VPC Endpoint経由のAWS APIアクセスのみ許可"
+  name = "${local.prefix}-sg-lambda-${var.environment}"
+  # Security GroupのdescriptionはAWSが許可するASCII文字のみを使用する
+  description = "Lambda remediation security group"
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "VPC Endpoint (Interface型) へのHTTPS通信"
+    description = "HTTPS egress to VPC endpoints"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -77,11 +78,11 @@ resource "aws_security_group" "lambda" {
 # Interface型VPC Endpoint用セキュリティグループ
 resource "aws_security_group" "vpc_endpoint" {
   name        = "${local.prefix}-sg-vpce-${var.environment}"
-  description = "VPC Endpoint用SG: Lambda SGからの443インバウンドのみ許可"
+  description = "VPC endpoint security group"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Lambda SGからのHTTPS通信"
+    description     = "HTTPS ingress from Lambda security group"
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
@@ -127,7 +128,8 @@ resource "aws_vpc_endpoint" "dynamodb" {
 
 locals {
   interface_endpoints = {
-    ssm         = "com.amazonaws.ap-northeast-1.ssm"
+    # SG修復LambdaがDescribeSecurityGroups / RevokeSecurityGroupIngressを実行するために必要
+    ec2         = "com.amazonaws.ap-northeast-1.ec2"
     lambda      = "com.amazonaws.ap-northeast-1.lambda"
     logs        = "com.amazonaws.ap-northeast-1.logs"
     config      = "com.amazonaws.ap-northeast-1.config"

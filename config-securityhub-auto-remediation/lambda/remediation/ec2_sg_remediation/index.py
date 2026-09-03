@@ -18,7 +18,6 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from audit_logger import generate_remediation_id, record_remediation
-from chatwork_notifier import notify_remediation_result
 
 logger = Logger(service="csar-remediation-ec2-sg")
 tracer = Tracer(service="csar-remediation-ec2-sg")
@@ -119,16 +118,6 @@ def handler(event: dict, context: LambdaContext) -> dict:
             trigger_source=trigger_source,
             aws_account_id=aws_account_id,
             extra={"revoked_rules": revoked},
-        )
-
-        notify_remediation_result(
-            resource_type="Security Group",
-            resource_id=sg_id,
-            rule_name=rule_name,
-            remediation_action=action,
-            status="SUCCESS",
-            remediation_id=remediation_id,
-            extra_info=f"削除ルール数: {len(revoked)}",
         )
 
         metrics.add_metric(name="RemediationSuccess", unit=MetricUnit.Count, value=1)

@@ -8,8 +8,9 @@ locals {
 
 resource "aws_iam_role" "lambda_remediation" {
   # IAMロール名は64文字以内のAWSハード制限に注意
-  name        = "csar-lambda-remediation-role"
-  description = "Config/SecurityHub修復Lambda共通実行ロール"
+  name = "csar-lambda-remediation-role"
+  # IAM Role descriptions accept only the AWS-supported character set.
+  description = "Execution role for CSAR remediation Lambdas"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -109,13 +110,6 @@ resource "aws_iam_role_policy" "lambda_remediation" {
         Resource = "arn:aws:s3:::${var.audit_bucket}/remediation-logs/*"
       },
       {
-        # SSM Parameter Storeから Chatwork認証情報を取得する権限
-        Sid      = "SSMRead"
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = "arn:aws:ssm:${local.region}:*:parameter/csar/*"
-      },
-      {
         # 修復失敗時にDLQへメッセージを送信する権限
         Sid      = "SQSDLQWrite"
         Effect   = "Allow"
@@ -140,7 +134,7 @@ resource "aws_iam_role_policy" "lambda_remediation" {
 
 resource "aws_iam_role" "config_service" {
   name        = "csar-config-service-role"
-  description = "AWS Config サービスロール"
+  description = "Service role for AWS Config"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -188,7 +182,7 @@ resource "aws_iam_role_policy" "config_s3_delivery" {
 
 resource "aws_iam_role" "eventbridge_invoke" {
   name        = "csar-eventbridge-invoke-role"
-  description = "EventBridgeがLambda修復関数を起動するためのロール"
+  description = "Execution role for EventBridge Lambda targets"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

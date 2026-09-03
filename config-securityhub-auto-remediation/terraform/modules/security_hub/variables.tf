@@ -8,27 +8,22 @@ variable "dlq_arn" {
   type        = string
 }
 
-# Phase4でLambda ARNが確定したら設定する。初回applyはnullで可。
 variable "s3_remediation_lambda_arn" {
-  description = "S3修復Lambda ARN (Phase4で設定)"
+  description = "S3修復Lambda ARN"
   type        = string
-  default     = null
 }
 
 variable "iam_remediation_lambda_arn" {
-  description = "IAM修復Lambda ARN (Phase4で設定)"
+  description = "IAM修復Lambda ARN"
   type        = string
-  default     = null
 }
 
 variable "sg_remediation_lambda_arn" {
-  description = "EC2/SG修復Lambda ARN (Phase4で設定)"
+  description = "EC2/SG修復Lambda ARN"
   type        = string
-  default     = null
 }
 
 variable "rds_remediation_lambda_arn" {
-  description = "RDS修復Lambda ARN (Phase4で設定)"
+  description = "RDS修復Lambda ARN"
   type        = string
-  default     = null
 }
