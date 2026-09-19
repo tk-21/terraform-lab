@@ -1,0 +1,23 @@
+# Kind クラスタ設定
+# GPUノードは実際には存在しないが、コントローラーロジック・Webhook・CRDのテストに使用する
+# Karpenter連携のE2EテストはEKS環境で行う
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: gpu-inference-operator
+nodes:
+  - role: control-plane
+    # ingress用ポートマッピング (webhook用)
+    extraPortMappings:
+      - containerPort: 9443
+        hostPort: 9443
+        protocol: TCP
+  - role: worker
+  - role: worker
+# kubeadm設定でAPIサーバーのフィーチャーゲートを制御
+kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+        # admission webhookのデバッグ用
+        v: "2"

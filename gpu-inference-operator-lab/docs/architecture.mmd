@@ -1,0 +1,98 @@
+%%{init: {'theme': 'neutral'}}%%
+graph TB
+    Dev([開発者]) -->|"git push / PR"| GHA
+
+    subgraph CICD["CI/CD (GitHub Actions + OIDC)"]
+        GHA["GitHub Actions\n(OIDC → AWS)"]
+        GHA -->|"go test / golangci-lint\nenvtest"| GHATest["Unit/Integration\nTests"]
+        GHA -->|"docker buildx\n(arm64+amd64)"| GHABuild["Multi-arch\nImage Build"]
+        GHABuild -->|"push"| ECR
+    end
+
+    subgraph AWS["AWS ap-northeast-1"]
+        subgraph VPC["VPC 10.0.0.0/16 (NAT Gateway なし)"]
+            subgraph PublicSubnet["Public Subnets (ALB専用)"]
+                ALB[ALB]
+            end
+            subgraph PrivateSubnet["Private Subnets (EKSノード)"]
+                subgraph EKS["EKS Cluster 1.30"]
+                    subgraph SystemNodes["System Nodes (t4g.medium / arm64)"]
+                        Karpenter[Karpenter]
+                        Operator["GPU Inference\nOperator"]
+                        CoreDNS[CoreDNS]
+                        subgraph WebhookStack["Admission Webhooks"]
+                            Validating["ValidatingWebhook\n(gpu必須・レプリカ整合性)"]
+                            Mutating["MutatingWebhook\n(defaults injection)"]
+                        end
+                        subgraph Observability["Observability Stack"]
+                            Prometheus["Prometheus\n(PrometheusRule)"]
+                            Grafana["Grafana\n(Operator Dashboard)"]
+                            Alertmanager["Alertmanager\n(Chatwork Bridge)"]
+                        end
+                    end
+                    subgraph GPUNodes["GPU Nodes (g5g / Graviton2+T4G)"]
+                        vLLM1["vLLM Pod\n(llama-3-8b)"]
+                        vLLM2["vLLM Pod\n(llama-3-8b)"]
+                    end
+                    CRD["AIInferenceService CRD\n(llama-3-8b)"]
+                end
+                VPCE_ECR["VPC Endpoint\nECR API/DKR"]
+                VPCE_STS["VPC Endpoint\nSTS"]
+                VPCE_CW["VPC Endpoint\nCloudWatch Logs"]
+                VPCE_SSM["VPC Endpoint\nSSM"]
+                VPCE_BR["VPC Endpoint\nBedrock Runtime"]
+                VPCE_S3["VPC Endpoint\nS3 Gateway"]
+            end
+        end
+
+        ECR["ECR\n(vLLM images)"]
+        Bedrock["Amazon Bedrock\n(Claude 3 Haiku)"]
+        SSM["SSM Parameter Store\n(Chatwork Token)"]
+        CW["CloudWatch\nMetrics / Logs"]
+        SQS["SQS\n(Spot Interruption)"]
+    end
+
+    Chatwork["Chatwork\n(通知先)"]
+
+    %% Admission Webhook フロー
+    kubectl([kubectl apply]) -->|"CREATE/UPDATE"| Mutating
+    Mutating -->|"defaults埋め後"| Validating
+    Validating -->|"accept"| CRD
+
+    %% Operator reconcile loop
+    Operator -->|"watch/update"| CRD
+    Operator -->|"create/scale\nDeployment"| GPUNodes
+    Operator -->|"GPUプロビジョニング\nタイムアウト時"| Bedrock
+
+    %% Karpenter node provisioning
+    Karpenter -->|"GPU ノード起動"| GPUNodes
+    SQS -->|"Spot中断通知"| Karpenter
+
+    %% VPC Endpoint経由のAWSサービスアクセス
+    EKS -->|"image pull"| VPCE_ECR --> ECR
+    EKS -->|"IRSA"| VPCE_STS
+    EKS -->|"logs"| VPCE_CW --> CW
+    Operator -->|"secret取得"| VPCE_SSM --> SSM
+    Operator -->|"フォールバック推論"| VPCE_BR --> Bedrock
+    Karpenter -->|"tfstate"| VPCE_S3
+
+    %% Observabilityフロー
+    Operator -->|"/metrics\n(カスタムメトリクス)"| Prometheus
+    Prometheus -->|"scrape & evaluate\nPrometheusRule"| Alertmanager
+    Prometheus -->|"datasource"| Grafana
+    Alertmanager -->|"chatwork-bridge\nWebhook"| Chatwork
+
+    %% Chatwork通知(Operator直接通知 - 状態遷移イベント)
+    Operator -->|"Chatwork API\n(状態遷移イベント)"| Chatwork
+
+    %% 外部トラフィック
+    Client([外部クライアント]) --> ALB --> vLLM1
+
+    %% CI/CDデプロイフロー
+    GHA -->|"helm upgrade\n(OIDC認証)"| EKS
+
+    style GPUNodes fill:#ffe4b5,stroke:#ff8c00
+    style SystemNodes fill:#e0f0ff,stroke:#4169e1
+    style Bedrock fill:#f0fff0,stroke:#228b22
+    style WebhookStack fill:#fff0f5,stroke:#c71585
+    style CICD fill:#f5f5ff,stroke:#6666cc

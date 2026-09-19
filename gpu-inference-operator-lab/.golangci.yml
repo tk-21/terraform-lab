@@ -1,0 +1,37 @@
+run:
+  timeout: 5m
+  # arm64でビルドするためGOARCHを統一する
+  go: "1.22"
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+  disable:
+    # controller-runtimeの生成コードがこのルールに抵触するため除外する
+    - exhaustruct
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/takuya/gpu-inference-operator-lab
+
+issues:
+  exclude-rules:
+    # zz_generated.deepcopy.go は controller-gen が生成するファイルのため除外する
+    - path: zz_generated\.deepcopy\.go
+      linters:
+        - all
+    # テストファイルはerrcheckを緩める
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unparam

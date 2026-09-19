@@ -1,0 +1,45 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpu-inference-operator.fullname" . }}-manager-role
+  labels:
+    {{- include "gpu-inference-operator.labels" . | nindent 4 }}
+rules:
+  # AIInferenceService CRDのフルアクセス (reconcileに必要)
+  - apiGroups: ["inference.takuya.dev"]
+    resources: ["aiinferenceservices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["inference.takuya.dev"]
+    resources: ["aiinferenceservices/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["inference.takuya.dev"]
+    resources: ["aiinferenceservices/finalizers"]
+    verbs: ["update"]
+
+  # Deployment管理: スケールアップ/ダウン・フォールバック切り替えに必要
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Pod監視: OOMKilled/CrashLoopBackOffの自己修復検知に必要
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+
+  # Service管理: 推論エンドポイントの公開に必要
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Events記録: Operatorの動作をkubectl describeで可視化するために必要
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # leader election: 複数レプリカ時にreconcileを1インスタンスに限定するためのLease操作
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
