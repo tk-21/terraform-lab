@@ -20,67 +20,21 @@ VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュ�
 
 ## 設計時に意識していること
 
-### 1. 実運用を意識した再現可能な構成
+プロジェクトの要件に応じて、次の点を取り入れています。
 
-コードだけで完結させず、構築後の確認と運用方法まで再現できることを重視しています。
+| 観点 | 実施内容 | 例 |
+|---|---|---|
+| 運用 | 構築後の動作確認、ログ調査、トラブルシューティング、削除手順まで用意 | [EKS Golden Node Pipeline](./eks-golden-node-pipeline) |
+| セキュリティ | OIDCやIRSAによる一時認証、用途別のIAMロール、Private Subnet、暗号化、通信拒否テスト | [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform) |
+| コスト | Spot、Graviton、サーバーレス、予算監視、月額試算を構成に応じて採用 | [Bedrock AI Platform Sandbox](./bedrock-ai-platform-sandbox) |
 
-- `terraform/` と再利用可能な `modules/` による構成管理
-- READMEとアーキテクチャ資料による前提条件・構築手順・設計判断の明文化
-- CloudWatch Logs、メトリクス、アラームを使った可観測性
-- 疎通確認、拒否系テスト、Pod起動確認などの動作確認手順
-- トラブルシューティング、停止・削除手順までを含むライフサイクル設計
-
-該当するプロジェクト:
-
-- [EKS Golden Node Pipeline](./eks-golden-node-pipeline): AMI作成からKarpenterによるノード起動、Pod配置確認までを一気通貫で実施
-- [Terraform EKS Production Platform](./terraform-eks-production-platform): ネットワーク、EKS、配備、監視をTerraformで統合管理
-- [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform): SSM経由で許可通信と拒否通信を確認するテストを用意
-
-### 2. セキュリティ優先
-
-アクセスキーに依存しない認証、最小権限、暗号化、ネットワーク分離を基本方針としています。
-
-- GitHub ActionsからAWSへの認証にOIDCを使用
-- IAMロールの用途分離と最小権限化
-- EC2・EKSノードなどのワークロードをPrivate Subnetへ配置
-- KMSおよび各サービスの暗号化機能を利用
-- WAF、Network Firewall、Security Group、NACLの責務を分離
-- 許可される通信だけでなく、拒否されるべき通信もテスト
-
-該当するプロジェクト:
-
-- [EKS Golden Node Pipeline](./eks-golden-node-pipeline): CIS Benchmark Level 1、OIDC、IRSA、Golden AMI
-- [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform): NACLからWAFまでの多層防御とブロックログ確認
-- [Security Hub AI Triage](./security-hub-ai-triage): Security Hub Findingのイベント駆動トリアージと監査用保存
-
-### 3. コスト意識
-
-単に低価格なサービスを選ぶのではなく、予算、利用量、可用性とのトレードオフを明示することを重視しています。
-
-- Spot Instance、Graviton/arm64、Karpenterによるコンピュート最適化
-- Lambdaなどのサーバーレス構成によるアイドルコストの抑制
-- AWS Budgets、使用量監視、CloudWatchによる予算管理
-- 検証に必要な概算費用と、停止・削除手順の明記
-- 1AZとMulti-AZ、NAT Gateway、VPC Endpointなどのコストと可用性の比較
-
-該当するプロジェクト:
-
-- [Bedrock AI Platform Sandbox](./bedrock-ai-platform-sandbox): 月額予算、トークン上限、Budget Alert、Cost Controller
-- [EKS Golden Node Pipeline](./eks-golden-node-pipeline): SpotとGravitonを利用したノードコスト最適化
-- [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform): 高額になりやすいNetwork Firewallを含む月額・時間単位の費用試算
+GitHub ActionsからAWSへ接続する構成ではOIDCを使い、長期アクセスキーを置かないようにしています。外部公開が不要なワークロードはPrivate Subnetへ配置し、対応するAWSサービスでは保存データの暗号化を有効にしています。
 
 ## 検証範囲
 
-プロジェクトによって範囲は異なりますが、以下の情報を残しています。
+プロジェクトごとに、実環境での動作確認、`terraform plan`、静的解析、設計検証のいずれかを実施しています。いずれも個人環境での検証であり、商用環境での運用実績を示すものではありません。
 
-- アーキテクチャ図と設計判断
-- Terraformの入力、出力、バージョン制約
-- 構築・動作確認手順と期待結果
-- テストスクリプト、ログ確認方法、トラブルシューティング
-- コスト試算と削除手順
-- GitHub Actionsによる自動検証・ビルド
-
-プロジェクトごとに検証範囲は異なります。実環境での動作確認、`terraform plan`までの確認、静的解析、設計検証を区別しています。いずれも個人環境での検証であり、商用環境での運用実績や、そのまま本番適用できることを示すものではありません。
+確認できる範囲で、構築手順、テスト方法、トラブルシューティング、コスト試算、削除手順を各READMEに記載しています。
 
 ## 使用技術
 
@@ -101,6 +55,8 @@ VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュ�
 <details>
 <summary><strong>AI / Bedrock / MLOps</strong></summary>
 
+- [bedrock-ai-platform-sandbox](./bedrock-ai-platform-sandbox) — セキュリティ、可観測性、予算管理を含む生成AI基盤
+- [knowledge-bot](./knowledge-bot) — FastAPIとBedrock Knowledge Baseを使ったEKS上のRAGアプリ
 - [bedrock-agent-resource-reporter](./bedrock-agent-resource-reporter) — AWSリソース調査とレポート生成の自動化
 - [bedrock-finops-automation](./bedrock-finops-automation) — Cost Explorer + BedrockによるFinOps自動化
 - [bedrock-multi-agent-ops-autopilot](./bedrock-multi-agent-ops-autopilot) — Bedrock Multi-Agent CollaborationによるAWS運用支援
@@ -130,6 +86,8 @@ VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュ�
 <details>
 <summary><strong>Security / Compliance / SRE</strong></summary>
 
+- [aws-multilayer-firewall-terraform](./aws-multilayer-firewall-terraform) — NACL、Security Group、Network Firewall、WAFによる多層防御
+- [security-hub-ai-triage](./security-hub-ai-triage) — Security Hub Findingのイベント駆動トリアージ
 - [secure-3tier-iac-pipeline](./secure-3tier-iac-pipeline) — Terraform + Ansibleによるセキュアな3層Web基盤
 - [waf-cloudfront-security-lab](./waf-cloudfront-security-lab) — WAF + CloudFrontのWebセキュリティ検証
 - [config-securityhub-auto-remediation](./config-securityhub-auto-remediation) — AWS Config + Security Hubによる自動修復
@@ -143,6 +101,8 @@ VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュ�
 <details>
 <summary><strong>Containers / Platform / EKS</strong></summary>
 
+- [eks-golden-node-pipeline](./eks-golden-node-pipeline) — Golden AMIとKarpenterを使ったEKSノード管理
+- [terraform-eks-production-platform](./terraform-eks-production-platform) — ネットワーク、EKS、配備、監視を含むプラットフォーム検証
 - [ecs-dev](./ecs-dev) — ECSの基礎・応用検証
 - [ecs-fargate-alb-rds-ansible](./ecs-fargate-alb-rds-ansible) — ECS Fargate、ALB、RDS、Ansibleの統合
 - [docker-cicd-pipeline-lab](./docker-cicd-pipeline-lab) — ECS FargateへのBlue/Greenデプロイ
@@ -177,6 +137,7 @@ VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュ�
 <details>
 <summary><strong>IaC Workflow / Comparison</strong></summary>
 
+- [terraform-handson](./terraform-handson) — AWS基本構成、module化、リモートState管理の段階的な検証
 - [terraform-aws-iac-workflow](./terraform-aws-iac-workflow) — TerraformのIaCワークフロー
 - [pr-driven-iac-lab](./pr-driven-iac-lab) — PRを起点としたTerraformワークフロー
 - [iac-trilogy-lab](./iac-trilogy-lab) — Terraform、Pulumi、AWS CDKの比較
