@@ -52,8 +52,8 @@ data "aws_availability_zones" "available" {
 # -------------------------------------------------------------
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
-  enable_dns_support   = true   # VPC 内の DNS 解決を有効化
-  enable_dns_hostnames = true   # EC2 インスタンスに DNS 名を付与
+  enable_dns_support   = true # VPC 内の DNS 解決を有効化
+  enable_dns_hostnames = true # EC2 インスタンスに DNS 名を付与
 
   tags = merge(local.common_tags, {
     Name = "${var.prefix}-vpc"

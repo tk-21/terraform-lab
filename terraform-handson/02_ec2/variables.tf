@@ -35,7 +35,12 @@ variable "key_name" {
 }
 
 variable "ssh_allowed_cidr" {
-  description = "SSH を許可する CIDR（本番では自分のIPに絞ること: x.x.x.x/32）"
+  description = "SSH を許可する CIDR。null の場合は SSH を開放しない（例: x.x.x.x/32）"
   type        = string
-  default     = "0.0.0.0/0"
+  default     = null
+
+  validation {
+    condition     = var.ssh_allowed_cidr == null || can(cidrhost(var.ssh_allowed_cidr, 0))
+    error_message = "ssh_allowed_cidr には有効な IPv4/IPv6 CIDR または null を指定してください。"
+  }
 }
