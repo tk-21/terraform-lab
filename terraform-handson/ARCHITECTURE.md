@@ -39,7 +39,7 @@ flowchart TD
   A --> D[04_alb<br/>ALB / Target Group / Listener / ASG]
   B --> C
 
-  E[05_modules/bootstrap<br/>S3 backend / DynamoDB lock] --> F[05_modules/environments/dev]
+  E[05_modules/bootstrap<br/>S3 backend / S3 lockfile] --> F[05_modules/environments/dev]
   G[05_modules/modules/vpc] --> F
   H[05_modules/modules/ec2] --> F
 ```
@@ -237,7 +237,7 @@ VPC 上に Web サーバーを 1 台立て、セキュリティグループ、AM
 flowchart LR
   Internet((Internet)) --> EIP[Elastic IP]
   EIP --> EC2[EC2 Web Server]
-  SG[Web Security Group<br/>80 from 0.0.0.0/0<br/>22 from var.ssh_allowed_cidr] --> EC2
+  SG[Web Security Group<br/>80 from 0.0.0.0/0<br/>optional 22 from var.ssh_allowed_cidr] --> EC2
   AMI[Latest Amazon Linux 2023 AMI] --> EC2
 ```
 
@@ -246,7 +246,8 @@ flowchart LR
 - AMI をハードコードせず `data "aws_ami"` で最新取得します。
 - UserData で Apache を自動インストールし、HTML を配置します。
 - EIP を付与することで、再作成してもアクセス先 IP を固定化しやすくしています。
-- SSH の許可 CIDR を変数化し、最小権限の考え方を学べる構造です。
+- SSH はデフォルトで無効です。必要な場合だけ許可 CIDR を指定できます。
+- EC2 メタデータは IMDSv2 のみを許可し、ルートボリュームは暗号化します。
 
 ### この Step の学習テーマ
 
@@ -417,6 +418,7 @@ flowchart LR
 ## 12. Step 5: `05_modules/` の位置づけ
 
 Step 5 は、このリポジトリにおける「学習の後半戦」であり、実務寄りの Terraform 設計に踏み込む部分です。
+S3 lockfileを使用するため、Step 5の実行にはTerraform `>= 1.10` が必要です。
 
 ここでは Step 1〜4 の知識を前提にして、以下を学びます。
 
@@ -425,7 +427,7 @@ Step 5 は、このリポジトリにおける「学習の後半戦」であり�
 - `for_each` を map で安全に扱う設計
 - `dynamic` ブロック
 - `lifecycle`
-- S3 + DynamoDB によるリモートバックエンド
+- S3 + lockfile によるリモートバックエンド
 
 ---
 
@@ -441,14 +443,13 @@ Terraform state をローカルではなく AWS 上で安全に管理するた�
 - `aws_s3_bucket_versioning.tfstate`
 - `aws_s3_bucket_server_side_encryption_configuration.tfstate`
 - `aws_s3_bucket_public_access_block.tfstate`
-- `aws_dynamodb_table.tfstate_lock`
 
 ### 構成図
 
 ```mermaid
 flowchart LR
   TF[Terraform CLI] --> S3[S3 Bucket<br/>tfstate storage]
-  TF --> DDB[DynamoDB Table<br/>state lock]
+  TF --> LOCK[S3 lockfile<br/>state lock]
 ```
 
 ### 実装上のポイント
@@ -457,7 +458,7 @@ flowchart LR
 - バケットはバージョニング有効で、state の復旧性を高めています。
 - SSE-S3 による暗号化を有効にしています。
 - Public Access Block により誤公開を防ぎます。
-- DynamoDB のロックで、複数人同時 apply による state 破損を防ぎます。
+- S3 backend の `use_lockfile = true` で、複数人同時 apply による state 破損を防ぎます。
 - `prevent_destroy = true` で tfstate 格納先の誤削除を防ぎます。
 
 ---
@@ -569,7 +570,7 @@ flowchart LR
 - `module "vpc"` と `module "ec2"` を 1 つの `main.tf` 内で接続しています。
 - `module.ec2` は `module.vpc.vpc_id` と `module.vpc.public_subnet_ids[0]` を直接参照します。
 - これにより Terraform 自身が依存関係を解決し、作成順序を自動制御します。
-- `backend.tf` は `bootstrap` で作った S3 バケットと DynamoDB テーブルに接続する設定です。
+- `backend.tf` は `bootstrap` で作った S3 バケットに接続し、S3 lockfile を有効化する設定です。
 
 ### Step 1〜4 からの改善点
 
@@ -606,11 +607,11 @@ flowchart LR
 - RDS への許可は CIDR ではなく EC2 の SG をソースにする
 - tfstate 保存先 S3 は暗号化・バージョニング・パブリックアクセス遮断を有効化する
 - `terraform.tfvars` を Git に含めない
-- SSH 許可元 CIDR を変数化し、狭められるようにしている
+- SSH はデフォルトで無効にし、必要な場合も許可元 CIDR を明示する
+- EC2 / ASG は IMDSv2 を必須化し、EBS ルートボリュームを暗号化する
 
 ### あえて簡略化していること
 
-- Step 2 の SSH はデフォルトで `0.0.0.0/0`
 - NAT Gateway は未導入
 - RDS は Single-AZ
 - バックアップ保持と削除保護はハンズオン向けに弱め

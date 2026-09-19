@@ -68,7 +68,7 @@ Internet
 
 ```bash
 # バージョン確認
-terraform version   # >= 1.5
+terraform version   # Step 1〜4: >= 1.5 / Step 5: >= 1.10
 aws --version       # >= 2.0
 jq --version        # 任意（Step間の値受け渡しに使用）
 
@@ -109,7 +109,7 @@ terraform-handson/
 │   └── outputs.tf
 └── 05_modules/                  ← Step5: モジュール設計（中〜上級）
     ├── README.md                ← Step5 の詳細な解説
-    ├── bootstrap/               ← tfstate用 S3 + DynamoDB（初回のみ apply）
+    ├── bootstrap/               ← tfstate用 S3（初回のみ apply）
     ├── modules/
     │   ├── vpc/                 ← 再利用可能なVPCモジュール
     │   └── ec2/                 ← 再利用可能なEC2モジュール
@@ -131,6 +131,10 @@ terraform-handson/
 Step 1〜4 は独立した tfstate を持つため、前の Step の `output` を次の Step の `-var` に渡します。
 Step 5 は別系統の発展編で、モジュール化とリモートバックエンドを扱います。
 
+> **教材構成について**
+> Step 1〜4 の分割 state と手動の値渡しは、`output` と `variable` の関係を理解するための教材専用構成です。
+> 実務では、同じライフサイクルのリソースを root module 内で接続するか、remote state や Parameter Store などを使って依存関係を管理します。
+
 「なぜこの順序なのか」「各 Step が全体構成のどこに位置するのか」を先に把握したい場合は、先に [ARCHITECTURE.md](./ARCHITECTURE.md) の `2. 全体像` と `11. Step 1〜4 の値受け渡し構造` を読むのがおすすめです。
 
 ---
@@ -150,7 +154,7 @@ aws sts get-caller-identity
 
 確認ポイント:
 
-- `terraform version` が `>= 1.5`
+- `terraform version` が Step 1〜4 では `>= 1.5`、Step 5 では `>= 1.10`
 - `aws sts get-caller-identity` が成功する
 - 東京リージョン `ap-northeast-1` を利用できる
 
@@ -312,6 +316,8 @@ curl $(terraform output -raw web_url)
 
 ## Step 3: RDS を構築する
 
+> ⚠️ RDS は起動中に継続課金されます。この Step を終えたら、末尾の手順に従って逆順で削除してください。
+
 この Step では、プライベートサブネット内に MySQL RDS を作成します。
 
 作成される主なリソース:
@@ -402,6 +408,8 @@ mysql -h <db_endpoint> -u admin -p handsondb
 
 ## Step 4: ALB + ASG を構築する
 
+> ⚠️ ALB、EC2、Elastic IP は継続課金の対象です。確認後は放置せず、末尾の手順に従って削除してください。
+
 この Step では、ALB 経由で複数 EC2 にトラフィックを振り分ける構成を作成します。
 
 作成される主なリソース:
@@ -479,7 +487,7 @@ Step 5 は Step 1〜4 をそのまま置き換えるものではなく、Terrafo
 
 ### 5a. backend 用インフラを作る
 
-まず tfstate 保存用の S3 バケットとロック用 DynamoDB テーブルを作ります。
+まず tfstate 保存用の S3 バケットを作ります。state の排他制御には S3 backend の lockfile を使用します。
 
 ```bash
 cd ../05_modules/bootstrap
@@ -494,7 +502,6 @@ terraform apply
 
 ```bash
 terraform output s3_bucket_name
-terraform output dynamodb_table_name
 ```
 
 ### 5b. `backend.tf` を設定する
@@ -616,6 +623,37 @@ EC2_SG=$(cd ../02_ec2 && terraform output -raw security_group_id)
 - `dynamic` ブロックがどの設定を抽象化しているか
 - remote backend を使う理由は何か
 
+---
+
+## Step の完了条件
+
+各 Step は、単に `apply` が成功しただけでは完了ではありません。次を確認してから次へ進みます。
+
+| Step | 完了条件 |
+|---|---|
+| Step 1 | Public / Private Subnet の違いを説明でき、各2個の subnet ID を確認できる |
+| Step 2 | Webページへアクセスでき、HTTPと任意SSHのSGルールを説明できる |
+| Step 3 | DB endpointを確認でき、RDSが非公開でEC2のSGからだけ接続できる理由を説明できる |
+| Step 4 | Targetがhealthyになり、ALBとASGの役割分担を説明できる |
+| Step 5 | module間でoutputを直接渡す利点と、remote stateを使う理由を説明できる |
+
+全Step共通で `terraform fmt -check` と `terraform validate` が成功し、終了後に課金対象を削除できれば完了です。
+
+---
+
+## 教材構成と実務構成の違い
+
+| 項目 | Step 1〜4 | 実務での代表例 |
+|---|---|---|
+| state | Stepごとのlocal state | S3 backend + lockfile |
+| 値の受け渡し | shell経由でoutputを渡す | module参照 / remote state / Parameter Store |
+| EC2配置 | Public Subnet | Private Subnet + Session Manager |
+| 公開経路 | HTTP | HTTPS + ACM |
+| RDS | Single-AZ、backupなし | Multi-AZ、backup・削除保護あり |
+| 認証 | ローカルAWS認証 | CIではOIDCと最小権限IAM |
+
+Step 1〜4は理解しやすさと低コストを優先しています。Step 5以降で、再利用性・state共有・安全な運用へ段階的に発展させます。
+
 より詳しい解説:
 
 - 全体構成の理解: [ARCHITECTURE.md](./ARCHITECTURE.md)
@@ -642,25 +680,29 @@ EC2_SG=$(cd ../02_ec2 && terraform output -raw security_group_id)
 依存関係があるため **逆順で destroy** します。
 
 ```bash
-# Step 4 から逆順に削除
-cd 04_alb && terraform destroy -auto-approve
+# Step 4 から逆順に削除（apply時と同じ変数を渡す）
+cd 04_alb
+VPC_ID=$(cd ../01_vpc && terraform output -raw vpc_id)
+PUB_SUBNETS=$(cd ../01_vpc && terraform output -json public_subnet_ids | jq -c '.')
+terraform destroy \
+  -var="vpc_id=$VPC_ID" \
+  -var="public_subnet_ids=$PUB_SUBNETS"
 
 cd ../03_rds
-VPC_ID=$(cd ../01_vpc && terraform output -raw vpc_id)
+PRIV_SUBNETS=$(cd ../01_vpc && terraform output -json private_subnet_ids | jq -c '.')
+EC2_SG=$(cd ../02_ec2 && terraform output -raw security_group_id)
 terraform destroy \
   -var="vpc_id=$VPC_ID" \
-  -var='private_subnet_ids=["dummy"]' \
-  -var="ec2_security_group_id=dummy" \
-  -var="db_password=dummy" \
-  -auto-approve
+  -var="private_subnet_ids=$PRIV_SUBNETS" \
+  -var="ec2_security_group_id=$EC2_SG"
 
 cd ../02_ec2
+PUB_SUBNET=$(cd ../01_vpc && terraform output -json public_subnet_ids | jq -r '.[0]')
 terraform destroy \
   -var="vpc_id=$VPC_ID" \
-  -var="public_subnet_id=dummy" \
-  -auto-approve
+  -var="public_subnet_id=$PUB_SUBNET"
 
-cd ../01_vpc && terraform destroy -auto-approve
+cd ../01_vpc && terraform destroy
 ```
 
 Step 5 も試した場合は、追加でこちらも削除します。

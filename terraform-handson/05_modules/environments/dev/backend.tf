@@ -4,9 +4,9 @@ terraform {
     #   cd ../../bootstrap && terraform output s3_bucket_name
     bucket = "handson-tfstate-<YOUR_ACCOUNT_ID>"
 
-    key            = "handson/dev/terraform.tfstate"
-    region         = "ap-northeast-1"
-    dynamodb_table = "handson-tfstate-lock"
-    encrypt        = true
+    key          = "handson/dev/terraform.tfstate"
+    region       = "ap-northeast-1"
+    encrypt      = true
+    use_lockfile = true
   }
 }

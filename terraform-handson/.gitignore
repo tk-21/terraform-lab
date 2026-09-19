@@ -1,6 +1,6 @@
 # Terraform state（絶対に Git に含めない）
 **/.terraform/
-**/.terraform.lock.hcl
+!**/.terraform.lock.hcl
 **/terraform.tfstate
 **/terraform.tfstate.backup
 **/terraform.tfstate.d/

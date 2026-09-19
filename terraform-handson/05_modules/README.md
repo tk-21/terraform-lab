@@ -7,6 +7,8 @@ VPC を別プロジェクトでも使いたくなったとき、コードをま�
 このステップでは既存の VPC・EC2 をモジュールとして書き直しながら、
 Terraform の中〜上級機能を体験します。
 
+> このStepではS3 lockfileを使用するため、Terraform `>= 1.10` が必要です。
+
 ---
 
 ## この Step で学ぶこと
@@ -18,7 +20,7 @@ Terraform の中〜上級機能を体験します。
 | `dynamic` ブロック | 変数の中身に応じてブロック自体を動的生成する | EC2モジュール: SGルール |
 | `lifecycle` ルール | リソースの作成・更新・削除の挙動を制御する | EC2モジュール |
 | モジュール間の値の受け渡し | モジュールのoutputを別モジュールのinputに渡す | environments/dev/main.tf |
-| リモートバックエンド | tfstate を S3 に保存し、DynamoDB でロックする | bootstrap/ |
+| リモートバックエンド | tfstate を S3 に保存し、S3 lockfile でロックする | bootstrap/ |
 
 ---
 
@@ -52,7 +54,7 @@ environments/dev/main.tf  ← 部品を組み合わせるだけ。値渡しはTe
 05_modules/
 │
 ├── bootstrap/                    ← 【最初に1回だけ実行】
-│   │                               tfstate を保存するS3とDynamoDBを作る
+│   │                               tfstate を保存するS3を作る
 │   ├── main.tf
 │   ├── outputs.tf
 │   └── versions.tf
@@ -90,7 +92,8 @@ environments/dev/main.tf  ← 部品を組み合わせるだけ。値渡しはTe
 
 > **なぜ必要か**
 > Step 1〜4 は tfstate がローカルに保存されていました。
-> チーム開発や複数環境では「stateはS3、同時編集はDynamoDBでロック」が標準です。
+> チーム開発や複数環境では、stateを共有ストレージへ保存して同時更新をロックします。
+> このハンズオンでは S3 backend の `use_lockfile = true` を使用します。
 
 ```bash
 cd 05_modules/bootstrap
@@ -106,7 +109,7 @@ terraform output s3_bucket_name
 
 作成されるリソース:
 - **S3バケット**: tfstate を暗号化・バージョニング付きで保存
-- **DynamoDBテーブル**: apply の同時実行を防ぐロック用
+- **S3 lockfile**: apply の同時実行を防ぐロック（`backend.tf` で有効化）
 
 ---
 
@@ -179,9 +182,8 @@ curl $(terraform output -raw web_url)
 cd environments/dev
 terraform destroy
 
-# バックエンド（S3・DynamoDB）は prevent_destroy で守られているため手動削除
+# バックエンドのS3は prevent_destroy で守られているため手動削除
 # AWSコンソール → S3 → handson-tfstate-xxxxx → バケットを空にして削除
-# AWSコンソール → DynamoDB → handson-tfstate-lock → テーブルを削除
 ```
 
 ---
