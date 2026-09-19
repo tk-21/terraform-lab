@@ -11,7 +11,12 @@ variable "env" {
 }
 
 variable "allowed_ssh_cidrs" {
-  description = "SSH接続を許可するCIDRリスト。本番では自分のIPを指定すること"
+  description = "SSH接続を許可するCIDRリスト。空の場合はSSHを開放しない"
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
+
+  validation {
+    condition     = alltrue([for cidr in var.allowed_ssh_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "allowed_ssh_cidrs の各要素には有効な IPv4/IPv6 CIDR を指定してください。"
+  }
 }

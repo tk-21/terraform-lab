@@ -33,8 +33,16 @@ locals {
 data "aws_ami" "amazon_linux_2023" {
   most_recent = true
   owners      = ["amazon"]
-  filter { name = "name";  values = ["al2023-ami-*-x86_64"] }
-  filter { name = "state"; values = ["available"] }
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 # -------------------------------------------------------------
@@ -130,10 +138,10 @@ resource "aws_lb_target_group" "web" {
   health_check {
     path                = "/"
     protocol            = "HTTP"
-    healthy_threshold   = 2  # 2回連続成功で正常
-    unhealthy_threshold = 3  # 3回連続失敗で異常
-    interval            = 30 # 30秒ごとにチェック
-    timeout             = 5  # 5秒でタイムアウト
+    healthy_threshold   = 2     # 2回連続成功で正常
+    unhealthy_threshold = 3     # 3回連続失敗で異常
+    interval            = 30    # 30秒ごとにチェック
+    timeout             = 5     # 5秒でタイムアウト
     matcher             = "200" # HTTP 200 を正常とみなす
   }
 
@@ -174,6 +182,21 @@ resource "aws_launch_template" "web" {
     security_groups             = [aws_security_group.asg_web.id]
   }
 
+  # IMDSv2 を必須にし、メタデータサービスへの SSRF リスクを抑える
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      encrypted   = true
+      volume_type = "gp3"
+    }
+  }
+
   # base64encode() でエンコードして渡す
   user_data = base64encode(<<-EOF
     #!/bin/bash
@@ -184,8 +207,9 @@ resource "aws_launch_template" "web" {
     systemctl start httpd
 
     HOSTNAME=$(hostname -f)
-    AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
-    INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+    TOKEN=$(curl -fsS -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" http://169.254.169.254/latest/api/token)
+    AZ=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+    INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
     cat > /var/www/html/index.html <<HTML
@@ -196,10 +220,10 @@ resource "aws_launch_template" "web" {
       <h1>🔀 Terraform ALB + ASG Handson</h1>
       <p>リロードするたびに別の EC2 にルーティングされることを確認しよう！</p>
       <table border="1" cellpadding="8">
-        <tr><td><b>Instance ID</b></td><td>${INSTANCE_ID}</td></tr>
-        <tr><td><b>Hostname</b></td><td>${HOSTNAME}</td></tr>
-        <tr><td><b>AZ</b></td><td>${AZ}</td></tr>
-        <tr><td><b>Started</b></td><td>${TIMESTAMP}</td></tr>
+        <tr><td><b>Instance ID</b></td><td>$${INSTANCE_ID}</td></tr>
+        <tr><td><b>Hostname</b></td><td>$${HOSTNAME}</td></tr>
+        <tr><td><b>AZ</b></td><td>$${AZ}</td></tr>
+        <tr><td><b>Started</b></td><td>$${TIMESTAMP}</td></tr>
       </table>
     </body>
     </html>

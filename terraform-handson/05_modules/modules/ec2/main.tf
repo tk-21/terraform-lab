@@ -48,6 +48,16 @@ resource "aws_instance" "this" {
 
   user_data = var.user_data != "" ? var.user_data : null
 
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  root_block_device {
+    encrypted   = true
+    volume_type = "gp3"
+  }
+
   lifecycle {
     # AMIは頻繁に更新されるが、再作成は不要なため変更を無視する
     ignore_changes = [ami]

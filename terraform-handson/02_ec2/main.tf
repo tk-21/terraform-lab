@@ -56,11 +56,11 @@ data "aws_ami" "amazon_linux_2023" {
 # 【ポイント】
 #   - インバウンド: 必要なポートのみ許可（最小権限の原則）
 #   - アウトバウンド: 全許可（パッケージ取得・外部 API 呼び出しに必要）
-#   - SSH は本来 0.0.0.0/0 ではなく自分の IP に絞るべき
+#   - SSH はデフォルト無効。必要な場合も自分の IP に絞る
 # -------------------------------------------------------------
 resource "aws_security_group" "web" {
   name        = "${var.prefix}-web-sg"
-  description = "Web server security group - HTTP and SSH access"
+  description = "Web server security group - HTTP and optional SSH access"
   vpc_id      = var.vpc_id
 
   # HTTP アクセスを全許可
@@ -72,13 +72,17 @@ resource "aws_security_group" "web" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # SSH アクセス（変数で制限可能 - 本番では自分の IP のみに絞ること）
-  ingress {
-    description = "SSH access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.ssh_allowed_cidr]
+  # CIDR を明示した場合に限り SSH を許可する
+  dynamic "ingress" {
+    for_each = var.ssh_allowed_cidr == null ? [] : [var.ssh_allowed_cidr]
+
+    content {
+      description = "SSH access"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+    }
   }
 
   # アウトバウンドは全許可（dnf update などのパッケージ取得に必要）
@@ -109,6 +113,16 @@ resource "aws_instance" "web" {
   vpc_security_group_ids = [aws_security_group.web.id]
   key_name               = var.key_name != "" ? var.key_name : null
 
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  root_block_device {
+    encrypted   = true
+    volume_type = "gp3"
+  }
+
   # 起動時に実行されるシェルスクリプト
   user_data = <<-EOF
     #!/bin/bash
@@ -124,8 +138,9 @@ resource "aws_instance" "web" {
 
     # インスタンス情報を HTML に書き込む
     HOSTNAME=$(hostname -f)
-    AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
-    INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+    TOKEN=$(curl -fsS -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" http://169.254.169.254/latest/api/token)
+    AZ=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+    INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
     cat > /var/www/html/index.html <<HTML
@@ -135,10 +150,10 @@ resource "aws_instance" "web" {
     <body style="font-family:sans-serif; padding:40px;">
       <h1>🚀 Terraform Handson — EC2</h1>
       <table border="1" cellpadding="8">
-        <tr><td><b>Hostname</b></td><td>${HOSTNAME}</td></tr>
-        <tr><td><b>Instance ID</b></td><td>${INSTANCE_ID}</td></tr>
-        <tr><td><b>AZ</b></td><td>${AZ}</td></tr>
-        <tr><td><b>Started</b></td><td>${TIMESTAMP}</td></tr>
+        <tr><td><b>Hostname</b></td><td>$${HOSTNAME}</td></tr>
+        <tr><td><b>Instance ID</b></td><td>$${INSTANCE_ID}</td></tr>
+        <tr><td><b>AZ</b></td><td>$${AZ}</td></tr>
+        <tr><td><b>Started</b></td><td>$${TIMESTAMP}</td></tr>
       </table>
     </body>
     </html>

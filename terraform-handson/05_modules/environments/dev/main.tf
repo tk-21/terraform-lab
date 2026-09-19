@@ -47,22 +47,21 @@ module "ec2" {
   instance_type = "t3.micro"
 
   # ingress_rules を上書きしてSSHも許可する
-  ingress_rules = [
+  ingress_rules = concat([
     {
       description = "HTTP"
       from_port   = 80
       to_port     = 80
       protocol    = "tcp"
       cidr_blocks = ["0.0.0.0/0"]
-    },
-    {
+    }
+    ], length(var.allowed_ssh_cidrs) == 0 ? [] : [{
       description = "SSH"
       from_port   = 22
       to_port     = 22
       protocol    = "tcp"
       cidr_blocks = var.allowed_ssh_cidrs
-    }
-  ]
+  }])
 
   user_data = <<-EOT
     #!/bin/bash
