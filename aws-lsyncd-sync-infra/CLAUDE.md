@@ -11,9 +11,6 @@ master EC2 の `/var/www/html` を slave EC2 × 2 にリアルタイム同期す
 aws-lsyncd-sync-infra/
 ├── CLAUDE.md
 ├── README.md
-├── phase1.md                          # Terraform 構築フェーズ
-├── phase2.md                          # Ansible 設定フェーズ
-├── phase3.md                          # 動作確認フェーズ
 ├── docs/
 │   ├── adr/001-lsyncd-over-nfs.md
 │   └── runbook/operations.md
@@ -41,13 +38,10 @@ aws-lsyncd-sync-infra/
 
 ```bash
 # Phase 1: Terraform
-claude < phase1.md
 
 # Phase 2: Ansible ファイル生成
-claude < phase2.md
 
 # Phase 3: 動作確認
-claude < phase3.md
 ```
 
 ## 設計原則

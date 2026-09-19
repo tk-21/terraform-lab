@@ -45,4 +45,4 @@ README 用のヒーロー画像を作る前に、このファイルを埋める�
 
 ## Notes
 - Constraints: GitHub README で視認しやすい横長構成、画像だけで概要を掴めること、日本語本文と相性のよい表現
-- Optional references: `README.md`, `ARCHITECTURE.md`, `phase6.md`
+- Optional references: `README.md`, `ARCHITECTURE.md`

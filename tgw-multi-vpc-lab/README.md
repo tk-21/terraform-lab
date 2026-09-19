@@ -527,7 +527,6 @@ tgw-multi-vpc-lab/
 │       ├── 001-tgw-vs-vpc-peering.md
 │       ├── 002-tgw-route-table-design.md
 │       └── 003-no-nat-gateway.md
-└── phase1.md 〜 phase5.md  ← 各フェーズの詳細タスク
 ```
 
 ---
@@ -596,4 +595,3 @@ terraform -chdir=envs/ap-northeast-1 refresh
 - [Transit Gateway ルートテーブル](https://docs.aws.amazon.com/ja_jp/vpc/latest/tgw/tgw-route-tables.html)
 - [VPC エンドポイントで Systems Manager を使用する](https://docs.aws.amazon.com/ja_jp/systems-manager/latest/userguide/setup-create-vpc.html)
 - 設計の詳細: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- 口頭チェック質問: [`phase3.md`](./phase3.md) / [`phase4.md`](./phase4.md)

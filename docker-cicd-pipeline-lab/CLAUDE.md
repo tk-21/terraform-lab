@@ -22,7 +22,6 @@ GitHub → CodePipeline → CodeBuild (Docker build) → ECR → ECS Fargate (Bl
 | ECR リポジトリ | `{project}-app` | `cicd-lab-app` |
 | S3 バケット | `{project}-{env}-{用途}-{account_id}` | `cicd-lab-prod-artifacts-123456` |
 | IAM ロール | `{project}-{component}-role` | `cicd-lab-codebuild-role` |
-| フェーズファイル | `phase{N}.md` | `phase1.md` ✅  `phase1_vpc.md` ❌ |
 
 ---
 
@@ -59,7 +58,6 @@ docker-cicd-pipeline-lab/
 │   └── requirements.txt
 ├── buildspec/
 │   └── buildspec.yml          # CodeBuild ビルド仕様
-└── phase1.md ~ phase5.md
 ```
 
 ---
@@ -150,8 +148,6 @@ resource "aws_ecs_service" "app" {
 ## フェーズ実行方法
 
 ```bash
-claude < phase1.md
-claude < phase2.md
 # ... 順番に実行すること
 ```
 

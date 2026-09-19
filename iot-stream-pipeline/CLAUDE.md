@@ -21,10 +21,6 @@ Kinesis → Lambda(コンテナ) → DynamoDB → API Gateway の構成をTerraf
 ```
 iot-stream-pipeline/
 ├── CLAUDE.md
-├── phase1.md       # 基盤インフラ (VPC不要, Kinesis/DynamoDB/ECR)
-├── phase2.md       # Lambdaコンテナ (Dockerfile, ECRプッシュ, Kinesis連携)
-├── phase3.md       # API Gateway + 読み取りLambda
-├── phase4.md       # センサーシミュレータ + E2Eテスト + ADR
 ├── terraform/
 │   ├── main.tf
 │   ├── variables.tf
@@ -79,10 +75,6 @@ iot-stream-pipeline/
 
 ## フェーズ実行方法
 ```bash
-claude < phase1.md
-claude < phase2.md
-claude < phase3.md
-claude < phase4.md
 ```
 
 ## 口頭説明チェックポイント

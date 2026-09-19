@@ -162,10 +162,4 @@ Karpenter が管理するノードには追加タグ：
 
 ```bash
 # 各フェーズを順番に実行する
-claude < phase1.md   # CLAUDE.md + ディレクトリ骨格
-claude < phase2.md   # Ansible Playbook (CIS Benchmark)
-claude < phase3.md   # Packer + GitHub Actions AMIビルド
-claude < phase4.md   # Terraform VPC / EKS
-claude < phase5.md   # Terraform Karpenter + NodeClass
-claude < phase6.md   # README + docs + Zenn記事草稿
 ```

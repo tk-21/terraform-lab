@@ -11,10 +11,6 @@ Hub-Spoke VPC構成 + VPC Endpoint（Gateway/Interface）+ カスタムPrivateLi
 ```
 vpc-network-deepdive/
 ├── CLAUDE.md                  # このファイル（自動ロード）
-├── phase1_prompt.md           # Hub VPC + Spoke VPC基盤
-├── phase2_prompt.md           # VPC Peering + ルーティング設計
-├── phase3_prompt.md           # VPC Endpoint（Gateway型 + Interface型）
-├── phase4_prompt.md           # カスタムPrivateLink（NLB経由）
 │
 ├── modules/
 │   ├── vpc/                   # VPC・サブネット・IGW汎用モジュール

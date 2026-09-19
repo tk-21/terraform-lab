@@ -12,11 +12,6 @@ PR-driven IaC ワークフロー（PR open → plan コメント → merge → a
 ```
 pr-driven-iac-lab/
 ├── CLAUDE.md                  # このファイル（Claude Code自動読み込み）
-├── phase1.md                  # インフラ基盤 + Terraformサンプルコード
-├── phase2.md                  # Atlantis on ECS Fargate 構築
-├── phase3.md                  # Atlantis GitHub Actions ワークフロー
-├── phase4.md                  # Terraform Cloud ワークフロー実装
-├── phase5.md                  # 比較・観察・ADR・面接準備
 │
 ├── terraform/
 │   ├── bootstrap/             # Terraform状態管理用S3+DynamoDB（手動apply）
@@ -78,11 +73,6 @@ pr-driven-iac-lab/
 
 ```bash
 # フェーズ順に実行
-claude < phase1.md
-claude < phase2.md
-claude < phase3.md
-claude < phase4.md
-claude < phase5.md
 ```
 
 ## 口頭説明チェックポイント（各フェーズ末）

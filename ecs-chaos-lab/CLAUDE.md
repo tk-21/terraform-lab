@@ -243,18 +243,10 @@ fis → iam（fis_role）, ecs（cluster_arn, service_name）, alb（target_grou
 ## フェーズ実行順序
 
 ```
-phase1.md → VPC / SG / ECR / ALB（ネットワーク基盤）
-phase2.md → IAM / ECS Cluster / Task Definition / Service
-phase3.md → FIS 3シナリオ実験テンプレート + Lambda（シナリオ3用）
-phase4.md → 検証スクリプト + ADR × 3 + Runbook × 3 + README
 ```
 
 実行コマンド:
 ```bash
-claude < phase1.md
-claude < phase2.md
-claude < phase3.md
-claude < phase4.md
 ```
 
 ---

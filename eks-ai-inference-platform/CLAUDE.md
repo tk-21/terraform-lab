@@ -50,7 +50,6 @@ AI Gateway (FastAPI / EKS Pod / arm64)
 ```
 eks-ai-inference-platform/
 ├── CLAUDE.md
-├── phase1.md  ~ phase6.md
 ├── terraform/
 │   ├── environments/dev/
 │   │   ├── main.tf

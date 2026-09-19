@@ -46,7 +46,6 @@ tgw-multi-vpc-lab/
 │   ├── architecture.md   # Mermaidアーキテクチャ図
 │   ├── adr/              # ADR（決定理由は自分で記述）
 │   └── runbook.md
-└── phase1.md〜phase5.md
 ```
 
 ## Terraform規約

@@ -589,8 +589,6 @@ cloud-agnostic-infra-lab/
 │   ├── adr-002-terraform-for-all.md ← なぜTerraformで統一したか
 │   ├── adr-003-why-aws-in-production.md ← なぜ本番はAWSを選ぶか
 │   └── interview-qa.md              ← 面接想定Q&A 5問
-│
-└── phase1.md 〜 phase5.md           ← 各フェーズの実装ガイド
 ```
 
 ---

@@ -22,13 +22,12 @@ AWS × Terraform でメールインフラを一から構築するハンズオン
 
 この README は「実行手順書」です。先に全体構成を知りたい場合は [ARCHITECTURE.md](/home/takuya/terraform-lab/mail-infra-handson/ARCHITECTURE.md) を読んでください。
 
-各フェーズでは次の順番で進めるのがおすすめです。
+各フェーズでは次の順番で進めます。
 
 1. README の手順を読む
-2. 対応する `phases/phaseX.md` を読んで理論背景を理解する
-3. `terraform plan` を確認する
-4. 問題なければ自分で `terraform apply` を実行する
-5. apply 後の確認を行う
+2. `terraform plan` を確認する
+3. 問題なければ自分で `terraform apply` を実行する
+4. apply 後の確認を行う
 
 重要:
 
@@ -138,7 +137,6 @@ admin_email = "your-name@example.com"
 ### 6. 読み始める順番
 
 - 全体像を先に知りたい: `ARCHITECTURE.md`
-- DNS の理論から入りたい: `phases/phase1.md`
 - SMTP コマンドを見ながら進めたい: `docs/protocol-cheatsheet.md`
 
 ---
@@ -178,7 +176,6 @@ terraform apply -var-file="terraform.tfvars"
 
 先に読む資料:
 
-- `phases/phase1.md`
 - `docs/protocol-cheatsheet.md`
 
 ### 実行手順
@@ -240,7 +237,6 @@ dig TXT _dmarc.your-domain.com
 
 先に読む資料:
 
-- `phases/phase2.md`
 - `docs/protocol-cheatsheet.md`
 
 ### 実行手順
@@ -303,10 +299,6 @@ Phase 2 の EC2 は学習用です。不要になったら必ず削除してく�
 - SNS によるイベント通知
 - DynamoDB サプレッションリスト
 - Lambda によるバウンス処理
-
-先に読む資料:
-
-- `phases/phase3.md`
 
 ### 実行手順
 
@@ -377,7 +369,6 @@ aws dynamodb scan \
 
 先に読む資料:
 
-- `phases/phase4.md`
 - `docs/dmarc-migration-guide.md`
 
 ### 実行手順
@@ -436,10 +427,6 @@ python3 ../scripts/analyze-mail-header.py --file ~/Downloads/test-mail.eml
 - Lambda によるスパム受信判定
 - VPC Endpoint の考え方
 - EventBridge Scheduler による定期実行
-
-先に読む資料:
-
-- `phases/phase5.md`
 
 ### 実行手順
 

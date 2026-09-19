@@ -76,7 +76,6 @@ config-securityhub-auto-remediation/
 │   │   ├── ADR-003-securityhub-integration.md
 │   │   └── ADR-004-audit-storage.md
 │   └── runbook.md
-└── phase1.md ~ phase6.md        # Claude Code実行用フェーズファイル
 ```
 
 ---

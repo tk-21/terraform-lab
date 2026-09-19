@@ -6,8 +6,6 @@ S3トリガー → Step Functions → ECS Fargate（Docker前処理）→ Lambda
 
 ## 実行方法
 ```bash
-claude < phase1.md
-claude < phase2.md
 # ...
 ```
 

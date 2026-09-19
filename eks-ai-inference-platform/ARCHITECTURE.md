@@ -989,7 +989,6 @@ KEDA + AMP Prometheus の利点:
 eks-ai-inference-platform/
 ├── ARCHITECTURE.md          # 本ドキュメント
 ├── CLAUDE.md                # プロジェクト制約・設計方針
-├── phase1.md ~ phase6.md    # フェーズ別実装手順
 │
 ├── terraform/
 │   ├── environments/dev/

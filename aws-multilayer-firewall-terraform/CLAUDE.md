@@ -14,10 +14,6 @@ NACL / Security Group / WAF / AWS Network Firewall を段階的に構築し、
 aws-multilayer-firewall-terraform/
 ├── CLAUDE.md                  # このファイル（自動ロード）
 ├── phases/
-│   ├── phase1_vpc_sg_nacl.md
-│   ├── phase2_network_firewall.md
-│   ├── phase3_waf.md
-│   └── phase4_validation_and_docs.md
 ├── terraform/
 │   ├── modules/
 │   │   ├── vpc/
@@ -143,16 +139,12 @@ Firewall Subnet:  10.0.100.0/28 (AZ: ap-northeast-1a)
 
 ```bash
 # Phase 1: VPC + SG + NACL
-claude < phases/phase1.md
 
 # Phase 2: Network Firewall
-claude < phases/phase2.md
 
 # Phase 3: WAF
-claude < phases/phase3.md
 
 # Phase 4: 動作検証 + ドキュメント整備
-claude < phases/phase4.md
 ```
 
 ---

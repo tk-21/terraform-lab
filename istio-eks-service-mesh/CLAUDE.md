@@ -133,13 +133,10 @@ istio-eks-service-mesh/
 
 ```bash
 # Phase 1: AWS基盤構築
-claude < phase1.md
 
 # Phase 2: OS hardening + Istio インストール
-claude < phase2.md
 
 # Phase 3: アプリデプロイ・トラフィック制御・観測レポート
-claude < phase3.md
 ```
 
 ## 環境変数（実行前に設定）

@@ -613,11 +613,6 @@ aws-multilayer-firewall-terraform/
 │       ├── 001_nacl_vs_sg.md
 │       ├── 002_network_firewall_placement.md
 │       └── 003_waf_rule_strategy.md
-└── phases/                    # フェーズ別の Claude Code プロンプト
-    ├── phase1.md              # VPC + SG + NACL
-    ├── phase2.md              # Network Firewall
-    ├── phase3.md              # WAF
-    └── phase4.md              # 動作検証 + ドキュメント整備
 ```
 
 ---

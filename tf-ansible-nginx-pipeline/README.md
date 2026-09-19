@@ -250,8 +250,6 @@ terraform output
 - デフォルト暗号化が有効
 - DynamoDB テーブル `handson-dev-tflock` がある
 
-補足として、理解度チェックには [docs/phase1-checklist.md](./docs/phase1-checklist.md) が使えます。
-
 ---
 
 ## 3. Phase 2: Terraform で dev 環境を作る
