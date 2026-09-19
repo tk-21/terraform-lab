@@ -1,26 +1,28 @@
 # terraform-lab
 
-AWS インフラの設計・構築・運用を、Terraform を中心に検証したポートフォリオです。
+Terraformを中心に、AWSインフラの設計・構築・運用方法を個人で検証したポートフォリオです。
 
-リソースを作成するだけでなく、**即実用可能・セキュリティ優先・コスト意識あり**を設計原則とし、認証、監視、テスト、障害調査、削除までを含む構成を目指しています。
+VPC・EC2・RDS・ALBなどの基礎構成から、ECS/EKS、CI/CD、セキュリティ、生成AI、カオスエンジニアリングまで、実際にコードを書いて検証しています。
 
-## Featured Projects
+> [!NOTE]
+> 本リポジトリは個人学習・技術検証を目的としており、商用環境での運用実績を示すものではありません。実運用を想定し、セキュリティ、監視、障害対応、コスト、構築後の削除まで含めて設計しています。
 
-最初に見ていただきたい3作品です。
+## 主な検証内容
 
-| プロジェクト | 解決する課題 | 主な技術 | 設計上のポイント |
-|---|---|---|---|
-| [EKS Golden Node Pipeline](./eks-golden-node-pipeline) | セキュアで再現可能な EKS ノードイメージの継続的な作成と更新 | Terraform, EKS, Karpenter, Packer, Ansible, GitHub Actions | CIS Benchmark、OIDC、Golden AMI、Spot、Graviton |
-| [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform) | AWS ネットワークにおける多層防御と通信制御の検証 | Terraform, NACL, Security Group, Network Firewall, WAF, SSM | 防御層の責務分離、許可・拒否テスト、ブロックログ、コスト比較 |
-| [Bedrock AI Platform Sandbox](./bedrock-ai-platform-sandbox) | 予算制約のある環境でのセキュアな生成 AI 基盤 | Terraform, Bedrock, Lambda, API Gateway, Aurora, CloudWatch | マルチテナント、最小権限、可観測性、予算・トークン使用量制御 |
+これまでに検証した内容を分野ごとにまとめています。
 
-EKS プラットフォーム全体の設計については、[Terraform EKS Production Platform](./terraform-eks-production-platform) も参照してください。Private Subnet、IRSA、KMS、ALB、CloudWatch、AMP、Grafanaを含む本番基盤の雛形です。
+| 検証領域 | 検証内容 | 主な成果物 |
+|---|---|---|
+| Terraform基礎 | VPC、EC2、RDS、ALB、Auto Scalingの段階的な構築、module化、S3 BackendとDynamoDB Lockによるstate管理 | [terraform-handson](./terraform-handson) |
+| コンテナ | ECS Fargate、ALB、RDSをTerraformで構築し、Ansibleと組み合わせて検証 | [ecs-fargate-alb-rds-ansible](./ecs-fargate-alb-rds-ansible) |
+| EKS・生成AI | FastAPIとBedrock Knowledge Baseを利用したRAGアプリをEKS上に構築し、IRSAでAWS権限を付与 | [knowledge-bot](./knowledge-bot) |
+| 発展検証 | AWS FIS、PR起点のIaCワークフロー、AWS・GCP・Azureの同一構成比較 | [chaos-engineering-lab](./chaos-engineering-lab) / [pr-driven-iac-lab](./pr-driven-iac-lab) / [cloud-agnostic-infra-lab](./cloud-agnostic-infra-lab) |
 
-## Engineering Principles
+## 設計時に意識していること
 
-### 1. 即実用可能
+### 1. 実運用を意識した再現可能な構成
 
-コードだけで完結させず、構築後の確認と運用まで再現できることを重視しています。
+コードだけで完結させず、構築後の確認と運用方法まで再現できることを重視しています。
 
 - `terraform/` と再利用可能な `modules/` による構成管理
 - READMEとアーキテクチャ資料による前提条件・構築手順・設計判断の明文化
@@ -28,7 +30,7 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 - 疎通確認、拒否系テスト、Pod起動確認などの動作確認手順
 - トラブルシューティング、停止・削除手順までを含むライフサイクル設計
 
-代表例:
+該当するプロジェクト:
 
 - [EKS Golden Node Pipeline](./eks-golden-node-pipeline): AMI作成からKarpenterによるノード起動、Pod配置確認までを一気通貫で実施
 - [Terraform EKS Production Platform](./terraform-eks-production-platform): ネットワーク、EKS、配備、監視をTerraformで統合管理
@@ -45,7 +47,7 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 - WAF、Network Firewall、Security Group、NACLの責務を分離
 - 許可される通信だけでなく、拒否されるべき通信もテスト
 
-代表例:
+該当するプロジェクト:
 
 - [EKS Golden Node Pipeline](./eks-golden-node-pipeline): CIS Benchmark Level 1、OIDC、IRSA、Golden AMI
 - [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform): NACLからWAFまでの多層防御とブロックログ確認
@@ -61,15 +63,15 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 - 検証に必要な概算費用と、停止・削除手順の明記
 - 1AZとMulti-AZ、NAT Gateway、VPC Endpointなどのコストと可用性の比較
 
-代表例:
+該当するプロジェクト:
 
 - [Bedrock AI Platform Sandbox](./bedrock-ai-platform-sandbox): 月額予算、トークン上限、Budget Alert、Cost Controller
 - [EKS Golden Node Pipeline](./eks-golden-node-pipeline): SpotとGravitonを利用したノードコスト最適化
 - [AWS Multilayer Firewall](./aws-multilayer-firewall-terraform): 高額になりやすいNetwork Firewallを含む月額・時間単位の費用試算
 
-## Evidence and Scope
+## 検証範囲
 
-各プロジェクトでは、可能な範囲で次の証跡を残しています。
+プロジェクトによって範囲は異なりますが、以下の情報を残しています。
 
 - アーキテクチャ図と設計判断
 - Terraformの入力、出力、バージョン制約
@@ -78,9 +80,9 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 - コスト試算と削除手順
 - GitHub Actionsによる自動検証・ビルド
 
-プロジェクトごとに検証範囲は異なります。実環境での動作確認、`terraform plan`までの確認、静的解析、設計検証を区別し、各READMEに記載します。本リポジトリは商用環境への無条件な適用を保証するものではありません。
+プロジェクトごとに検証範囲は異なります。実環境での動作確認、`terraform plan`までの確認、静的解析、設計検証を区別しています。いずれも個人環境での検証であり、商用環境での運用実績や、そのまま本番適用できることを示すものではありません。
 
-## Technology Stack
+## 使用技術
 
 | 分野 | 主な技術 |
 |---|---|
@@ -92,14 +94,13 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 | CI/CD / Quality | GitHub Actions, TFLint, Checkov, pytest, Go test |
 | Observability | CloudWatch, X-Ray, AMP, Grafana |
 
-## Project Catalog
+## プロジェクト一覧
 
-代表作以外は、特定テーマの設計・比較・検証を行った補助ポートフォリオです。
+分野ごとに各プロジェクトをまとめています。
 
 <details>
 <summary><strong>AI / Bedrock / MLOps</strong></summary>
 
-- [knowledge-bot](./knowledge-bot) — FastAPI + Bedrock Knowledge Baseによる社内ナレッジQ&Aアプリ
 - [bedrock-agent-resource-reporter](./bedrock-agent-resource-reporter) — AWSリソース調査とレポート生成の自動化
 - [bedrock-finops-automation](./bedrock-finops-automation) — Cost Explorer + BedrockによるFinOps自動化
 - [bedrock-multi-agent-ops-autopilot](./bedrock-multi-agent-ops-autopilot) — Bedrock Multi-Agent CollaborationによるAWS運用支援
@@ -180,20 +181,5 @@ EKS プラットフォーム全体の設計については、[Terraform EKS Prod
 - [pr-driven-iac-lab](./pr-driven-iac-lab) — PRを起点としたTerraformワークフロー
 - [iac-trilogy-lab](./iac-trilogy-lab) — Terraform、Pulumi、AWS CDKの比較
 - [cloud-agnostic-infra-lab](./cloud-agnostic-infra-lab) — AWS、GCP、Azureの比較検証
-- [terraform-handson](./terraform-handson) — AWS主要サービスを使ったTerraform基礎
 
 </details>
-
-## Repository Policy
-
-- プロジェクト固有のモジュールは原則として各ディレクトリ内に閉じる
-- 認証はOIDCを優先し、長期アクセスキーをコードや設定へ保存しない
-- 秘密情報、Terraform state、ローカル変数ファイルはコミットしない
-- インフラ変更を伴うコマンドは内容を確認してから実行する
-
-## How to Read This Repository
-
-1. 上のFeatured Projectsから、関心のあるテーマを選ぶ
-2. 各プロジェクトのREADMEで課題、構成、設計判断を確認する
-3. `ARCHITECTURE.md`、ADR、コスト試算で判断理由を確認する
-4. Terraformコード、テスト、GitHub Actionsで実装との整合性を確認する
