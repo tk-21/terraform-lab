@@ -144,10 +144,6 @@ cloudwatch:PutMetricData → カスタムメトリクス送信
 ## フェーズ実行順序
 
 ```
-phase1.md → Terraform バックエンド + VPC + SG
-phase2.md → ALB + ASG + Launch Template
-phase3.md → IAM ロール + FIS 実験テンプレート
-phase4.md → 検証スクリプト + ADR + Runbook + README
 ```
 
 各フェーズは `claude < phaseN.md` で実行。

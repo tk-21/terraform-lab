@@ -417,7 +417,3 @@ terraform destroy -var-file=terraform.tfvars
 
 - [ARCHITECTURE.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ARCHITECTURE.md)
 - [terraform/envs/prod/README.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/terraform/envs/prod/README.md)
-- [phase1.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/phase1.md)
-- [phase2.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/phase2.md)
-- [phase3.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/phase3.md)
-- [phase4.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/phase4.md)

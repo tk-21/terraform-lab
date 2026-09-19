@@ -87,11 +87,6 @@ Internet
 ```
 ecs-eks-deepdive-lab/
 ├── CLAUDE.md               ← このファイル
-├── phase1.md               ← Phase 1: 共通基盤（VPC, ECR, SQS, App Build）
-├── phase2.md               ← Phase 2: ECS Deep Dive
-├── phase3.md               ← Phase 3: EKS Deep Dive
-├── phase4.md               ← Phase 4: 可観測性 + ロードテスト
-├── phase5.md               ← Phase 5: ADR + Interview Prep + Cleanup
 ├── terraform/
 │   ├── foundation/         ← 共通インフラ（VPC, Endpoints, SQS, ECR, IAM）
 │   ├── ecs/                ← ECS Cluster, Services, Scaling
@@ -124,11 +119,6 @@ ecs-eks-deepdive-lab/
 ```bash
 # プロジェクトルートで各フェーズを実行
 cd ecs-eks-deepdive-lab
-claude < phase1.md
-claude < phase2.md
-claude < phase3.md
-claude < phase4.md
-claude < phase5.md
 ```
 
 ---

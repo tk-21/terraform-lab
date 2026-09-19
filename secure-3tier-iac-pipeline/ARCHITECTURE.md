@@ -95,7 +95,6 @@
 ```
 secure-3tier-iac-pipeline/
 │
-├── phase1.md 〜 phase4.md   ← Claude Code への実装指示書
 │
 ├── terraform/
 │   ├── envs/prod/           ← 「本番環境」の設定をまとめる場所

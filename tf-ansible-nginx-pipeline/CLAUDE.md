@@ -12,11 +12,6 @@
 tf-ansible-nginx-pipeline/
 ├── CLAUDE.md                    # このファイル（Claude Code自動読み込み）
 ├── phases/
-│   ├── phase1.md               # 設計思想の言語化
-│   ├── phase2.md               # Terraformモジュール設計
-│   ├── phase3.md               # Ansible Role設計
-│   ├── phase4.md               # 統合パイプライン
-│   └── phase5.md               # テスト・検証方法論
 ├── docs/
 │   └── adr/
 │       └── ADR-001-template.md # Architecture Decision Record テンプレート
@@ -58,11 +53,6 @@ tf-ansible-nginx-pipeline/
 ### フェーズ実行方法
 ```bash
 # 各フェーズを順番に実行する
-claude < phases/phase1.md
-claude < phases/phase2.md
-claude < phases/phase3.md
-claude < phases/phase4.md
-claude < phases/phase5.md
 ```
 
 ### 前提条件

@@ -929,7 +929,6 @@ ecs-eks-deepdive-lab/
 ├── CLAUDE.md                   ← AI へのプロジェクト制約・指示
 ├── ARCHITECTURE.md             ← アーキテクチャ詳細解説
 ├── README.md                   ← このファイル
-├── phase1.md 〜 phase5.md      ← AI 向けフェーズ別実装指示書
 │
 ├── app/
 │   ├── api/

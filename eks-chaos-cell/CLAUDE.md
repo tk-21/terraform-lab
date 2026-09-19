@@ -150,12 +150,6 @@ eks-chaos-cell/
 
 ```bash
 # プロジェクトディレクトリで順番に実行
-claude < phase1.md
-claude < phase2.md
-claude < phase3.md
-claude < phase4.md
-claude < phase5.md
-claude < phase6.md
 ```
 
 各フェーズは前フェーズの成果物サマリーを冒頭に含む。

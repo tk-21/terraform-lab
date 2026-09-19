@@ -558,7 +558,6 @@ cloud-agnostic-infra-lab/
 │   ├── adr-003-why-aws-in-production.md ← なぜ本番はAWSを選ぶか（最重要）
 │   └── interview-qa.md                  ← 面接想定Q&A
 │
-└── phase1.md 〜 phase5.md   ← 各フェーズの実装ガイド
 ```
 
 ### フラット構成を選んだ理由

@@ -72,7 +72,6 @@ cloud-agnostic-infra-lab/
 - Azure: `B1s` を使用
 
 ### ファイル命名
-- フェーズファイルは `phase1.md`, `phase2.md` のようにシンプルな名前のみ
 - モジュール名は `snake_case`
 
 ### コードスタイル

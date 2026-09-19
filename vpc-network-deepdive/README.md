@@ -77,11 +77,6 @@ vpc-network-deepdive/
 ├── README.md                  # このファイル
 ├── CLAUDE.md                  # プロジェクト固有のコーディング規約
 │
-├── phase1.md                  # Phase 1 実装プロンプト（参考）
-├── phase2.md                  # Phase 2 実装プロンプト（参考）
-├── phase3.md                  # Phase 3 実装プロンプト（参考）
-├── phase4.md                  # Phase 4 実装プロンプト（参考）
-│
 ├── modules/
 │   ├── vpc/                   # VPC・サブネット・IGW 汎用モジュール
 │   ├── vpc_peering/           # Peering と双方向ルート汎用モジュール

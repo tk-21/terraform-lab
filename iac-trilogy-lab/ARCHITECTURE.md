@@ -168,7 +168,6 @@ iac-trilogy-lab/
 ├── ARCHITECTURE.md             # このファイル
 ├── README.md                   # プロジェクト概要・クイックスタート
 ├── infra-spec.md               # 3実装共通の「正解定義」
-├── phase1.md ~ phase4.md       # 各フェーズの実装ガイド
 │
 ├── terraform/                  # Phase 1: Terraform (HCL)
 │   ├── main.tf                 # Terraformバージョン・プロバイダー設定

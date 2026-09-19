@@ -89,23 +89,10 @@ git --version
 ├── README.md
 ├── ARCHITECTURE.md
 ├── CLAUDE.md
-├── phase1.md
-├── phase2.md
-├── phase3.md
-├── phase4.md
-├── phase5.md
 ├── terraform/
 ├── ansible/
 └── app/
 ```
-
-補助ドキュメント:
-
-- `phase1.md` - backend と VPC
-- `phase2.md` - EC2 / ALB / IAM / Bastion
-- `phase3.md` - Ansible / Nginx / Flask
-- `phase4.md` - GitHub Actions / OIDC
-- `phase5.md` - CloudWatch / Alarm / Dashboard
 
 ## 1. 作業ディレクトリへ移動
 
@@ -487,14 +474,6 @@ Terraform 配下に変更を入れて PR を作成すると、`terraform-plan.ym
 - apply が完了する
 - Job summary に ALB DNS が表示される
 
-## 16. ハンズオンの推奨進行順
-
-この README だけでも進められますが、学習目的なら次の順で読むのがおすすめです。
-
-1. `README.md` で全体の流れを掴む
-2. `ARCHITECTURE.md` で構成を理解する
-3. `phase1.md` から `phase5.md` を順に読みながら進める
-
 ## 17. よくあるつまずきポイント
 
 ### `terraform init` が backend 関連で失敗する
@@ -571,8 +550,3 @@ terraform destroy
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [CLAUDE.md](./CLAUDE.md)
-- [phase1.md](./phase1.md)
-- [phase2.md](./phase2.md)
-- [phase3.md](./phase3.md)
-- [phase4.md](./phase4.md)
-- [phase5.md](./phase5.md)

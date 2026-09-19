@@ -12,11 +12,6 @@ mail-infra-handson/
 ├── CLAUDE.md                    # このファイル（Claude Code自動ロード）
 ├── README.md                    # プロジェクト概要
 ├── phases/                      # フェーズ別学習プロンプト（参照用）
-│   ├── phase1.md                # Phase 1: 理論 × DNS基盤構築
-│   ├── phase2.md                # Phase 2: MTA構築（Postfix on EC2）
-│   ├── phase3.md                # Phase 3: AWS SES本格構成
-│   ├── phase4.md                # Phase 4: DKIM/DMARC完全実装
-│   └── phase5.md                # Phase 5: セキュリティ強化×運用監視
 ├── terraform/                   # Terraform ルート（単一stateで全リソース管理）
 │   ├── main.tf                  # 全モジュールを呼び出すエントリポイント
 │   ├── variables.tf             # ルート変数（domain_name, admin_email 等）
@@ -123,7 +118,6 @@ terraform destroy -var-file="terraform.tfvars"
 
 ## 学習の流れ
 
-1. `phases/phase*.md` の理論解説セクションを読む
 2. `terraform/modules/` の対応モジュールコードを確認する
 3. `terraform apply` で実際にリソースを作成する
 4. `scripts/` の検証スクリプトで動作確認する
