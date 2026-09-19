@@ -1,0 +1,74 @@
+# gpu-inference-operator Helm Chart デフォルト値
+# 本番環境では values-prod.yaml で上書きすること
+
+image:
+  # ECRリポジトリのURIをここに設定する (例: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/gpu-inference-operator)
+  repository: gpu-inference-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Operator自体のレプリカ数
+# HA構成では 2 に設定してleader electionで1インスタンスのみがreconcileする
+replicaCount: 1
+
+# Operator Podのリソース制限
+# arm64(t4g.medium)でメモリ使用量を実測して調整すること
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: controller-manager
+  # IRSA: EKS PodがBedrockとSSMにアクセスするためのAnnotation
+  # Terraformのiam moduleが出力するARNを設定する
+  annotations: {}
+    # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/giop-dev-operator-irsa-role
+
+# Admission Webhook設定
+# cert-managerが必要。Kind/E2E環境ではfalseにする
+webhook:
+  enabled: true
+  # cert-manager Certificate リソースのissuer名
+  certManagerIssuerName: selfsigned-issuer
+
+# メトリクスエンドポイント設定
+metrics:
+  enabled: true
+  port: 8080
+  # Prometheusからのスクレイプを許可するServiceMonitorを作成する
+  serviceMonitor:
+    enabled: false
+
+# HealthProbe設定
+healthProbe:
+  port: 8081
+
+# leader election: 複数レプリカ時にreconcileを1インスタンスに限定する
+leaderElection:
+  enabled: true
+
+# Chatwork通知設定
+# APIトークンとルームIDはSSM Parameter Storeから取得する (ハードコード禁止)
+chatwork:
+  ssmTokenPath: /gpu-inference-operator-lab/chatwork-token
+  ssmRoomIdPath: /gpu-inference-operator-lab/chatwork-room-id
+
+# Podのセキュリティコンテキスト
+# nonrootユーザーで実行してコンテナエスケープリスクを低減する
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+# ノードセレクター
+# arm64(Graviton2)ノードにスケジュールする
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations: []
+affinity: {}

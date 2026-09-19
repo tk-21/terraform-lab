@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # セマンティックバージョンタグでも発火する
+    tags: ['v*']
+
+# リリースビルドは並列実行しない (ECRへの同時pushを避けるため)
+concurrency:
+  group: ${{ github.workflow }}-release
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────
+  # arm64イメージのビルドとECRへのpush
+  # ─────────────────────────────────────────────
+  build-push:
+    name: Build & Push arm64 Image
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC認証でAWSのSTSトークンを取得するために必要
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # IAMアクセスキーを使わずOIDCでAWSに認証する
+      # 短命トークン(最大1時間)のため、漏洩しても有効期限後は自動無効化される
+      # アクセスキーのローテーション・管理コストが不要
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+          # ロールセッション名にGit SHAを含めてCloudTrailでのトレーサビリティを確保する
+          role-session-name: github-actions-${{ github.sha }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # docker buildxはQEMUエミュレーションなしにGoのクロスコンパイルでarm64イメージを生成する
+      # Go自体がクロスコンパイル対応のためDockerfileでGOARCH=arm64を指定するだけで十分
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # タグ push時はバージョン番号、mainへのpush時は latest を使う
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
+      # arm64のみビルドする理由:
+      #   全インフラ(EKSノード、Lambda)をGraviton2(arm64)で統一しているため
+      #   x86_64イメージをECRに置く必要がない。
+      #   マルチアーキビルドを維持するとCI時間・ECRストレージコストが約2倍になる。
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          # GitHub Actionsのキャッシュを使ってDockerレイヤーキャッシュを共有する
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────
+  # Helm ChartパッケージングとECR OCI pushは
+  # 将来の拡張ポイントとして保留 (helm push対応後に追加予定)
+  # ─────────────────────────────────────────────

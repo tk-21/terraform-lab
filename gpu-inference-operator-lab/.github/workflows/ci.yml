@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# 同一PRで複数pushされた場合、古いrunをキャンセルしてCIリソースを節約する
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Lint: golangci-lintによる静的解析
+  # ─────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # golangci-lintはarm64バイナリも提供しているが、
+      # コード品質チェックはCIホスト(x86_64)上で実行して問題ない
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # ─────────────────────────────────────────────
+  # Unit Test: envtestを使ったコントローラーユニットテスト
+  # ─────────────────────────────────────────────
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+
+      - name: Generate manifests and deepcopy
+        run: |
+          controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+          controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+      # envtestはkube-apiserver/etcdをダウンロードして
+      # インプロセスのKubernetes APIに対してコントローラーをテストする
+      - name: Run unit tests
+        run: |
+          ENVTEST_BIN=$(setup-envtest use 1.31.0 --bin-path /tmp/k8s -p path)
+          KUBEBUILDER_ASSETS="${ENVTEST_BIN}" go test ./... \
+            -coverprofile=cover.out \
+            -coverpkg=./... \
+            -v \
+            -timeout=5m
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./cover.out
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # E2E Test: KindクラスタでCRD→Deployment生成を検証
+  # ─────────────────────────────────────────────
+  e2e:
+    name: E2E Test (Kind)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+
+      - name: Generate CRD manifests
+        run: controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+      # KindはDocker-in-Dockerでローカルのk8sクラスタを起動する
+      # GPU依存部分(DCGM Exporter、実際のvLLM起動)はCI環境でGPUがないためモック化している
+      # 検証対象: CRD適用 → CR作成 → Reconcileループ → Deployment生成
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          config: kind-config.yaml
+          cluster_name: gpu-inference-operator
+
+      - name: Install CRDs
+        run: kubectl apply -f config/crd/bases/
+
+      # CIホスト(x86_64)向けにamd64でビルドする
+      # 本番ECRにpushするarm64イメージはrelease.ymlで別途ビルドする
+      - name: Build operator binary (amd64 for CI host)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/manager main.go
+
+      # WebhookはTLS証明書(cert-manager)が必要なため --enable-webhooks=false で無効化する
+      # leader-electionもシングルノードKindでは不要なため無効化する
+      - name: Start operator in background
+        run: |
+          ./bin/manager \
+            --leader-elect=false \
+            --enable-webhooks=false \
+            --metrics-bind-address=:8080 \
+            --health-probe-bind-address=:8081 &
+          echo "OPERATOR_PID=$!" >> $GITHUB_ENV
+          # Operatorの初期化を待つ
+          sleep 5
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+
+      - name: Run E2E tests
+        run: go test ./test/e2e/... -v -timeout=10m
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          # GPU依存テスト(実際のvLLM起動・DCGM Exporterメトリクス取得)をスキップする
+          # 理由: CIのGitHub Actions runnerにはNVIDIA GPUがないため実行不可
+          SKIP_GPU_TESTS: "true"
+
+      - name: Stop operator
+        if: always()
+        run: kill ${{ env.OPERATOR_PID }} || true
+
+  # ─────────────────────────────────────────────
+  # Helm Lint: Chartの構文・ベストプラクティス検証
+  # ─────────────────────────────────────────────
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Lint Helm chart
+        run: helm lint helm/gpu-inference-operator/

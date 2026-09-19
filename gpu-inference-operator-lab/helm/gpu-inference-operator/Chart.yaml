@@ -1,0 +1,23 @@
+apiVersion: v2
+name: gpu-inference-operator
+description: |
+  AIInferenceService CRDのライフサイクル管理・オートスケーリング・Bedrockフォールバック・
+  自己修復を担うKubernetes Operator。EKS + Karpenter(g5g系GPUノード)環境向け。
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+# cert-manager: Admission WebhookのTLS証明書管理に必要
+# cert-managerなし環境では --set webhook.enabled=false を指定する
+dependencies: []
+
+keywords:
+  - gpu
+  - inference
+  - operator
+  - vllm
+  - bedrock
+
+maintainers:
+  - name: takuya
+    email: o.takuya.0220@gmail.com
