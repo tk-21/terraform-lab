@@ -14,8 +14,8 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# lockは追跡する
-# .terraform.lock.hcl ← 削除して追跡
+# Terraform provider lock files are generated locally.
+.terraform.lock.hcl
 
 *.tfvars
 *.tfvars.json
