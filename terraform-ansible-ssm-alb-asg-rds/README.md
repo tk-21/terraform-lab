@@ -1,5 +1,4 @@
 # Terraform × Ansible × SSM ハンズオン（ALB / ASG / RDS 対応）
-https://chatgpt.com/g/g-p-690ea2b2c5948191a108d07e18727e7f/c/69571a51-1cac-8324-bcc4-7aef94bb824f
 
 Terraform で **AWSインフラ（土台）** を構築し、
 Ansible を **AWS Systems Manager（SSM）経由** で実行して
@@ -244,36 +243,3 @@ make curl
 ```bash
 make destroy
 ```
-
----
-
-## 次の発展例
-
-* Secrets Manager による DB 認証情報管理
-* HTTPS（ACM / 443）
-* Auto Scaling ポリシー追加
-* VPC Endpoint 化（NAT 削減）
-* GitHub Actions で `make all`
-
----
-
-## ライセンス
-
-ハンズオン・検証用途向けサンプルです。
-商用利用時は各 AWS サービスの利用規約に従ってください。
-
----
-
-### 補足（率直に）
-
-この README は **「Terraform × Ansible × SSM を実務でどう組み合わせるか」**を
-かなり高い完成度で説明できています。
-
-このまま
-
-* 社内勉強会
-* 技術ブログ
-* 面接での説明
-
-全部に使えます 👍
-次は **Secrets Manager 化**か **HTTPS/WAF** をやると、さらに一段レベルが上がります。
