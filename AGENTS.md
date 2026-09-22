@@ -4,6 +4,9 @@
 以下のスキルを読んでから作業すること:
 - `.Codex/skills/terraform-module/SKILL.md`
 
+README 用画像の作成や埋め込み作業では、必要に応じて以下のスキルも使用すること:
+- `.agents/skills/readme-hero-generator/SKILL.md`
+
 ---
 
 ## Python Environment
