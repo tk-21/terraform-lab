@@ -182,9 +182,14 @@ curl $(terraform output -raw web_url)
 cd environments/dev
 terraform destroy
 
-# バックエンドのS3は prevent_destroy で守られているため手動削除
-# AWSコンソール → S3 → handson-tfstate-xxxxx → バケットを空にして削除
+# bootstrap の S3 バケットも削除する場合（dev の destroy 完了後）
+cd ../../bootstrap
+terraform plan
+terraform apply   # force_destroy = true を state に反映
+terraform destroy # tfstate と lockfile の過去バージョンも含めて削除
 ```
+
+`force_destroy` は `terraform apply` が成功してから有効になります。削除後に再利用する場合は、`bootstrap/main.tf` の `force_destroy = true` を外し、`prevent_destroy = true` の保護を戻してください。
 
 ---
 
@@ -330,4 +335,4 @@ module "ec2" {
 - [ ] `modules/ec2/main.tf` の `dynamic "ingress"` はどのブロックを生成しているか
 - [ ] `modules/ec2/main.tf` の `lifecycle.ignore_changes = [ami]` がない場合に何が起きるか
 - [ ] `environments/dev/main.tf` で `module.vpc.vpc_id` が使えるのはなぜか
-- [ ] `bootstrap/main.tf` の `lifecycle { prevent_destroy = true }` を外すとどうなるか
+- [ ] `bootstrap/main.tf` の `force_destroy = true` は何を削除するか、なぜ先に `apply` が必要か
