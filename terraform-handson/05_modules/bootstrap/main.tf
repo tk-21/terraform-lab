@@ -8,12 +8,11 @@ locals {
 # tfstate保存用S3バケット
 resource "aws_s3_bucket" "tfstate" {
   bucket = local.bucket_name
+  # force_destroy = true # クリーンアップ時に過去の tfstate と lockfile のバージョンも削除する
 
-  # 誤削除防止: terraform destroy でも消えないようにする
   lifecycle {
     prevent_destroy = true
   }
-
   tags = {
     Name        = local.bucket_name
     Environment = "shared"

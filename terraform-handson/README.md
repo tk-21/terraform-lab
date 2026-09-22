@@ -562,37 +562,79 @@ EC2_SG=$(cd ../02_ec2 && terraform output -raw security_group_id)
 
 ## 各 Step で見るべきポイント
 
-ただ apply するだけでなく、次の観点を確認すると理解が深まります。
+以下は各 Step のコードを読んだときの確認項目と、その回答です。
 
 ### Step 1
 
-- パブリックとプライベートの差はどの設定で生まれているか
-- `count.index` がどこで使われているか
-- `data.aws_availability_zones` を使う理由は何か
+**パブリックとプライベートの差はどの設定で生まれているか**
+
+主な違いは、サブネットに関連付けたルートテーブルです。`01_vpc/main.tf` の `aws_route_table.public` には `0.0.0.0/0`（VPC 内以外の IPv4 宛先）を Internet Gateway（IGW）へ送るルートがあり、`aws_route_table_association.public` でパブリックサブネットに結び付けています。一方、プライベート用ルートテーブルには IGW や NAT Gateway へのルートがありません。この構成ではプライベートサブネットからインターネットへ直接出ることもできません。
+
+さらに `aws_subnet.public` は `map_public_ip_on_launch = true` なので、そこで起動する EC2 にパブリック IP が自動付与されます。プライベート側にはこの設定がありません。パブリック IP と IGW へのルートがそろい、Security Group などでも通信が許可されて初めて、インターネットとの通信ができます。サブネット名に `public` と付けるだけでは通信経路は変わりません。
+
+**`count.index` がどこで使われているか**
+
+`aws_subnet.public` と `aws_subnet.private` では、`count = length(...)` で CIDR の数だけサブネットを作ります。`count.index` は `0` から始まる各リソースの番号で、`var.public_subnet_cidrs[count.index]` と `data.aws_availability_zones.available.names[count.index]` のように、同じ番号の CIDR と AZ を対応させています。Name タグでは `count.index + 1` として人が読みやすい 1 始まりにしています。両方のルートテーブル関連付けでも `count.index` を使い、各サブネットを対応する関連付けに指定します。
+
+**`data.aws_availability_zones` を使う理由は何か**
+
+これは現在の AWS リージョンで利用可能な AZ 名を取得する data source です。コードに AZ 名を固定せず、取得結果の `names[count.index]` をサブネットの `availability_zone` に使えます。ただし、このコードは CIDR リストの要素数に見合う AZ があることを前提にしています。また AZ 名の並びと `count.index` で対応付けているため、構成変更時は `terraform plan` で配置先と差分を確認します。
 
 ### Step 2
 
-- AMI をハードコードしない理由は何か
-- `user_data` はいつ実行されるか
-- EIP を付ける意味は何か
+**AMI をハードコードしない理由は何か**
+
+AMI ID はリージョンごとに異なり、Amazon Linux 2023 の新しいイメージも公開されます。`02_ec2/main.tf` の `data.aws_ami.amazon_linux_2023` は、所有者を `amazon`、名前を `al2023-ami-*-x86_64`、状態を `available` に絞り、`most_recent = true` で条件に合う最新 AMI を選びます。これにより古い ID を手作業で更新する必要が減ります。一方、将来インスタンスを再作成すると別の AMI が選ばれる可能性があるため、再現性が必要な運用では AMI の固定や更新手順も検討します。
+
+**`user_data` はいつ実行されるか**
+
+この `user_data` は EC2 の初回起動時に cloud-init が実行するシェルスクリプトです。`dnf` で Apache を入れ、サービスを起動・自動起動に設定し、インスタンス情報を書いた HTML を生成します。通常の再起動や `terraform plan` のたびにスクリプトが実行されるわけではありません。内容を変えた場合の挙動は Terraform の差分と EC2 の再作成設定に依存するため、反映前に `terraform plan` を確認します。
+
+**EIP を付ける意味は何か**
+
+`aws_eip.web` は EC2 に固定のパブリック IPv4 アドレスを割り当てます。EC2 の自動割り当て IP は停止・起動や再作成で変わり得ますが、EIP は確保している間、別のインスタンスへ付け替えられます。そのため接続先の IP を維持しやすくなります。ただし、このコードで `terraform destroy` すると EIP 自体も解放されるため、次の `apply` で同じ IP が戻る保証はありません。
 
 ### Step 3
 
-- RDS をプライベートサブネットに置く理由は何か
-- `cidr_blocks` ではなく `security_groups` 指定にする理由は何か
-- `sensitive = true` の意味は何か
+**RDS をプライベートサブネットに置く理由は何か**
+
+`03_rds/main.tf` は Step 1 のプライベートサブネット ID を `aws_db_subnet_group.main` に渡し、RDS にその DB Subnet Group を指定しています。加えて `publicly_accessible = false` なので、RDS に公開接続用の IP を持たせません。データベースをインターネットから直接接続させず、同じ VPC 内の許可した EC2 から利用する構成です。DB Subnet Group に複数 AZ のサブネットを含めていますが、現在の `multi_az = false` は Single-AZ 配置です。
+
+**`cidr_blocks` ではなく `security_groups` 指定にする理由は何か**
+
+RDS 用 Security Group の ingress は、MySQL の TCP 3306 番について `security_groups = [var.ec2_security_group_id]` としています。これは送信元 IP の範囲ではなく、指定した Security Group を付けたネットワークインターフェースからの通信を許可する指定です。EC2 のプライベート IP が変わってもルールを直す必要がありません。ただし、同じ Security Group を別の EC2 に付ければその EC2 も許可対象になるため、「特定の1台だけ」を識別する設定ではありません。
+
+**`sensitive = true` の意味は何か**
+
+`03_rds/variables.tf` の `db_password` に付けた `sensitive = true` は、Terraform の通常の `plan` や `apply` の表示でパスワードをマスクするための指定です。暗号化や保存禁止の指定ではなく、値は Terraform の state に記録され得ます。`terraform.tfvars` などの入力ファイルを Git に含めず、state の保存先とアクセス権も保護する必要があります。
 
 ### Step 4
 
-- ALB 用 SG と EC2 用 SG を分ける理由は何か
-- Target Group のヘルスチェックは何をしているか
-- ASG と Launch Template の役割分担は何か
+**ALB 用 SG と EC2 用 SG を分ける理由は何か**
+
+`04_alb/main.tf` の ALB 用 SG はインターネットから TCP 80 番を受け付けます。EC2 用 SG は TCP 80 番の送信元を ALB 用 SG に限定します。この2段階で「利用者 → ALB → EC2」という経路を表し、EC2 への直接 HTTP 接続を SG で防ぎます。ALB と EC2 で公開範囲や許可ポートを別々に変更できる点も利点です。
+
+**Target Group のヘルスチェックは何をしているか**
+
+ALB は Target Group に登録された EC2 の `/` に HTTP リクエストを送り、応答が `200` か確認します。この設定では 30 秒間隔、5 秒タイムアウト、2 回連続成功で healthy、3 回連続失敗で unhealthy です。ALB は正常なターゲットへリクエストを振り分けます。また ASG は `health_check_type = "ELB"` なので、この結果をインスタンスの健全性判定に利用し、異常なインスタンスを置き換えます。起動直後は `health_check_grace_period = 60` 秒の猶予があります。
+
+**ASG と Launch Template の役割分担は何か**
+
+Launch Template は EC2 の起動設定を定義します。このコードでは AMI、`t3.micro`、Security Group、UserData などが該当します。ASG はそのテンプレートを使い、指定したサブネットで何台維持するかを `min_size`、`max_size`、`desired_capacity` で管理します。さらに Target Group と連携して異常な EC2 を置き換え、CPU 使用率の目標値 60% に応じて台数を調整します。
 
 ### Step 5
 
-- `for_each` と `map` を使う利点は何か
-- `dynamic` ブロックがどの設定を抽象化しているか
-- remote backend を使う理由は何か
+**`for_each` と `map` を使う利点は何か**
+
+`05_modules/environments/dev/main.tf` は AZ 名をキー、CIDR を値にした map を VPC モジュールへ渡します。`modules/vpc/main.tf` の `aws_subnet.public` と `aws_subnet.private` は `for_each` で各要素をサブネットに変え、`each.key` を AZ、`each.value` を CIDR に使います。Terraform 上でも `aws_subnet.public["ap-northeast-1a"]` のようにキーで識別されるため、項目を追加しても既存の別キーのアドレスがずれません。Step 1 の `count.index` はリストの位置で識別するので、途中の要素を削除・並べ替えたときに意図しない差分が出やすくなります。
+
+**`dynamic` ブロックがどの設定を抽象化しているか**
+
+`modules/ec2/main.tf` の `dynamic "ingress"` は、Security Group の受信ルールを `var.ingress_rules` の各要素から生成します。ポート、プロトコル、許可する CIDR をルールごとに渡せるため、ルールを増減するときにモジュール本体を書き換える必要がありません。dev 環境では HTTP の 80 番を指定し、`allowed_ssh_cidrs` が空でなければ SSH の 22 番も追加します。ここで動的にしているのは受信ルールで、送信ルールはコード内で固定しています。
+
+**remote backend を使う理由は何か**
+
+`05_modules/bootstrap` で暗号化・バージョニング・パブリックアクセス遮断を設定した S3 バケットを作り、`environments/dev/backend.tf` で tfstate の保存先に指定します。これにより state を作業者の PC だけに置かず、権限を持つ作業者が同じ state を参照できます。`use_lockfile = true` は同じ state への同時更新を防ぐための設定です。state には機密値が含まれ得るので、S3 バケットへのアクセス管理も必要です。なお、`module.vpc.vpc_id` を `module.ec2` に渡す仕組みは同じ root module 内の直接参照であり、remote backend とは別の役割です。
 
 ---
 
@@ -683,5 +725,30 @@ cd ../05_modules/environments/dev
 terraform destroy
 ```
 
-`05_modules/bootstrap` は `prevent_destroy = true` が入っているため、通常の `terraform destroy` では削除されません。
-これは tfstate 保管先を誤って消さないための安全策です。
+Step 5 の tfstate 保存用 S3 バケットまで削除する場合は、**dev 環境を先に削除したことを確認してから**、`05_modules/bootstrap` で次を実行します。
+バケットはバージョニング済みで、過去の tfstate と lockfile も残るため、クリーンアップ用に `force_destroy = true` を設定しています。これは全バージョンを削除する設定です。
+
+```bash
+cd 05_modules/bootstrap
+terraform plan
+terraform apply   # force_destroy の変更を bootstrap の state に記録する
+terraform destroy # S3 バケットと全オブジェクトのバージョンを削除する
+```
+
+`force_destroy` は設定を変えただけでは削除時に効かず、**先に `terraform apply` が成功する必要があります**。
+
+`terraform destroy` が成功した後に教材を再利用する場合は、`05_modules/bootstrap/main.tf` の `aws_s3_bucket.tfstate` から `force_destroy = true` の行を削除し、次の削除保護を戻してください。`tags` など、ほかの設定はそのままにします。
+
+```hcl
+resource "aws_s3_bucket" "tfstate" {
+  bucket = local.bucket_name
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  # 既存の tags 設定はそのまま残す
+}
+```
+
+バケットを削除した後はコードを戻すだけでよく、その時点で `terraform apply` は不要です。まだバケットを削除していない場合は、削除保護を先に戻さないでください。
