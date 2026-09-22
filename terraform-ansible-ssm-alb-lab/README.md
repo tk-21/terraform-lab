@@ -1,5 +1,4 @@
 # terraform-ansible-ssm-alb-lab（SSM / Private Subnet / ALB 版）  
-https://chatgpt.com/g/g-p-695889a4db848191863a77a798cf7309-ansible/c/695b13cd-ff48-8322-9ba5-49de62180ccb
 
 Terraform と Ansible を **実務と同じ責務分離**で連携させる
 **学習・検証用 IaC ラボ環境（SSM 接続・Private Subnet 構成）**です。
@@ -246,24 +245,3 @@ make destroy
 * `diff → apply` を守る安全な IaC 運用
 
 これを **自力で再構築・説明できる状態**になることがゴールです。
-
----
-
-## 12. 次のステップ（発展）
-
-* NAT Gateway を廃止（完全閉域構成）
-* EC2 を複数台 + Auto Scaling Group
-* ALB HTTPS 化（ACM）
-* role を `common / web` に分割
-* GitHub Actions から SSM 経由で Ansible 実行
-
----
-
-必要であれば次に、
-
-* **この構成を図解付きで解説した設計ドキュメント**
-* **SSH 版との比較（なぜ SSM が良いか）**
-* **実務レビュー観点チェックリスト**
-
-まで一気に仕上げられます。
-ここまで来ているので、**かなり実務レベル**です。
