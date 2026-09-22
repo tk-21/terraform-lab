@@ -86,10 +86,10 @@ terraform-handson/
 ├── README.md                    ← このファイル
 ├── .gitignore                   ← state・tfvars を除外
 ├── prompts/
-│   ├── 01_vpc.md                ← Step1 プロンプト集（理解確認・改造・トラブル対応）
-│   ├── 02_ec2.md                ← Step2 プロンプト集
-│   ├── 03_rds.md                ← Step3 プロンプト集
-│   └── 04_alb.md                ← Step4 プロンプト集
+│   ├── 01_vpc.md                ← Step1 コード改造プロンプト集
+│   ├── 02_ec2.md                ← Step2 コード改造プロンプト集
+│   ├── 03_rds.md                ← Step3 コード改造プロンプト集
+│   └── 04_alb.md                ← Step4 コード改造プロンプト集
 ├── 01_vpc/
 │   ├── main.tf                  ← VPC / Subnet / IGW / RouteTable
 │   ├── variables.tf
@@ -159,35 +159,6 @@ aws sts get-caller-identity
 - 東京リージョン `ap-northeast-1` を利用できる
 
 `jq` は必須ではありませんが、Step 間の値受け渡しで使うため、入っていると進めやすいです。
-
----
-
-## Claude Code を使う場合の進め方
-
-このリポジトリは Claude Code と一緒に進めやすいように `prompts/` を用意しています。
-
-```bash
-cd terraform-handson
-claude
-```
-
-各 Step のプロンプトファイルを上から順に使います。
-
-```text
-prompts/01_vpc.md
-prompts/02_ec2.md
-prompts/03_rds.md
-prompts/04_alb.md
-```
-
-プロンプトの意味:
-
-- `🟢 初期構築`: `init` / `plan` / `apply` と動作確認
-- `🔵 理解確認`: コードを読んで仕組みを理解する
-- `🟡 改造`: 設定変更や機能追加で応用する
-- `🔴 トラブル`: エラー時に原因を特定する
-
-もちろん、Claude Code を使わずに以下の手順だけで手動実行しても進められます。
 
 ---
 
@@ -714,19 +685,3 @@ terraform destroy
 
 `05_modules/bootstrap` は `prevent_destroy = true` が入っているため、通常の `terraform destroy` では削除されません。
 これは tfstate 保管先を誤って消さないための安全策です。
-
----
-
-## よくある質問
-
-**Q. terraform init が失敗する**
-A. AWS 認証が設定されているか確認してください: `aws sts get-caller-identity`
-
-**Q. RDS の apply に 10 分以上かかる**
-A. RDS の作成は通常 5〜10 分かかります。正常です。待機中に 🔵 の理解確認を進めてください。
-
-**Q. ALB の URL にアクセスしてもエラーになる**
-A. ALB の作成後、EC2 のヘルスチェックが `healthy` になるまで 1〜2 分かかります。しばらく待ってから再アクセスしてください。
-
-**Q. terraform.tfstate を誤って削除してしまった**
-A. `terraform import` コマンドで AWS 上のリソースを再インポートできます。Claude Code に「terraform.tfstate を復元したい」と伝えてください。
