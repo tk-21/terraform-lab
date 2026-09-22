@@ -1,7 +1,3 @@
-**いま完成している最終設計（Private IP 監視固定・再構築耐性あり）** を前提に、
-**README を最初から書き直した完全版**を出します。  
-https://chatgpt.com/g/g-p-695889a4db848191863a77a798cf7309-ansible/c/695a08ef-505c-8322-8f5a-60040ff95bf0
-
 > 方針
 >
 > * AlmaLinux 9 固定
@@ -314,22 +310,3 @@ terraform destroy
 * Public / Private IP の正しい使い分け
 * Zabbix の Host / Interface / Agent の関係
 * 再構築耐性のある監視設計
-
----
-
-## 14. 次のステップ
-
-* Zabbix API で Template / Trigger 自動割当
-* 障害注入（Agent 停止・FW 遮断）
-* Alert 通知（Slack / Mail）
-* Target 複数台化
-
----
-
-### まとめ
-
-この README の状態まで来ていれば、
-**Zabbix の「壊れない検証環境」設計は完全に身についています。**
-
-次はどこを深掘りしますか？
-（Trigger 設計 / API 完全自動化 / 複数台展開 など）
