@@ -7,6 +7,11 @@ output "cluster_name" {
   value       = aws_eks_cluster.main.name
 }
 
+output "cluster_arn" {
+  description = "EKSクラスターのARN（FIS実験テンプレートで使用）"
+  value       = aws_eks_cluster.main.arn
+}
+
 output "cluster_endpoint" {
   description = "EKSクラスターAPIエンドポイント（kubeconfigの生成に使用）"
   value       = aws_eks_cluster.main.endpoint

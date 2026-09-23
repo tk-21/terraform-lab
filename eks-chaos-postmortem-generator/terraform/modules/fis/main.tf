@@ -72,6 +72,13 @@ resource "aws_iam_role_policy" "fis_execution" {
         Resource = "*"
       },
       {
+        # EC2インスタンス情報の読み取り: ノード情報を取得（FIS がノードを解決するために必須）
+        Sid    = "EC2DescribeInstances"
+        Effect = "Allow"
+        Action = ["ec2:DescribeInstances"]
+        Resource = "*"
+      },
+      {
         # EC2ノード終了: ChaosTarget=trueタグ付きノードのみに制限
         Sid    = "EC2TerminateChaosTargetOnly"
         Effect = "Allow"
@@ -132,21 +139,27 @@ resource "aws_fis_experiment_template" "pod_kill" {
       key   = "Pods"
       value = "chaos-target-pods"
     }
+
+    # FIS実行時に使用するKubernetesサービスアカウント
+    parameter {
+      key   = "kubernetesServiceAccount"
+      value = "fis-sa"
+    }
   }
 
-  # chaos-targetネームスペースのPodをNamespaceフィルターで絞り込む
+  # chaos-targetネームスペースのPodを対象（ラベルセレクタで全Podをターゲット）
   target {
     name           = "chaos-target-pods"
     resource_type  = "aws:eks:pod"
     selection_mode = "ALL"
 
-    filter {
-      path   = "Namespace"
-      values = ["chaos-target"]
-    }
-
+    # aws:eks:podはnamespace, selectorType, selectorValueが必須
+    # selectorType: labelSelector を使用し、全Podをターゲット（chaos-target=pod-kill ラベル）
     parameters = {
       clusterIdentifier = var.cluster_name
+      namespace         = "chaos-target"
+      selectorType      = "labelSelector"
+      selectorValue     = "chaos-target=pod-kill"
     }
   }
 
@@ -199,10 +212,6 @@ resource "aws_fis_experiment_template" "node_termination" {
       key   = "ChaosTarget"
       value = "true"
     }
-
-    parameters = {
-      clusterIdentifier = var.cluster_name
-    }
   }
 
   tags = merge(var.tags, {
@@ -213,13 +222,12 @@ resource "aws_fis_experiment_template" "node_termination" {
 
 # ------------------------------------------------------------
 # ③ Network Latency実験テンプレート
-# Kubernetes Jobでtc netemコマンドを実行し、
-# chaos-targetネームスペースのネットワークに100msの遅延を注入する。
-# 60秒後にtc netemを削除して自動復旧させる設計。
-# NET_ADMIN capabilityが必要なためsecurityContextを設定する。
+# Chaos MeshのNetworkChaosでchaos-targetネームスペースに100msの遅延を注入する。
+# 60秒後に自動的に復旧される設計。
+# 前提: EKSクラスターにChaos Meshがインストール済みであること
 # ------------------------------------------------------------
 resource "aws_fis_experiment_template" "network_latency" {
-  description = "Network Latency: tc netemでchaos-targetネームスペースに100ms遅延を注入してサービス品質劣化を検証"
+  description = "Network Latency: Chaos MeshのNetworkChaosでchaos-targetネームスペースに100ms遅延を注入"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -230,7 +238,7 @@ resource "aws_fis_experiment_template" "network_latency" {
   action {
     name        = "inject-network-latency"
     action_id   = "aws:eks:inject-kubernetes-custom-resource"
-    description = "K8s JobでtcnetemによりNW遅延100msを注入"
+    description = "Chaos MeshのNetworkChaosでNW遅延100msを注入"
 
     target {
       key   = "Cluster"
@@ -239,12 +247,12 @@ resource "aws_fis_experiment_template" "network_latency" {
 
     parameter {
       key   = "kubernetesApiVersion"
-      value = "batch/v1"
+      value = "chaos-mesh.org/v1alpha1"
     }
 
     parameter {
       key   = "kubernetesKind"
-      value = "Job"
+      value = "NetworkChaos"
     }
 
     parameter {
@@ -252,7 +260,8 @@ resource "aws_fis_experiment_template" "network_latency" {
       value = "chaos-target"
     }
 
-    # Jobスペック: tc netemで100ms遅延注入→60秒維持→クリーンアップ
+    # Chaos MeshのNetworkChaosリソースSpec
+    # 全Podを対象に100ms遅延を注入（60秒で自動削除）
     parameter {
       key = "kubernetesSpec"
       value = jsonencode({
@@ -260,30 +269,14 @@ resource "aws_fis_experiment_template" "network_latency" {
           name = "network-latency-chaos"
         }
         spec = {
-          ttlSecondsAfterFinished = 60
-          template = {
-            metadata = {
-              labels = { app = "network-latency-chaos" }
-            }
-            spec = {
-              restartPolicy = "Never"
-              hostNetwork   = true
-              containers = [
-                {
-                  name  = "network-latency"
-                  image = "busybox:latest"
-                  command = [
-                    "sh", "-c",
-                    "tc qdisc add dev eth0 root netem delay 100ms && echo 'Latency injected' && sleep 60 && tc qdisc del dev eth0 root netem && echo 'Latency removed'"
-                  ]
-                  securityContext = {
-                    capabilities = {
-                      add = ["NET_ADMIN"]
-                    }
-                  }
-                }
-              ]
-            }
+          action   = "delay"
+          duration = "60s"
+          selector = {
+            namespaces = ["chaos-target"]
+          }
+          delay = {
+            latency  = "100ms"
+            jitter   = "10ms"
           }
         }
       })
@@ -297,21 +290,10 @@ resource "aws_fis_experiment_template" "network_latency" {
   }
 
   target {
-    name           = "chaos-cluster"
-    resource_type  = "aws:eks:cluster"
-    selection_mode = "COUNT(1)"
-
-    resource_tag {
-      key   = "Project"
-      value = var.project
-    }
-
-    resource_tag {
-      key   = "Environment"
-      value = var.environment
-    }
-
-    parameters = {}
+    name            = "chaos-cluster"
+    resource_type   = "aws:eks:cluster"
+    selection_mode  = "COUNT(1)"
+    resource_arns   = [var.cluster_arn]
   }
 
   tags = merge(var.tags, {
@@ -322,12 +304,13 @@ resource "aws_fis_experiment_template" "network_latency" {
 
 # ------------------------------------------------------------
 # ④ CPU Stress実験テンプレート
-# stress-ngでCPU使用率80%の負荷をchaos-targetノードに注入し、
+# Chaos MeshのStressChaosでCPU80%の負荷をchaos-targetネームスペースに注入し、
 # Podエビクション（CPU requestsを超えた場合）と
 # KarpenterのNode追加スケールアウトを検証する。
+# 前提: EKSクラスターにChaos Meshがインストール済みであること
 # ------------------------------------------------------------
 resource "aws_fis_experiment_template" "cpu_stress" {
-  description = "CPU Stress: stress-ngでCPU80%負荷を注入してPodエビクションとKarpenterスケールアウトを検証"
+  description = "CPU Stress: Chaos MeshのStressChaosでCPU80%負荷を注入してPodエビクションとKarpenterスケールアウトを検証"
   role_arn    = aws_iam_role.fis_execution.arn
 
   stop_condition {
@@ -338,7 +321,7 @@ resource "aws_fis_experiment_template" "cpu_stress" {
   action {
     name        = "inject-cpu-stress"
     action_id   = "aws:eks:inject-kubernetes-custom-resource"
-    description = "stress-ngでCPU80%ストレスをchaos-targetノードに注入"
+    description = "Chaos MeshのStressChaosでCPU80%ストレスをchaos-targetネームスペースに注入"
 
     target {
       key   = "Cluster"
@@ -347,12 +330,12 @@ resource "aws_fis_experiment_template" "cpu_stress" {
 
     parameter {
       key   = "kubernetesApiVersion"
-      value = "batch/v1"
+      value = "chaos-mesh.org/v1alpha1"
     }
 
     parameter {
       key   = "kubernetesKind"
-      value = "Job"
+      value = "StressChaos"
     }
 
     parameter {
@@ -360,7 +343,8 @@ resource "aws_fis_experiment_template" "cpu_stress" {
       value = "chaos-target"
     }
 
-    # Jobスペック: 全CPUコアに80%負荷を60秒間かける
+    # Chaos MeshのStressChaosリソースSpec
+    # 全Podを対象にCPU80%負荷を60秒注入
     parameter {
       key = "kubernetesSpec"
       value = jsonencode({
@@ -368,37 +352,21 @@ resource "aws_fis_experiment_template" "cpu_stress" {
           name = "cpu-stress-chaos"
         }
         spec = {
-          ttlSecondsAfterFinished = 60
-          template = {
-            metadata = {
-              labels = { app = "cpu-stress-chaos" }
+          stressors = {
+            cpu = {
+              workers = 0  # 0 = CPU数を自動検出
+              load    = 80 # 使用率80%
             }
-            spec = {
-              restartPolicy = "Never"
-              containers = [
-                {
-                  name  = "cpu-stress"
-                  image = "alexeiled/stress-ng:latest"
-                  # --cpu 0はCPU数を自動検出、--cpu-load 80は使用率80%
-                  command = ["stress-ng", "--cpu", "0", "--cpu-load", "80", "--timeout", "60s"]
-                  resources = {
-                    limits = {
-                      cpu    = "500m"
-                      memory = "128Mi"
-                    }
-                    requests = {
-                      cpu    = "500m"
-                      memory = "128Mi"
-                    }
-                  }
-                }
-              ]
-            }
+          }
+          duration = "60s"
+          selector = {
+            namespaces = ["chaos-target"]
           }
         }
       })
     }
 
+    # 実験の最大継続時間: 60秒後に自動終了
     parameter {
       key   = "maxDuration"
       value = "PT1M"
@@ -406,21 +374,10 @@ resource "aws_fis_experiment_template" "cpu_stress" {
   }
 
   target {
-    name           = "chaos-cluster"
-    resource_type  = "aws:eks:cluster"
-    selection_mode = "COUNT(1)"
-
-    resource_tag {
-      key   = "Project"
-      value = var.project
-    }
-
-    resource_tag {
-      key   = "Environment"
-      value = var.environment
-    }
-
-    parameters = {}
+    name            = "chaos-cluster"
+    resource_type   = "aws:eks:cluster"
+    selection_mode  = "COUNT(1)"
+    resource_arns   = [var.cluster_arn]
   }
 
   tags = merge(var.tags, {

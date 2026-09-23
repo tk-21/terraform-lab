@@ -8,7 +8,7 @@
 
 ## 1. ひとことで言うと
 
-このプロジェクトは、Amazon EKS 上のワークロードに AWS Fault Injection Service（FIS）で意図的な障害を起こし、その実験結果を EventBridge と Step Functions で回収し、Amazon Bedrock で日本語ポストモーテムを生成し、HTML レポートとして S3 に保存して Chatwork に通知する自動化基盤です。
+このプロジェクトは、Amazon EKS 上のワークロードに AWS Fault Injection Service（FIS）で意図的な障害を起こし、その実験結果を EventBridge と Step Functions で回収し、Amazon Bedrock で日本語ポストモーテムを生成し、HTML レポートとして S3 に保存して Amazon SNS に通知する自動化基盤です。
 
 設計の中心は次の 3 点です。
 
@@ -33,14 +33,14 @@ flowchart TD
     DC --> EKSAPI[EKS / Kubernetes Events]
 
     SFN --> BA[bedrock-analyzer Lambda]
-    BA --> BR[Amazon Bedrock<br/>Claude 3.5 Sonnet]
+    BA --> BR[Amazon Bedrock<br/>Claude Sonnet 4.6]
 
     SFN --> RF[report-formatter Lambda]
     RF --> S3[(S3 reports bucket)]
 
     SFN --> NT[notifier Lambda]
-    NT --> SM[Secrets Manager]
-    NT --> CW[Chatwork]
+    NT --> SNS[Amazon SNS topic]
+    SNS --> SUB[Email subscription]
 
     FIS --> EKS[EKS Cluster]
     EKS --> APP[chaos-target namespace<br/>sample-app]
@@ -64,7 +64,7 @@ sequenceDiagram
     participant N as notifier
     participant T as Bedrock
     participant X as S3
-    participant H as Chatwork
+    participant SNS as Amazon SNS
 
     U->>F: Start experiment
     F->>E: Experiment state change
@@ -82,13 +82,13 @@ sequenceDiagram
     R->>X: put_object + presigned URL
     R-->>S: report URL
     S->>N: Notify
-    N->>H: Post Chatwork message
+    N->>SNS: Publish notification
 ```
 
 ### 3.2 失敗時の流れ
 
 - `CollectData` / `AnalyzeWithBedrock` / `FormatReport` / `Notify` の各 Task には `Retry` と `Catch` が設定されています。
-- 失敗すると `ErrorNotify` ステートへ分岐し、`notifier` Lambda がエラーメッセージを Chatwork に送ります。
+- 失敗すると `ErrorNotify` ステートへ分岐し、`notifier` Lambda がエラーメッセージを Amazon SNS に送ります。
 - EventBridge から `fis-event-handler` への配信失敗時は SQS DLQ に退避されます。
 
 ## 4. リポジトリ構成
@@ -132,7 +132,7 @@ sequenceDiagram
 | `eks` | EKS クラスター、2つの node group、OIDC、EBS CSI addon | `cluster_name`, `cluster_endpoint` |
 | `fis` | 4つの実験テンプレート、StopCondition、ダッシュボード | 実験テンプレート ID 群 |
 | `s3` | HTML レポート保存バケット | `bucket_name`, `bucket_arn` |
-| `lambda` | 5つの Lambda、IAM、Logs、DynamoDB、Secrets Manager | 各 Lambda ARN |
+| `lambda` | 5つの Lambda、IAM、Logs、DynamoDB、SNS topic | 各 Lambda ARN |
 | `step_functions` | ポストモーテム生成ワークフロー | `state_machine_arn` |
 | `eventbridge` | FIS 完了イベントの捕捉と Lambda 起動 | Rule, Target, DLQ |
 
@@ -286,7 +286,7 @@ on error:
 | `CollectData` | 実験メタ情報 | 収集済み観測データ |
 | `AnalyzeWithBedrock` | 実験 + 観測データ | 構造化ポストモーテム JSON |
 | `FormatReport` | ポストモーテム JSON | S3 key, presigned URL |
-| `Notify` | レポート URL + 要約 | Chatwork 通知結果 |
+| `Notify` | レポート URL + 要約 | Amazon SNS 通知結果 |
 
 設計上の特徴:
 
@@ -322,7 +322,7 @@ on error:
 
 モデル:
 
-- `anthropic.claude-3-5-sonnet-20241022-v2:0`
+- `anthropic.claude-sonnet-4-6`
 
 出力仕様:
 
@@ -356,13 +356,13 @@ on error:
 
 ### 10.4 notifier
 
-`lambda/notifier/main.py` は、Secrets Manager から Chatwork 認証情報を取得して通知します。
+`lambda/notifier/main.py` は、Terraformで作成したSNSトピックへ通知を発行します。
 
 特徴:
 
-- `api_key` と `room_id` を 1 シークレットで管理
-- Lambda ウォームスタート中はシークレットをキャッシュ
-- 正常系とエラー系でメッセージテンプレートを分ける
+- Lambdaの `sns:Publish` 権限を通知トピックだけに限定
+- SNSトピックARNを環境変数で受け取る
+- 正常系とエラー系で件名とメッセージテンプレートを分ける
 
 ## 11. データ契約
 
@@ -426,7 +426,7 @@ on error:
 
 - Chaos 実験が本番相当ノードへ飛ばないこと
 - Lambda が不要な AWS API を叩けないこと
-- Chatwork API キーがコードに埋まらないこと
+- notifier Lambdaが指定SNSトピック以外へ発行できないこと
 - レポートが公開バケット化しないこと
 
 ### 12.2 具体策
@@ -435,7 +435,7 @@ on error:
 |---|---|
 | 実験対象の限定 | `ChaosTarget=true`、`chaos-target` namespace |
 | Lambda 権限 | 関数ごとに個別 IAM policy |
-| 秘密情報 | Secrets Manager |
+| 通知先制限 | SNSトピックARNを指定した最小権限IAM |
 | レポート公開 | S3 Public Access Block + presigned URL |
 | 重複実行防止 | DynamoDB ConditionExpression |
 | 追跡性 | CloudWatch Logs + X-Ray |
@@ -496,9 +496,9 @@ Terraform の `lambda` モジュールは各 Lambda について `main.py` だ�
 
 このため、設計意図としては「実験種別を下流へ渡す」ですが、現在の実装だけでは十分に安定していません。
 
-### 15.3 Chatwork メッセージの action item 表示
+### 15.3 SNSメッセージのaction item表示
 
-`bedrock-analyzer` の prompt は action item に `task` を要求していますが、`notifier` は `description` を読みに行っています。そのため、Chatwork 側ではアクションアイテム本文が空になる可能性があります。
+`notifier` は `bedrock-analyzer` の出力契約に合わせて action item の `task` を表示します。
 
 ### 15.4 自動 apply workflow
 
@@ -529,6 +529,6 @@ Terraform の `lambda` モジュールは各 Lambda について `main.py` だ�
 - EventBridge + Step Functions が制御面
 - CloudWatch / CloudTrail / K8s Events が観測面
 - Bedrock が解釈面
-- S3 + Chatwork が共有面
+- S3 + Amazon SNSが共有面
 
 を担当しており、これらが疎結合に連携することで、「実験して終わり」ではなく「実験から学習可能な成果物を残す」アーキテクチャになっています。

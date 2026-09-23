@@ -33,7 +33,7 @@ Step Functions（postmortem-workflow）
     │     - K8s Events（EKS APIサーバー経由）
     │
     ├─② bedrock-analyzer Lambda
-    │     - Claude Sonnet 3.5でポストモーテム生成
+    │     - Claude Sonnet 4.6でポストモーテム生成
     │     - 構造化出力バリデーション（6項目チェック）
     │
     ├─③ report-formatter Lambda
@@ -41,7 +41,7 @@ Step Functions（postmortem-workflow）
     │     - presigned URL生成（7日間有効）
     │
     └─④ notifier Lambda
-          - Chatwork通知
+          - Amazon SNS通知
           - presigned URL添付
 ```
 
@@ -99,7 +99,7 @@ eks-chaos-postmortem-generator/
 │   ├── report-formatter/              # HTMLレポート生成
 │   │   ├── main.py
 │   │   └── requirements.txt
-│   └── notifier/                      # Chatwork通知
+│   └── notifier/                      # Amazon SNS通知
 │       ├── main.py
 │       └── requirements.txt
 ├── k8s/
@@ -145,10 +145,10 @@ tags = {
 ### 設計方針
 - **Lambda runtime**: Python 3.12 arm64（全Lambda統一）
 - **IaC**: Terraform（モジュール構造）
-- **通知**: Chatwork API（Slackは使わない）
+- **通知**: Amazon SNS（メール購読）
 - **レポート保存**: S3 HTMLレポート + presigned URL
 - **重複排除**: DynamoDB（FIS実験IDをキーに冪等性保証）
-- **AI**: Bedrock Claude Sonnet 3.5（複雑な推論）
+- **AI**: Bedrock Claude Sonnet 4.6（複雑な推論）
 - **認証**: OIDC経由のGitHub Actions（アクセスキー禁止）
 - **可観測性**: AWS Lambda Powertools（構造化ログ・トレーシング）
 - **コメント**: 日本語インラインコメントで設計意図を明記

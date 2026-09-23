@@ -41,3 +41,8 @@ output "notifier_function_arn" {
   description = "notifier Lambda関数のARN（Step FunctionsのNotify/ErrorNotifyステートに設定）"
   value       = aws_lambda_function.notifier.arn
 }
+
+output "sns_topic_arn" {
+  description = "ポストモーテム通知用SNSトピックのARN"
+  value       = aws_sns_topic.postmortem_notifications.arn
+}
