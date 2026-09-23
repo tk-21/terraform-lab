@@ -80,9 +80,9 @@ resource "aws_iam_role_policy" "fis_event_handler" {
       {
         # Step Functions: ポストモーテムワークフローの起動のみ許可
         # Phase 3でstep_functions_arnが設定された場合のみ有効なポリシー
-        Sid    = "StepFunctionsStartExecution"
-        Effect = "Allow"
-        Action = ["states:StartExecution"]
+        Sid      = "StepFunctionsStartExecution"
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
         Resource = var.step_functions_arn != "" ? var.step_functions_arn : "arn:aws:states:*:${var.aws_account_id}:stateMachine:${var.project}-postmortem-workflow-${var.environment}"
       },
       {
@@ -229,43 +229,43 @@ resource "aws_iam_role_policy" "data_collector" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "CloudWatchLogsWrite"
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Sid      = "CloudWatchLogsWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.data_collector.arn}:*"
       },
       {
         # EKSクラスターのPod/Nodeログをフィルタ収集する
-        Sid    = "CloudWatchLogsRead"
-        Effect = "Allow"
-        Action = ["logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"]
+        Sid      = "CloudWatchLogsRead"
+        Effect   = "Allow"
+        Action   = ["logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"]
         Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/aws/eks/*:*"
       },
       {
         # Container InsightsメトリクスをCPU/Memory収集する
-        Sid    = "CloudWatchMetrics"
-        Effect = "Allow"
-        Action = ["cloudwatch:GetMetricStatistics", "cloudwatch:GetMetricData"]
+        Sid      = "CloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricStatistics", "cloudwatch:GetMetricData"]
         Resource = "*"
       },
       {
         # 実験期間中のEKS/EC2/FIS APIコール履歴を収集する
-        Sid    = "CloudTrailRead"
-        Effect = "Allow"
-        Action = ["cloudtrail:LookupEvents"]
+        Sid      = "CloudTrailRead"
+        Effect   = "Allow"
+        Action   = ["cloudtrail:LookupEvents"]
         Resource = "*"
       },
       {
         # K8s APIサーバーへのBearerトークン生成のためクラスター情報を取得する
-        Sid    = "EKSDescribe"
-        Effect = "Allow"
-        Action = ["eks:DescribeCluster"]
+        Sid      = "EKSDescribe"
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster"]
         Resource = "arn:aws:eks:${var.region}:${var.aws_account_id}:cluster/${var.eks_cluster_name != "" ? var.eks_cluster_name : "*"}"
       },
       {
-        Sid    = "XRayTracing"
-        Effect = "Allow"
-        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Sid      = "XRayTracing"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
       }
     ]
@@ -316,7 +316,7 @@ resource "aws_lambda_function_event_invoke_config" "data_collector" {
 
 # =============================================================================
 # bedrock-analyzer Lambda
-# 収集データをBedrock Claude Sonnet 3.5に渡してポストモーテムを生成する。
+# 収集データをBedrock Claude Sonnet 4.6に渡してポストモーテムを生成する。
 # timeout=120はBedrock推論時間（max_tokens=4096）を考慮した値。
 # =============================================================================
 
@@ -355,22 +355,22 @@ resource "aws_iam_role_policy" "bedrock_analyzer" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "CloudWatchLogsWrite"
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Sid      = "CloudWatchLogsWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.bedrock_analyzer.arn}:*"
       },
       {
-        # Claude Sonnet 3.5のみに限定してポストモーテム生成コストを制御する
-        Sid    = "BedrockInvokeModel"
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
-        Resource = "arn:aws:bedrock:${var.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+        # Claude Sonnet 4.6のみに限定してポストモーテム生成コストを制御する
+        Sid      = "BedrockInvokeModel"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
+        Resource = "arn:aws:bedrock:${var.region}::foundation-model/anthropic.claude-sonnet-4-6"
       },
       {
-        Sid    = "XRayTracing"
-        Effect = "Allow"
-        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Sid      = "XRayTracing"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
       }
     ]
@@ -379,7 +379,7 @@ resource "aws_iam_role_policy" "bedrock_analyzer" {
 
 resource "aws_lambda_function" "bedrock_analyzer" {
   function_name = "${var.project}-bedrock-analyzer-${var.environment}"
-  description   = "収集データをBedrock Claude Sonnet 3.5に渡してポストモーテムを生成し6項目バリデーション"
+  description   = "収集データをBedrock Claude Sonnet 4.6に渡してポストモーテムを生成し6項目バリデーション"
   role          = aws_iam_role.bedrock_analyzer.arn
 
   filename         = data.archive_file.bedrock_analyzer.output_path
@@ -399,7 +399,7 @@ resource "aws_lambda_function" "bedrock_analyzer" {
 
   environment {
     variables = {
-      BEDROCK_MODEL_ID        = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+      BEDROCK_MODEL_ID        = "anthropic.claude-sonnet-4-6"
       PROJECT_NAME            = var.project
       ENVIRONMENT             = var.environment
       AWS_ACCOUNT_ID          = var.aws_account_id
@@ -458,22 +458,22 @@ resource "aws_iam_role_policy" "report_formatter" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "CloudWatchLogsWrite"
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Sid      = "CloudWatchLogsWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.report_formatter.arn}:*"
       },
       {
         # reportsバケットのみにアクセスを制限（他バケットへのアクセス禁止）
-        Sid    = "S3ReportsAccess"
-        Effect = "Allow"
-        Action = ["s3:PutObject", "s3:GetObject"]
+        Sid      = "S3ReportsAccess"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
         Resource = var.s3_bucket_arn != "" ? "${var.s3_bucket_arn}/*" : "arn:aws:s3:::${var.project}-reports-${var.aws_account_id}-${var.environment}/*"
       },
       {
-        Sid    = "XRayTracing"
-        Effect = "Allow"
-        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Sid      = "XRayTracing"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
       }
     ]
@@ -522,24 +522,19 @@ resource "aws_lambda_function_event_invoke_config" "report_formatter" {
 }
 
 # =============================================================================
-# Secrets Manager: Chatwork APIキー管理
-# api_key と room_id を1シークレットで管理する。
-# 実際の値はterraform apply後にコンソールから手動設定する。
-# 7日間の削除保護を設定して誤削除を防止する。
+# SNS: ポストモーテム通知トピック
+# 購読設定は利用者がメールアドレスなどの通知先に合わせて追加する。
 # =============================================================================
 
-resource "aws_secretsmanager_secret" "chatwork_api_key" {
-  name                    = "${var.project}/chatwork-api-key-${var.environment}"
-  description             = "Chatwork APIキーとルームID。キー: api_key, room_id"
-  recovery_window_in_days = 7
+resource "aws_sns_topic" "postmortem_notifications" {
+  name = "${var.project}-postmortem-notifications-${var.environment}"
 
   tags = var.tags
 }
 
 # =============================================================================
 # notifier Lambda
-# ポストモーテムレポートのpresigned URLをChatwork APIで通知する。
-# APIキーはSecrets Managerから取得する（ハードコード禁止）。
+# ポストモーテムレポートのpresigned URLをAmazon SNSで通知する。
 # =============================================================================
 
 data "archive_file" "notifier" {
@@ -577,22 +572,22 @@ resource "aws_iam_role_policy" "notifier" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "CloudWatchLogsWrite"
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Sid      = "CloudWatchLogsWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.notifier.arn}:*"
       },
       {
-        # Chatwork APIキーのみSecrets Managerから取得（他シークレットへのアクセス禁止）
-        Sid    = "SecretsManagerGetChatworkKey"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = aws_secretsmanager_secret.chatwork_api_key.arn
+        # このプロジェクトの通知トピックだけに発行を限定する
+        Sid      = "SnsPublishPostmortemNotification"
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = aws_sns_topic.postmortem_notifications.arn
       },
       {
-        Sid    = "XRayTracing"
-        Effect = "Allow"
-        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Sid      = "XRayTracing"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
       }
     ]
@@ -601,7 +596,7 @@ resource "aws_iam_role_policy" "notifier" {
 
 resource "aws_lambda_function" "notifier" {
   function_name = "${var.project}-notifier-${var.environment}"
-  description   = "ポストモーテムレポートのpresigned URLをChatwork APIで通知する"
+  description   = "ポストモーテムレポートのpresigned URLをAmazon SNSで通知する"
   role          = aws_iam_role.notifier.arn
 
   filename         = data.archive_file.notifier.output_path
@@ -621,7 +616,7 @@ resource "aws_lambda_function" "notifier" {
 
   environment {
     variables = {
-      # room_idはapi_keyと同じシークレットに格納（Secrets Manager経由で取得）
+      SNS_TOPIC_ARN           = aws_sns_topic.postmortem_notifications.arn
       PROJECT_NAME            = var.project
       ENVIRONMENT             = var.environment
       AWS_ACCOUNT_ID          = var.aws_account_id

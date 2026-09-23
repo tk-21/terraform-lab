@@ -15,6 +15,10 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 3.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
   }
 
   # S3バックエンドでTerraformステートを管理
@@ -39,13 +43,25 @@ provider "aws" {
   }
 }
 
+# Kubernetes provider（EKS クラスター管理用）
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
+
+# EKS クラスター認証トークンの取得
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.cluster_name
+}
+
 # ============================================================
 # ローカル変数: 環境設定の一元管理
 # ============================================================
 
 locals {
-  project      = "eks-chaos-postmortem-generator"
-  environment  = "dev"
+  project     = "eks-chaos-postmortem-generator"
+  environment = "dev"
   # EKSクラスター名の命名規則: {project}-{environment}
   cluster_name = "eks-chaos-postmortem-dev"
 
@@ -98,7 +114,9 @@ module "fis" {
 
   project      = local.project
   environment  = local.environment
+  region       = "ap-northeast-1"
   cluster_name = module.eks.cluster_name
+  cluster_arn  = module.eks.cluster_arn
   tags         = local.tags
 }
 
@@ -174,4 +192,162 @@ module "eventbridge" {
   lambda_function_arn  = module.lambda.fis_event_handler_function_arn
   lambda_function_name = module.lambda.fis_event_handler_function_name
   tags                 = local.tags
+}
+
+# ============================================================
+# 環境アウトプット
+# ============================================================
+
+output "sns_topic_arn" {
+  description = "ポストモーテム通知用SNSトピックのARN"
+  value       = module.lambda.sns_topic_arn
+}
+
+# FIS実験テンプレート ID
+output "pod_kill_experiment_template_id" {
+  description = "Pod Kill実験テンプレートID"
+  value       = module.fis.pod_kill_experiment_template_id
+}
+
+output "node_termination_experiment_template_id" {
+  description = "Node Termination実験テンプレートID"
+  value       = module.fis.node_termination_experiment_template_id
+}
+
+output "network_latency_experiment_template_id" {
+  description = "Network Latency実験テンプレートID"
+  value       = module.fis.network_latency_experiment_template_id
+}
+
+output "cpu_stress_experiment_template_id" {
+  description = "CPU Stress実験テンプレートID"
+  value       = module.fis.cpu_stress_experiment_template_id
+}
+
+# EKS情報
+output "cluster_name" {
+  description = "EKSクラスター名"
+  value       = module.eks.cluster_name
+}
+
+output "cluster_endpoint" {
+  description = "EKSクラスターAPIエンドポイント"
+  value       = module.eks.cluster_endpoint
+}
+
+# S3レポートバケット
+output "s3_reports_bucket" {
+  description = "ポストモーテムHTMLレポート保存S3バケット名"
+  value       = module.s3.bucket_name
+}
+
+# ============================================================
+# aws-auth ConfigMap：FIS実行ロールのEKS RBAC認証設定
+# ============================================================
+
+# aws-auth ConfigMap へのノードロール設定（既存のマッピング）
+resource "kubernetes_config_map_v1_data" "aws_auth" {
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    mapRoles = yamlencode([
+      {
+        rolearn  = "arn:aws:iam::${var.aws_account_id}:role/eks-chaos-postmortem-generator-nodes-role-${local.environment}"
+        username = "system:node:{{EC2PrivateDNSName}}"
+        groups = [
+          "system:bootstrappers",
+          "system:nodes"
+        ]
+      }
+    ])
+  }
+
+  force = true
+}
+
+# FIS実行ロール ARN を出力（aws-auth 設定で使用）
+output "fis_execution_role_arn" {
+  description = "FIS実行IAMロールのARN（aws-auth設定用）"
+  value       = module.fis.fis_execution_role_arn
+}
+
+# ============================================================
+# FIS 用 Kubernetes RBAC 権限設定（ServiceAccount ベース）
+# ============================================================
+
+# Pod 削除権限（Pod Kill 実験用）
+resource "kubernetes_cluster_role_v1" "fis_pod_delete" {
+  metadata {
+    name = "fis-pod-delete"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods"]
+    verbs      = ["get", "list", "delete"]
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods/log"]
+    verbs      = ["get", "list"]
+  }
+}
+
+resource "kubernetes_cluster_role_binding_v1" "fis_pod_delete" {
+  metadata {
+    name = "fis-pod-delete"
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "fis-sa"
+    namespace = "chaos-target"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role_v1.fis_pod_delete.metadata[0].name
+  }
+}
+
+# Chaos Mesh リソース操作権限（Network Latency / CPU Stress 実験用）
+resource "kubernetes_cluster_role_v1" "fis_chaos_mesh" {
+  metadata {
+    name = "fis-chaos-mesh"
+  }
+
+  rule {
+    api_groups = ["chaos-mesh.org"]
+    resources  = ["networkchaos", "stresschaos", "podchaos"]
+    verbs      = ["create", "delete", "get", "list", "patch", "watch"]
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods", "nodes"]
+    verbs      = ["get", "list"]
+  }
+}
+
+resource "kubernetes_cluster_role_binding_v1" "fis_chaos_mesh" {
+  metadata {
+    name = "fis-chaos-mesh"
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "fis-sa"
+    namespace = "chaos-target"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role_v1.fis_chaos_mesh.metadata[0].name
+  }
 }

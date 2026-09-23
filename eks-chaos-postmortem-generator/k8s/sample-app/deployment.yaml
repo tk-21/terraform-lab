@@ -23,7 +23,7 @@ spec:
     metadata:
       labels:
         app: sample-app
-        chaos-target: "true"
+        chaos-target: pod-kill  # FIS Pod Kill 実験でこのセレクタを使用
     spec:
       # ChaosTarget=trueのノードグループにスケジューリング
       # これにより、Chaos実験がbaseline（本番相当）ノードに影響しない

@@ -26,7 +26,7 @@
     "AnalyzeWithBedrock": {
       "Type": "Task",
       "Resource": "${bedrock_analyzer_arn}",
-      "Comment": "収集データをBedrock Claude Sonnet 3.5でポストモーテム分析・6項目バリデーション",
+      "Comment": "収集データをBedrock Claude Sonnet 4.6でポストモーテム分析・6項目バリデーション",
       "Retry": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -68,7 +68,7 @@
     "Notify": {
       "Type": "Task",
       "Resource": "${notifier_arn}",
-      "Comment": "Chatworkへポストモーテムレポートのpresigned URLを通知",
+      "Comment": "Amazon SNSへポストモーテムレポートのpresigned URLを通知",
       "Retry": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -93,7 +93,7 @@
     "ErrorNotify": {
       "Type": "Task",
       "Resource": "${notifier_arn}",
-      "Comment": "ワークフロー失敗時にエラー内容をChatworkへ通知",
+      "Comment": "ワークフロー失敗時にエラー内容をAmazon SNSへ通知",
       "Parameters": {
         "error_mode": true,
         "error.$": "$.error",

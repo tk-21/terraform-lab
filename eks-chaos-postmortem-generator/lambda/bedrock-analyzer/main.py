@@ -1,6 +1,6 @@
 """
 bedrock-analyzer Lambda
-data-collectorの収集データをBedrock Claude Sonnet 3.5に渡してポストモーテムを生成する。
+data-collectorの収集データをBedrock Claude Sonnet 4.6に渡してポストモーテムを生成する。
 
 設計意図:
 - 収集データをBedrockへの入力に整形し、構造化されたポストモーテムを生成する
@@ -22,7 +22,7 @@ tracer = Tracer()
 bedrock_client = boto3.client("bedrock-runtime")
 
 BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-6"
 )
 
 # Bedrock出力バリデーション: CLAUDE.md準拠の6項目
@@ -154,7 +154,7 @@ def _build_user_prompt(
 
 
 def _invoke_bedrock(user_prompt: str) -> dict:
-    """Bedrock Claude Sonnet 3.5を呼び出してJSONレスポンスをパースする"""
+    """Bedrock Claude Sonnet 4.6を呼び出してJSONレスポンスをパースする"""
 
     response = bedrock_client.invoke_model(
         modelId=BEDROCK_MODEL_ID,

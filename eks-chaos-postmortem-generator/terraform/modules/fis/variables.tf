@@ -12,8 +12,18 @@ variable "environment" {
   type        = string
 }
 
+variable "region" {
+  description = "AWSリージョン"
+  type        = string
+}
+
 variable "cluster_name" {
   description = "FIS実験対象のEKSクラスター名"
+  type        = string
+}
+
+variable "cluster_arn" {
+  description = "FIS実験対象のEKSクラスターのARN"
   type        = string
 }
 
