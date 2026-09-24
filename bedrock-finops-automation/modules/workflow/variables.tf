@@ -30,8 +30,8 @@ variable "html_formatter_lambda_arn" {
   type        = string
 }
 
-variable "chatwork_notifier_lambda_arn" {
-  description = "Chatwork notifier Lambda ARN"
+variable "sns_notifier_lambda_arn" {
+  description = "SNS notifier Lambda ARN"
   type        = string
 }
 

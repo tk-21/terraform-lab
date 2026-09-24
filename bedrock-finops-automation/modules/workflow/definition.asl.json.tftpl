@@ -1,5 +1,5 @@
 {
-  "Comment": "bedrock-finops-automation: AWS 月次コストレポート自動生成ワークフロー\n  collector → anomaly-detector → ai-reporter → html-formatter → chatwork-notifier",
+  "Comment": "bedrock-finops-automation: AWS 月次コストレポート自動生成ワークフロー\n  collector → anomaly-detector → ai-reporter → html-formatter → sns-notifier",
   "StartAt": "CollectCostData",
   "States": {
 
@@ -114,7 +114,7 @@
       },
       "ResultPath": "$",
       "OutputPath": "$.Payload",
-      "Next": "SendChatworkNotification",
+      "Next": "SendSnsNotification",
       "Retry": [
         {
           "ErrorEquals": [
@@ -137,12 +137,12 @@
       ]
     },
 
-    "SendChatworkNotification": {
+    "SendSnsNotification": {
       "Type": "Task",
-      "Comment": "月次コストレポートの要約と HTML レポートリンクを Chatwork に送信する",
+      "Comment": "月次コストレポートの要約と HTML レポートリンクを SNS 経由で Email 送信する",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${chatwork_notifier_lambda_arn}",
+        "FunctionName": "${sns_notifier_lambda_arn}",
         "Payload.$": "$"
       },
       "ResultPath": "$",
@@ -150,7 +150,7 @@
       "Next": "WorkflowSucceeded",
       "Retry": [
         {
-          "Comment": "Chatwork API の一時障害に対してリトライ（通知失敗でもワークフロー全体は成功扱いにするためリトライ上限を抑える）",
+          "Comment": "SNS Publish の一時障害に対してリトライ（通知失敗でもワークフロー全体は成功扱いにするためリトライ上限を抑える）",
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",

@@ -8,16 +8,6 @@ variable "environment" {
   type        = string
 }
 
-variable "report_bucket_name" {
-  description = "S3 bucket name for storing cost reports"
-  type        = string
-}
-
-variable "report_bucket_arn" {
-  description = "S3 bucket ARN for IAM policy"
-  type        = string
-}
-
 variable "dynamodb_table_name" {
   description = "DynamoDB table name for report history"
   type        = string
@@ -26,6 +16,12 @@ variable "dynamodb_table_name" {
 variable "dynamodb_table_arn" {
   description = "DynamoDB table ARN for IAM policy"
   type        = string
+}
+
+variable "email_addresses" {
+  description = "List of email addresses to subscribe to SNS topic"
+  type        = list(string)
+  default     = []
 }
 
 variable "lambda_memory_size" {
@@ -38,16 +34,4 @@ variable "lambda_timeout" {
   description = "Lambda timeout in seconds"
   type        = number
   default     = 60
-}
-
-variable "chatwork_api_token_secret_name" {
-  description = "Secrets Manager のシークレット名（Chatwork API トークン）"
-  type        = string
-  default     = "bedrock-finops-automation/chatwork-api-token"
-}
-
-variable "chatwork_room_id_parameter_name" {
-  description = "SSM Parameter Store のパラメータ名（Chatwork ルーム ID）"
-  type        = string
-  default     = "/bedrock-finops-automation/chatwork-room-id"
 }

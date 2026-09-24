@@ -4,6 +4,6 @@ output "github_actions_role_arn" {
 }
 
 output "oidc_provider_arn" {
-  description = "GitHub Actions OIDC Provider ARN"
-  value       = aws_iam_openid_connect_provider.github_actions.arn
+  description = "GitHub Actions OIDC Provider ARN（他プロジェクトが作成済みの既存リソースを参照）"
+  value       = data.aws_iam_openid_connect_provider.github_actions.arn
 }

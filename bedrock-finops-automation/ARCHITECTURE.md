@@ -33,7 +33,7 @@ AWS の月次コストを自動で収集・分析・通知する FinOps 自動�
       → anomaly-detector : 前月比・集中度・新規サービスを検知
       → ai-reporter      : Bedrock（Claude 3 Haiku）で AI 所見を生成
       → html-formatter   : HTML レポートを S3 に保存し署名付き URL を発行
-      → chatwork-notifier: 要約 + URL を Chatwork に通知
+      → sns-notifier     : 要約 + URL を SNS 経由で Email 通知
 ```
 
 **技術選定の理由**
@@ -43,7 +43,7 @@ AWS の月次コストを自動で収集・分析・通知する FinOps 自動�
 | Lambda（Python 3.12） | サーバーレス。月1回実行のため常時稼働不要 |
 | Step Functions STANDARD | 実行履歴を1年保持。監査証跡・デバッグに活用 |
 | Claude 3 Haiku | コスト最適化。レポート生成は軽量タスクのため Sonnet/Opus 不要 |
-| Chatwork | 通知先として採用。API v2 で標準ライブラリ（urllib）のみで送信可能 |
+| SNS（Email） | 通知先として採用。機密情報の管理が不要で、Terraform で購読者を宣言的に管理できる |
 | OIDC 認証 | アクセスキー禁止。GitHub Actions からの AWS 認証を OIDC で実現 |
 
 ---
@@ -92,11 +92,9 @@ AWS の月次コストを自動で収集・分析・通知する FinOps 自動�
 │  │    │                    ──────── S3 Presigned URL (7日)  │   │
 │  │    │                    ──────── DynamoDB: status=html_generated│
 │  │    ▼                                                     │   │
-│  │  SendChatworkNotification                                │   │
-│  │    ├── Lambda: chatwork-notifier                         │   │
-│  │    │    ├── Secrets Manager: Chatwork API token          │   │
-│  │    │    ├── SSM Parameter Store: Chatwork room ID        │   │
-│  │    │    └── Chatwork API v2                              │   │
+│  │  SendSnsNotification                                      │   │
+│  │    ├── Lambda: sns-notifier                               │   │
+│  │    │    └── SNS Topic: cost-report-dev                    │   │
 │  │    │                    ──────── DynamoDB: status=completed│  │
 │  │    ▼                                                     │   │
 │  │  WorkflowSucceeded / WorkflowFailed                      │   │
@@ -117,7 +115,7 @@ AWS の月次コストを自動で収集・分析・通知する FinOps 自動�
 └─────────────────────────────────────────────────────────────────┘
                           │
                           ▼
-                     Chatwork Room
+                   SNS Topic → Email Subscribers
 ```
 
 ---
@@ -147,7 +145,7 @@ bedrock-finops-automation/
 │   ├── anomaly-detector/   # 異常検知 Lambda
 │   ├── ai-reporter/        # AI レポート生成 Lambda（Bedrock呼び出し）
 │   ├── html-formatter/     # HTML 整形 Lambda（Presigned URL 発行）
-│   ├── chatwork-notifier/  # Chatwork 通知 Lambda
+│   ├── sns-notifier/       # SNS Email 通知 Lambda
 │   ├── workflow/           # Step Functions ステートマシン
 │   └── scheduler/          # EventBridge 月次スケジュール
 │
@@ -247,7 +245,7 @@ JSON パース失敗時はフォールバック（`risk_level: UNKNOWN`）でワ
 - HTML を標準ライブラリのみで生成（外部テンプレートエンジン不使用）
 - XSS 対策: `_escape()` 関数で全ユーザー由来データをエスケープ
 - S3 に `html/{YYYY-MM}/report.html` として保存（`Content-Type: text/html`）
-- **Presigned URL** を7日間有効で発行（Chatwork から直接閲覧可能）
+- **Presigned URL** を7日間有効で発行（メール受信者がブラウザから直接閲覧可能）
 
 **レポート構成**:
 - コスト概要（当月・前月・前月比・異常件数）4つのメトリクスカード
@@ -255,18 +253,18 @@ JSON パース失敗時はフォールバック（`risk_level: UNKNOWN`）でワ
 - 異常検知テーブル（重要度別に色分け）
 - AI 所見（リスクレベルバッジ + サマリー + 注目ポイント + 改善提案）
 
-### 4.6 chatwork-notifier
+### 4.6 sns-notifier
 
-**Lambda**: `{project_name}-chatwork-notifier-{env}`
+**Lambda**: `{project_name}-sns-notifier-{env}`
 
-- HTTP 通信: 標準ライブラリ `urllib` のみ使用（`requests` 等の外部依存なし）
-- Chatwork 記法: `[info][title]...[/title]...[/info]` でボックス表示
-- AI サマリーは先頭100文字に切り詰めて通知メッセージを簡潔に保つ
-- HIGH 重要度の異常のみ本文に詳細を展開（MEDIUM/LOW は件数のみ）
+- SNS Topic（`{project_name}-cost-report-{env}`）に `sns:Publish` するのみ。外部 API 依存なし
+- html-formatter が既に発行した Presigned URL をそのまま利用（自身では S3 にアクセスしない）
+- 本文はプレーンテキストで、コスト概要・異常検知（severity + description）・AI 所見・レポートリンクを整形
+- SNS Topic への Email サブスクリプションは Terraform（`aws_sns_topic_subscription`）で宣言的に管理
 
-**機密情報の取得先**:
-- API トークン: Secrets Manager（`{project_name}/chatwork-api-token`）
-- ルーム ID: SSM Parameter Store（String 型、非機密のため安価な SSM を使用）
+**購読者の管理**:
+- `environments/dev/terraform.tfvars` の `notification_email_addresses` にメールアドレスを列挙
+- `apply` 後、各メールアドレスに AWS から届く購読確認メールを承認するまで通知は届かない
 
 ### 4.7 workflow
 
@@ -286,7 +284,7 @@ JSON パース失敗時はフォールバック（`risk_level: UNKNOWN`）でワ
 | DetectAnomalies | 5 | 2 | 2 |
 | GenerateAIReport | 10 | 2 | 2（Bedrock スロットリング対策） |
 | FormatHTMLReport | 5 | 2 | 2 |
-| SendChatworkNotification | 10 | 2 | 2 |
+| SendSnsNotification | 10 | 2 | 2 |
 
 ### 4.8 scheduler
 
@@ -360,13 +358,13 @@ html-formatter がマージして追加:
   }
 }
 
-chatwork-notifier の最終返り値（スリム化）:
+sns-notifier の最終返り値:
 {
-  "report_id": "finops-202501-xxxxxxxx",
-  "report_date": "2025-01",
-  "status": "completed",
-  "chatwork_message_id": "1234567890",
-  "html_s3_key": "html/2025-01/report.html"
+  ...（html-formatter の全フィールド）,
+  "notification": {
+    "sns_topic_arn": "arn:aws:sns:ap-northeast-1:...:bedrock-finops-automation-cost-report-dev",
+    "sent_at": "2025-01-01T09:05:00+00:00"
+  }
 }
 ```
 
@@ -407,7 +405,6 @@ chatwork-notifier の最終返り値（スリム化）:
 | `has_high_severity` | BOOL | HIGH 重要度の異常があるか |
 | `ai_risk_level` | S | AI が判定したリスクレベル |
 | `html_s3_key` | S | HTML レポートの S3 キー |
-| `chatwork_message_id` | S | Chatwork のメッセージ ID |
 | `created_at` | S | ISO 8601 UTC |
 | `updated_at` | S | ISO 8601 UTC（各ステップで更新） |
 | `completed_at` | S | ISO 8601 UTC（最終ステップで設定） |
@@ -437,7 +434,15 @@ Confused Deputy 問題を防ぐため、全ての信頼ポリシーに `aws:Sour
 | `secretsmanager:GetSecretValue` | `arn:...:secret:{project_name}/*` | プロジェクト名プレフィックスに限定 |
 | CloudWatch Logs | マネージドポリシー（AWSLambdaBasicExecutionRole） | |
 
-※ anomaly-detector、ai-reporter、html-formatter、chatwork-notifier も同様のパターン（アクセスするプレフィックスが異なる）
+※ anomaly-detector、ai-reporter、html-formatter も同様のパターン（アクセスするプレフィックスが異なる）
+
+### sns-notifier Lambda
+
+| アクション | リソース | 理由 |
+|-----------|---------|------|
+| `sns:Publish` | SNS Topic ARN（cost-report） | 対象 Topic に限定 |
+| `dynamodb:UpdateItem`, `dynamodb:GetItem` | `{table_arn}` | 対象テーブルに限定 |
+| CloudWatch Logs | マネージドポリシー（AWSLambdaBasicExecutionRole） | |
 
 ### Step Functions
 
@@ -465,19 +470,19 @@ Confused Deputy 問題を防ぐため、全ての信頼ポリシーに `aws:Sour
 
 | 情報 | 管理場所 | 理由 |
 |------|---------|------|
-| Chatwork API トークン | Secrets Manager | 高機密。自動ローテーション対応 |
-| Chatwork ルーム ID | SSM Parameter Store（String） | 機密性低。SSM は無料枠あり（Secrets Manager は $0.40/月） |
+| 通知先メールアドレス | Terraform 変数（`notification_email_addresses`） | 機密情報ではないため tfvars で管理 |
 | AWS 認証情報 | OIDC（アクセスキーなし） | キー漏洩リスクゼロ |
 | GitHub Secrets | `AWS_ROLE_ARN` | bootstrap の output から取得した IAM ロール ARN |
 
-Secrets Manager のシークレット命名規則: `{project_name}/{key}`
-例: `bedrock-finops-automation/chatwork-api-token`
+SNS Email 通知への移行により、Secrets Manager / SSM Parameter Store への機密情報登録は不要になった。
 
 ---
 
 ## 10. CI/CD パイプライン
 
-**ファイル**: `.github/workflows/terraform.yml`
+**ファイル**: `terraform-lab/.github/workflows/bedrock-finops-terraform.yml`（モノレポ `terraform-lab` のルート直下に配置。GitHub Actions はリポジトリルートの `.github/workflows/` しか認識しないため、`bedrock-finops-automation/` のサブディレクトリには置けない）
+
+`paths` / `working-directory` はすべて `bedrock-finops-automation/` プレフィックス付きで指定し、他プロジェクトの変更で誤発火しないようにしている。
 
 ```
 PR オープン/更新:
@@ -513,7 +518,7 @@ main マージ:
 | DynamoDB PAY_PER_REQUEST | 月1回実行のためプロビジョン不要 |
 | S3 90日→Glacier移行、1年後削除 | ストレージコスト最小化 |
 | Cost Explorer API 月数回以内（1回$0.01） | API コスト管理 |
-| SSM Parameter Store（ルーム ID） | Secrets Manager（$0.40/月）を使わない |
+| SNS Email 通知 | 追加コストなし（Secrets Manager の $0.40/月も不要） |
 | EventBridge スケジュール（dev: DISABLED） | 開発中の誤発動防止 |
 
 ---
@@ -522,7 +527,7 @@ main マージ:
 
 **Lambda レベル**:
 - Bedrock JSON パース失敗: フォールバックレスポンスを返してワークフローを継続
-- Chatwork API HTTP エラー: `urllib.error.HTTPError` をキャッチしてログ記録後に再スロー
+- SNS Publish エラー: `ClientError` をキャッチしてログ記録・DynamoDB を `notify_failed` に更新後に再スロー
 
 **Step Functions レベル**:
 - 各ステートでリトライ設定（Lambda スロットリング・一時障害対応）
@@ -555,23 +560,19 @@ terraform init
 terraform apply -var="github_owner=YOUR_GITHUB_USERNAME"
 # 出力された github_actions_role_arn を GitHub Secrets > AWS_ROLE_ARN に登録
 
-# Step 2: Secrets Manager にシークレットを作成（手動）
-aws secretsmanager create-secret \
-  --name "bedrock-finops-automation/chatwork-api-token" \
-  --secret-string '{"api_token": "YOUR_CHATWORK_TOKEN"}'
+# Step 2: 通知先メールアドレスを terraform.tfvars に設定（手動）
+# environments/dev/terraform.tfvars に notification_email_addresses を追加
+#   notification_email_addresses = ["your-email@example.com"]
 
-# Step 3: SSM Parameter Store にルーム ID を登録（手動）
-aws ssm put-parameter \
-  --name "/bedrock-finops-automation/chatwork-room-id" \
-  --value "YOUR_ROOM_ID" \
-  --type String
-
-# Step 4: dev 環境の Terraform 適用（初回のみローカルから、以降は GitHub Actions）
+# Step 3: dev 環境の Terraform 適用（初回のみローカルから、以降は GitHub Actions）
 cd environments/dev/
 terraform init
 terraform plan
 # ※ apply はユーザー自身が実行（CLAUDE.md ルール）
 terraform apply
+
+# Step 4: SNS の購読確認メールを承認する
+# notification_email_addresses 宛に届く Confirm subscription リンクをクリック
 
 # Step 5: 動作確認（Step Functions を手動実行）
 aws stepfunctions start-execution \

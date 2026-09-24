@@ -27,3 +27,9 @@ variable "cost_center" {
   type        = string
   default     = "personal"
 }
+
+variable "notification_email_addresses" {
+  description = "月次コストレポートの通知先メールアドレス一覧（SNS Email購読）"
+  type        = list(string)
+  default     = []
+}

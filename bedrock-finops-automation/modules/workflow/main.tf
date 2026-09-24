@@ -3,7 +3,7 @@
 # Step Functions ステートマシン（FinOps レポート生成ワークフロー）
 #
 # 実行順序:
-#   collector → anomaly-detector → ai-reporter → html-formatter → chatwork-notifier
+#   collector → anomaly-detector → ai-reporter → html-formatter → sns-notifier
 # ============================================================
 
 data "aws_caller_identity" "current" {}
@@ -54,12 +54,12 @@ resource "aws_iam_role_policy" "state_machine_lambda" {
           var.anomaly_detector_lambda_arn,
           var.ai_reporter_lambda_arn,
           var.html_formatter_lambda_arn,
-          var.chatwork_notifier_lambda_arn,
+          var.sns_notifier_lambda_arn,
           "${var.collector_lambda_arn}:*",
           "${var.anomaly_detector_lambda_arn}:*",
           "${var.ai_reporter_lambda_arn}:*",
           "${var.html_formatter_lambda_arn}:*",
-          "${var.chatwork_notifier_lambda_arn}:*",
+          "${var.sns_notifier_lambda_arn}:*",
         ]
       }
     ]
@@ -139,11 +139,11 @@ resource "aws_sfn_state_machine" "finops_workflow" {
 
   # ASL 定義は templatefile() で Lambda ARN を注入（definition.asl.json.tftpl）
   definition = templatefile("${path.module}/definition.asl.json.tftpl", {
-    collector_lambda_arn         = var.collector_lambda_arn
-    anomaly_detector_lambda_arn  = var.anomaly_detector_lambda_arn
-    ai_reporter_lambda_arn       = var.ai_reporter_lambda_arn
-    html_formatter_lambda_arn    = var.html_formatter_lambda_arn
-    chatwork_notifier_lambda_arn = var.chatwork_notifier_lambda_arn
+    collector_lambda_arn        = var.collector_lambda_arn
+    anomaly_detector_lambda_arn = var.anomaly_detector_lambda_arn
+    ai_reporter_lambda_arn      = var.ai_reporter_lambda_arn
+    html_formatter_lambda_arn   = var.html_formatter_lambda_arn
+    sns_notifier_lambda_arn     = var.sns_notifier_lambda_arn
   })
 
   logging_configuration {

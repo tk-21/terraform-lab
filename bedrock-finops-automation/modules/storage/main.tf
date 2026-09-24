@@ -57,6 +57,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports" {
     id     = "reports-lifecycle"
     status = "Enabled"
 
+    # 空の filter = バケット全体に適用（AWS provider v5 の必須属性）
+    filter {}
+
     # 非カレントバージョン（上書きされた古いバージョン）は30日で削除
     noncurrent_version_expiration {
       noncurrent_days = 30

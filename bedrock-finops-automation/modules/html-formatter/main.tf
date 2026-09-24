@@ -52,9 +52,9 @@ resource "aws_iam_role_policy" "html_formatter" {
       },
       # DynamoDB: ステータス更新
       {
-        Sid    = "DynamoDBHistoryUpdate"
-        Effect = "Allow"
-        Action = ["dynamodb:UpdateItem", "dynamodb:GetItem"]
+        Sid      = "DynamoDBHistoryUpdate"
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem", "dynamodb:GetItem"]
         Resource = [var.dynamodb_table_arn]
       }
     ]

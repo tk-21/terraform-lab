@@ -35,7 +35,7 @@ PROJECT_NAME = os.environ.get("PROJECT_NAME", "bedrock-finops-automation")
 
 # ============================================================
 # Secrets Manager 参照パターン
-# （chatwork-notifier など他の Lambda でも同様に使用する共通パターン）
+# （他の Lambda でも同様に使用する共通パターン）
 # ============================================================
 
 def get_secret(secret_name: str) -> dict:
@@ -43,7 +43,7 @@ def get_secret(secret_name: str) -> dict:
     Secrets Manager からシークレットを取得する。
 
     シークレット命名規則: "{project_name}/{key}"
-    例: "bedrock-finops-automation/chatwork-api-token"
+    例: "bedrock-finops-automation/api-key"
 
     Args:
         secret_name: Secrets Manager のシークレット名（フルパス）

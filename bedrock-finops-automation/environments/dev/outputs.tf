@@ -53,14 +53,19 @@ output "html_formatter_lambda_function_name" {
   value       = module.html_formatter.lambda_function_name
 }
 
-output "chatwork_notifier_lambda_arn" {
-  description = "Chatwork notifier Lambda function ARN"
-  value       = module.chatwork_notifier.lambda_arn
+output "sns_notifier_lambda_arn" {
+  description = "SNS notifier Lambda function ARN"
+  value       = module.sns_notifier.lambda_arn
 }
 
-output "chatwork_notifier_lambda_function_name" {
-  description = "Chatwork notifier Lambda function name"
-  value       = module.chatwork_notifier.lambda_function_name
+output "sns_notifier_lambda_function_name" {
+  description = "SNS notifier Lambda function name"
+  value       = module.sns_notifier.lambda_name
+}
+
+output "sns_topic_arn" {
+  description = "SNS Topic ARN for cost report notifications"
+  value       = module.sns_notifier.sns_topic_arn
 }
 
 output "state_machine_arn" {

@@ -3,9 +3,9 @@
 ## プロジェクト概要
 
 AWS Cost ExplorerとAmazon Bedrock（Claude）を使って、
-月次コストレポートを自動生成・Chatwork通知するFinOps自動化基盤。
+月次コストレポートを自動生成・Email通知するFinOps自動化基盤。
 
-コスト収集 → 異常検知 → AIレポート生成 → Chatwork通知 を
+コスト収集 → 異常検知 → AIレポート生成 → Email通知 を
 Step Functionsでオーケストレーションする。
 
 ---
@@ -21,7 +21,7 @@ Step Functionsでオーケストレーションする。
 | Lambda言語 | Python 3.12 |
 | AIモデル | claude-3-haiku（コスト最適化） |
 | ワークフロー | Step Functions |
-| 通知先 | Chatwork |
+| 通知先 | SNS（Email） |
 
 ---
 
@@ -70,12 +70,12 @@ bedrock-finops-automation/
     │   ├── outputs.tf
     │   └── src/
     │       └── index.py
-    ├── chatwork-notifier/             ← Chatwork通知Lambda
+    ├── sns-notifier/                  ← SNSメール通知Lambda
     │   ├── main.tf
     │   ├── variables.tf
     │   ├── outputs.tf
     │   └── src/
-    │       └── index.py               ← Chatwork API呼び出し
+    │       └── index.py               ← SNS publish + Presigned URL
     ├── workflow/                      ← Step Functions定義
     │   ├── main.tf
     │   ├── variables.tf
@@ -100,7 +100,7 @@ Step Functions
   ├──▶ anomaly-detector : 前月比・スパイク・サービス集中の異常検知
   ├──▶ ai-reporter      : Bedrock（Claude Haiku）でAI所見生成
   ├──▶ html-formatter   : HTMLレポート整形 → S3保存
-  └──▶ chatwork-notifier: 要約 + S3リンクをChatworkに通知
+  └──▶ sns-notifier     : 要約 + Presigned URLをEmail通知
 ```
 
 ---
@@ -137,10 +137,7 @@ tags = {
 
 ## 機密情報の管理
 
-| 情報 | 管理場所 |
-|------|---------|
-| Chatwork APIトークン | Secrets Manager |
-| ChatworkルームID | Systems Manager Parameter Store |
+SNS Email通知は機密情報を必要としない（メールアドレスはTerraformで管理）
 
 ---
 
@@ -161,7 +158,7 @@ storage
          └──▶ anomaly-detector
                 └──▶ ai-reporter
                        └──▶ html-formatter
-                              └──▶ chatwork-notifier
+                              └──▶ sns-notifier
 
 全モジュール ──▶ workflow（Step Functions）
 workflow    ──▶ scheduler（EventBridge）
@@ -174,6 +171,6 @@ workflow    ──▶ scheduler（EventBridge）
 | Week | 対象モジュール |
 |------|--------------|
 | 1 | storage + collector + anomaly-detector |
-| 2 | ai-reporter + html-formatter + chatwork-notifier |
+| 2 | ai-reporter + html-formatter + sns-notifier |
 | 3 | workflow（Step Functions）+ scheduler（EventBridge）|
 | 4 | GitHub Actions CI/CD + 統合テスト |
