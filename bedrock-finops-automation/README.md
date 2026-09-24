@@ -2,6 +2,8 @@
 
 AWS Cost Explorer と Amazon Bedrock を使って、月次コストレポートを自動生成し、Email に通知する FinOps 自動化基盤です。
 
+**一言で言うと**: AWS の請求額を毎月自動でチェックし、AI が所見・改善提案を添えた要点をメールで送ってくれる仕組みを、Terraform の設計・IAM 最小権限・サーバーレス連携（Lambda × Step Functions）の練習を兼ねて自分で構築する個人学習プロジェクトです。
+
 > **注記（モノレポ構成）**: このディレクトリはモノレポ `terraform-lab` の一プロジェクトです。GitHub リポジトリは `terraform-lab` であり、`bedrock-finops-automation` という単独リポジトリは存在しません。GitHub Actions の workflow ファイルもリポジトリルート（`terraform-lab/.github/workflows/`）に配置されています（GitHub Actions はリポジトリルートの `.github/workflows/` しか認識しないため）。
 
 ## このハンズオンで得られること
@@ -13,7 +15,7 @@ AWS Cost Explorer と Amazon Bedrock を使って、月次コストレポート�
 3. Step Functions を中心に、Lambda を連携させたバッチワークフローの作り方
 4. Cost Explorer のデータを収集し、異常検知や月次レポート生成につなげる考え方
 5. Amazon Bedrock を使って、コスト分析コメントや改善提案を自動生成する実装パターン
-6. S3、DynamoDB、Secrets Manager、SSM Parameter Store を組み合わせた実運用寄りの設計
+6. S3、DynamoDB、SNS を組み合わせた実運用寄りの設計
 7. 手動テストから定期実行の有効化まで、自動化基盤を段階的に立ち上げる進め方
 
 毎月 1 日 09:00 JST に Step Functions が起動し、次の処理を順番に実行します。
