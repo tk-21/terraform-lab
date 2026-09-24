@@ -61,9 +61,9 @@ resource "aws_iam_role_policy" "ai_reporter" {
       },
       # DynamoDB: ステータス更新
       {
-        Sid    = "DynamoDBHistoryUpdate"
-        Effect = "Allow"
-        Action = ["dynamodb:UpdateItem", "dynamodb:GetItem"]
+        Sid      = "DynamoDBHistoryUpdate"
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem", "dynamodb:GetItem"]
         Resource = [var.dynamodb_table_arn]
       }
     ]
@@ -107,11 +107,11 @@ resource "aws_lambda_function" "ai_reporter" {
 
   environment {
     variables = {
-      REPORT_BUCKET_NAME = var.report_bucket_name
+      REPORT_BUCKET_NAME  = var.report_bucket_name
       DYNAMODB_TABLE_NAME = var.dynamodb_table_name
-      ENVIRONMENT        = var.environment
-      PROJECT_NAME       = var.project_name
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
+      ENVIRONMENT         = var.environment
+      PROJECT_NAME        = var.project_name
+      BEDROCK_MODEL_ID    = var.bedrock_model_id
     }
   }
 

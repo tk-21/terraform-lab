@@ -35,20 +35,11 @@ provider "aws" {
 # GitHub Actions OIDC Provider
 # ============================================================
 
-# GitHub Actions の OIDC エンドポイントを AWS に登録する
-# 同一 AWS アカウントで既に登録済みの場合は data source で参照する
-resource "aws_iam_openid_connect_provider" "github_actions" {
+# GitHub Actions の OIDC エンドポイントは AWS アカウントに1つしか登録できない。
+# このモノレポ（terraform-lab）内の他プロジェクトが既に登録済みのため、
+# 新規作成せず既存の Provider を参照する。
+data "aws_iam_openid_connect_provider" "github_actions" {
   url = "https://token.actions.githubusercontent.com"
-
-  # GitHub Actions の OIDC トークンを受け取る対象（audience）
-  client_id_list = ["sts.amazonaws.com"]
-
-  # GitHub OIDC Provider のサーバー証明書 thumbprint
-  # 参考: https://github.blog/changelog/2022-01-13-github-actions-update-on-oidc-based-deployments-to-aws/
-  thumbprint_list = [
-    "6938fd4d98bab03faadb97b34396831e3780aea1",
-    "1c58a3a8518e8759bf075b76b750d4f2df264fcd", # 2023年追加の中間 CA
-  ]
 }
 
 # ============================================================
@@ -65,7 +56,7 @@ resource "aws_iam_role" "github_actions" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
+          Federated = data.aws_iam_openid_connect_provider.github_actions.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {

@@ -249,7 +249,7 @@ def generate_presigned_url(s3_key: str, expires_in: int = 604800) -> str:
     S3 オブジェクトの署名付き URL を生成する。
 
     デフォルト有効期限: 7 日間（604800 秒）
-    Chatwork 通知に含めて受信者がブラウザで閲覧できるようにする。
+    Email 通知に含めて受信者がブラウザで閲覧できるようにする。
     """
     s3 = boto3.client("s3")
     url = s3.generate_presigned_url(
@@ -288,7 +288,7 @@ def handler(event: dict, context) -> dict:
         event: ai-reporter Lambda の返り値
 
     Returns:
-        event に html_report を追加した dict（chatwork-notifier への入力）
+        event に html_report を追加した dict（sns-notifier への入力）
     """
     logger.info(f"Generating HTML report for: {event.get('report_id')}")
 

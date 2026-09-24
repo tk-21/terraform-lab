@@ -69,7 +69,7 @@ resource "aws_iam_role_policy" "collector" {
         Resource = [var.dynamodb_table_arn]
       },
       # Secrets Manager: プロジェクト名プレフィックスのシークレットのみ取得可
-      # （Chatwork APIトークンなど、他Lambdaと共通のパターン）
+      # （他Lambdaと共通のシークレット取得パターン）
       {
         Sid    = "SecretsManagerRead"
         Effect = "Allow"
