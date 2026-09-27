@@ -1,5 +1,25 @@
 # ECS Fargate + ALB + RDS ハンズオン（Terraform + Ansible）
 
+## このハンズオンで得られること
+
+* **ECS Fargate の正しいデプロイフローの理解**
+  TaskDefinitionの複製・書き換え・新revision登録・Service更新という、実務でも使う一連の流れを手を動かして体験できる
+* **Dockerイメージを digest（sha256）指定でデプロイする安全な方法**
+  タグ運用にありがちな「デプロイしたはずのイメージと実際に動いているものが違う」事故を構造的に防ぐ手法が身につく
+* **Terraform（基盤）と Ansible（デプロイ）の責務分離という実務パターン**
+  「IaCにアプリのビルドをさせない」設計思想を、実際に動くコードで理解できる
+* **ALB → ECS → RDS の3層構成とセキュリティグループの最小権限設計**
+  `alb-sg → ecs-sg → db-sg` という一方向の許可チェーンを、実際のTerraformコードで確認できる
+* **失敗したときに自分で原因を切り分ける力**
+  `services-stable` が終わらない、イメージが取得できない等、ECS運用で頻発するトラブルの見方が分かる
+* **ECS one-off task（DBマイグレーション用タスク）の実行方法**
+  Webサービス本体とは別に、コマンドを上書きして単発実行するタスクの組み方が分かる
+
+> このリポジトリのより詳細な構成・設計判断・図解は [ARCHITECTURE.md](ARCHITECTURE.md) にまとめています。
+> 「まず動かしたい」場合は本READMEを、「なぜこの設計なのか」を知りたい場合は ARCHITECTURE.md を参照してください。
+
+---
+
 このリポジトリは、
 **Terraform で AWS 基盤を構築し、Ansible でアプリケーションを安全にデプロイする**
 実務寄りのハンズオン環境です。
@@ -33,6 +53,8 @@
                      RDS
 ```
 
+図解付きの詳細なアーキテクチャは [ARCHITECTURE.md](ARCHITECTURE.md#1-システム全体像) を参照してください。
+
 ---
 
 ## なぜ Terraform + Ansible なのか？
@@ -54,19 +76,22 @@
 .
 ├── terraform/
 │   ├── modules/
-│   │   ├── vpc/
+│   │   ├── network/
 │   │   ├── alb/
 │   │   ├── ecs/
-│   │   └── rds/
+│   │   ├── rds/
+│   │   └── ecr/
 │   └── envs/
 │       └── dev/
 │           ├── main.tf
 │           ├── variables.tf
-│           └── outputs.tf
+│           ├── outputs.tf
+│           └── terraform.tfvars.example
 │
 ├── ansible/
 │   ├── playbooks/
-│   │   └── deploy.yml
+│   │   ├── deploy.yml
+│   │   └── migrate.yml
 │   └── group_vars/
 │       └── dev.yml
 │
@@ -77,27 +102,29 @@
 
 ---
 
-## 事前準備
+## ハンズオン実行手順
 
-### 必須ツール
+以下は上から順番に実行してください。所要時間の目安は初回で **20〜30分程度**（RDS作成に数分かかります）。
 
-| ツール       | 確認                  |
-| --------- | ------------------- |
-| Terraform | `terraform version` |
-| Ansible   | `ansible --version` |
-| Docker    | `docker version`    |
-| AWS CLI   | `aws --version`     |
-| jq        | `jq --version`      |
+### ステップ0. 事前準備
 
----
+#### 必須ツール
 
-### AWS 認証情報
+| ツール       | 確認コマンド             | 補足 |
+| --------- | ------------------- | --- |
+| Terraform | `terraform version` | `>= 1.6.0` |
+| Ansible   | `ansible --version` | `ansible-playbook` が使えること |
+| Docker    | `docker version`    | `docker buildx` が使えること（Docker Desktop なら標準搭載） |
+| AWS CLI   | `aws --version`     | v2 推奨 |
+| jq        | `jq --version`      | buildx の出力解析・ECSタスク定義の加工に使用 |
+
+#### AWS 認証情報
 
 以下いずれかが設定されていること：
 
 * `~/.aws/credentials`
-* `AWS_PROFILE`
-* `AWS_ACCESS_KEY_ID` 等の環境変数
+* `AWS_PROFILE` 環境変数
+* `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 等の環境変数
 
 確認：
 
@@ -105,113 +132,104 @@
 aws sts get-caller-identity
 ```
 
+意図しないAWSアカウントに向いていないか、ここで必ず確認してください。
+
 ---
 
-## 手順① Terraform で基盤構築
+### ステップ1. Terraform で AWS 基盤を構築
+
+#### 1-1. 変数ファイルを用意する
+
+`db_password` は必須変数（デフォルト値なし）です。テンプレートをコピーして値を設定してください。
 
 ```bash
 cd terraform/envs/dev
+cp terraform.tfvars.example terraform.tfvars
+```
 
+`terraform.tfvars` を開き、`db_password` を自分の値に変更します。
+このファイルは `.gitignore` 対象なのでコミットされません。
+
+> ⚠️ 学習用途のため RDS のパスワードは `terraform.tfvars` の平文変数として扱っています。
+> `terraform apply` を実行すると **tfstate にも平文で残ります**。実務では Secrets Manager / RDS管理パスワードを使ってください（詳細は [ARCHITECTURE.md](ARCHITECTURE.md#7-既知のトレードオフ意図的な割り切り) 参照）。
+
+#### 1-2. init → plan → apply
+
+```bash
 terraform init
 terraform plan
 terraform apply
 ```
 
-### 作られる主なリソース
+`terraform plan` の出力で **作成されるリソース数・内容** を必ず確認してから `apply` してください。
+（`make tf-apply` でも同様に `plan -out tfplan && apply tfplan` が実行されます）
 
-* VPC / Subnet / Route
+#### 1-3. 作られる主なリソース
+
+* VPC / Subnet（Public×2, Private×2）/ RouteTable / NAT Gateway
 * ALB / TargetGroup / Listener
-* ECS Cluster / Service（Fargate）
-* RDS
-* IAM Role（TaskExecutionRole）
+* ECS Cluster / Service（Fargate）/ TaskDefinition（app, migrate）
+* ECR リポジトリ
+* RDS（MySQL, Private Subnet配置）
+* IAM Role（ECS Task Execution Role）
 
----
+#### 1-4. 出力値を確認する
 
-## 手順② Ansible 用設定
-
-### `ansible/group_vars/dev.yml`
-
-```yaml
-tf_dir: "../../terraform/envs/dev"
-app_dir: "../../app"
-
-# タグ（※ 実際の参照は digest）
-image_tag: "{{ lookup('pipe','date +%Y%m%d%H%M%S') }}"
+```bash
+terraform output
+# もしくは
+make output
 ```
 
+`ecr_repo_url` / `ecs_cluster_name` / `alb_dns_name` などが表示されれば成功です。
+これらの値は次のAnsibleステップで自動的に読み込まれるため、手で控える必要はありません。
+
 ---
 
-## 手順③ デプロイ実行（最重要）
+### ステップ2. Ansible の設定を確認する
+
+`ansible/group_vars/dev.yml` に以下が定義されています（通常はそのままでOK）。
+
+```yaml
+tf_dir: "{{ playbook_dir }}/../../terraform/envs/dev"
+app_dir: "{{ playbook_dir }}/../../app"
+
+# デフォルトは date ベース。git があるなら git sha に変えてOK
+image_tag: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+# migration のコマンド（あなたのアプリに合わせて差し替え）
+migrate_command: "echo 'migrate placeholder'; exit 0"
+```
+
+* `tf_dir` / `app_dir`：Terraformの出力・アプリのソースをどこから読むか
+* `image_tag`：ビルドのたびに変わるタグ（実際にECSへ渡すのは後述の digest）
+* `migrate_command`：`make migrate` 実行時にコンテナ内で実行されるコマンド（現状は placeholder）
+
+---
+
+### ステップ3. デプロイを実行する（最重要）
 
 ```bash
 cd ansible
 ansible-playbook -i localhost, playbooks/deploy.yml
+# もしくは
+make deploy
 ```
 
----
+#### 内部で何が起きているか
 
-## Ansible deploy.yml がやっていること（超重要）
+1. **Terraform outputs を取得**（クラスタ名・ECR URL・ALB DNS等をハードコードしない）
+2. **前提コマンド確認**：`aws` / `docker` / `jq` の存在チェック、`aws sts get-caller-identity` でアカウント誤爆防止
+3. **Docker build & ECR push**：`docker buildx build --push`
+4. **push結果から digest を抽出**：`sha256:...` を取得し、タグではなく digest を正とする
+5. **ECRへの反映を待機**：`describe-images` でdigestが見えるまでリトライ
+6. **TaskDefinitionを複製・更新**：既存定義をコピーし、`image` だけ `repo@sha256:...` に差し替えて新revisionを登録
+7. **ECS Serviceを更新**：`update-service --force-new-deployment`
+8. **安定するまで待機**：`wait services-stable`（失敗時はECSイベントを自動表示）
 
-### 1️⃣ Terraform outputs を取得
+より詳しいシーケンス図は [ARCHITECTURE.md](ARCHITECTURE.md#51-通常デプロイ-ansibleplaybooksdeployyml) を参照してください。
 
-* クラスタ名
-* ECR URL
-* ALB DNS
-* リージョン
-
-👉 **ハードコードしない**
-
----
-
-### 2️⃣ Docker build & ECR push
-
-```bash
-docker buildx build --push
-```
-
----
-
-### 3️⃣ buildx の出力から **digest を取得**
-
-```
-sha256:xxxxxxxxxxxxxxxx...
-```
-
-* タグは使わない
-* **repo@sha256:... を ECS に指定**
-
-👉 **タグブレ事故を防止**
-
----
-
-### 4️⃣ ECS TaskDefinition を再作成
-
-* 既存 TaskDefinition をコピー
-* image だけ digest に差し替え
-* 新 revision を登録
-
----
-
-### 5️⃣ ECS Service を更新
-
-```bash
-aws ecs update-service --force-new-deployment
-```
-
----
-
-### 6️⃣ Service が安定するまで待機
-
-```bash
-aws ecs wait services-stable
-```
-
-* 失敗したら ECS events を自動表示
-* 原因調査がすぐできる
-
----
-
-## 成功時の表示
+#### 成功時の表示
 
 ```
 Deployed. ALB URL:
@@ -221,11 +239,48 @@ http://xxxx.ap-northeast-1.elb.amazonaws.com/
 
 ---
 
-## 動作確認
+### ステップ4. 動作確認
 
 ```bash
 curl http://xxxx.elb.amazonaws.com/
 curl http://xxxx.elb.amazonaws.com/health
+```
+
+* `/` → `hello from ecs`
+* `/health` → `ok`
+
+どちらも200が返れば、ALB → ECS Fargate → コンテナまで疎通が取れています。
+
+---
+
+### ステップ5. DBマイグレーションタスクを実行する（任意）
+
+Webサービス本体とは別に、ECS Service に含まれない **one-off Task** としてマイグレーションを実行できます。
+
+```bash
+cd ansible
+ansible-playbook -i localhost, playbooks/migrate.yml
+# もしくは
+make migrate
+```
+
+* `group_vars/dev.yml` の `migrate_command` がコンテナ内で実行されます（デフォルトは placeholder）
+* Terraform outputs から Private Subnet / セキュリティグループを取得し、ECS Service と同じネットワーク条件でタスクを起動します
+* 実行後、`aws ecs wait tasks-stopped` でタスク終了を待ち、`exitCode` / `reason` を表示します
+
+実際のマイグレーションコマンドを実行したい場合は、`ansible/group_vars/dev.yml` の `migrate_command` を
+自分のアプリのマイグレーションコマンド（例: `npm run migrate`）に書き換えてください。
+
+---
+
+### ステップ6. 後片付け
+
+このハンズオンで作成したリソース（特に NAT Gateway / ALB / RDS）は起動しているだけで課金が発生します。
+不要になったら以下を実行してください（**ユーザー自身で実行**、Claude Codeは実行しません）。
+
+```bash
+cd terraform/envs/dev
+terraform destroy
 ```
 
 ---
@@ -256,6 +311,19 @@ aws ecs describe-services \
 
 ---
 
+### ❌ `terraform apply` が `db_password` を要求してくる
+
+`terraform.tfvars` を作成し忘れています。[ステップ1-1](#1-1-変数ファイルを用意する) を参照してください。
+
+---
+
+### ❌ `migrate.yml` がネットワーク設定エラーで失敗する
+
+Terraform outputs に `private_subnet_ids` / `ecs_service_security_group_id` が出力されている必要があります。
+`terraform apply` 後に `terraform output` で両方の値が表示されるか確認してください（古いstateのままだと出力されません）。
+
+---
+
 ## この構成の強み
 
 * ✅ タグブレしない
@@ -267,10 +335,12 @@ aws ecs describe-services \
 
 ## 次にやると良いこと（発展）
 
-* DB migrate を **ECS one-off task** で実行
 * Blue/Green（CodeDeploy）
 * GitHub Actions 化
-* Parameter Store / Secrets Manager 連携
+* Parameter Store / Secrets Manager 連携（RDSパスワードのstate平文問題の解消）
+* HTTPS化（ACM + ALB HTTPS Listener）
+
+より詳しい発展余地は [ARCHITECTURE.md](ARCHITECTURE.md#10-今後の発展余地) を参照してください。
 
 ---
 
@@ -284,13 +354,3 @@ aws ecs describe-services \
 
 「動いた」だけでなく、
 **なぜ安全なのか / なぜ失敗しにくいのか**を理解できる構成になっています。
-
----
-
-必要であれば次は：
-
-* README に **図（ASCII/PlantUML）追加**
-* **migrate 用 playbook**
-* **CI 版 README**
-
-まで一気に整えられます。

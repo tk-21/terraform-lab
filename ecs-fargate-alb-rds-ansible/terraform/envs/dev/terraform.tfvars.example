@@ -1,0 +1,10 @@
+# このファイルを terraform.tfvars にコピーして使ってください
+# cp terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars は .gitignore 対象のため、リポジトリにはコミットされません。
+
+db_password = "ChangeMe_12345678!"
+
+# 必要であれば以下も上書きできます（デフォルトは variables.tf を参照）
+# aws_region = "ap-northeast-1"
+# name       = "ecs-handson-dev"
