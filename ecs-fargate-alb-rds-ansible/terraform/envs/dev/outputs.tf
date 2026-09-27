@@ -26,6 +26,14 @@ output "ecs_migrate_task_definition_arn" {
   value = module.ecs.migrate_task_definition_arn
 }
 
+output "private_subnet_ids" {
+  value = module.network.private_subnet_ids
+}
+
+output "ecs_service_security_group_id" {
+  value = module.ecs.service_security_group_id
+}
+
 output "alb_dns_name" {
   value = module.alb.dns_name
 }

@@ -1,7 +1,7 @@
 resource "aws_db_subnet_group" "this" {
   name       = "${var.name}-dbsubnet"
   subnet_ids = var.private_subnet_ids
-  tags = { Name = "${var.name}-dbsubnet" }
+  tags       = { Name = "${var.name}-dbsubnet" }
 }
 
 resource "aws_security_group" "db" {
@@ -10,10 +10,10 @@ resource "aws_security_group" "db" {
   vpc_id      = var.vpc_id
 
   ingress {
-    from_port                = 3306
-    to_port                  = 3306
-    protocol                 = "tcp"
-    security_groups          = [var.ecs_security_group_id]
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [var.ecs_security_group_id]
   }
 
   egress {
@@ -29,11 +29,12 @@ resource "aws_security_group" "db" {
 resource "aws_db_instance" "this" {
   identifier = "${var.name}-db"
 
-  engine               = "mysql"
-  engine_version       = "8.0"
-  instance_class       = var.instance_class
-  allocated_storage    = 20
-  storage_type         = "gp3"
+  engine            = "mysql"
+  engine_version    = "8.0"
+  instance_class    = var.instance_class
+  allocated_storage = 20
+  storage_type      = "gp3"
+  storage_encrypted = true
 
   db_name  = var.db_name
   username = var.db_username
@@ -42,10 +43,10 @@ resource "aws_db_instance" "this" {
   db_subnet_group_name   = aws_db_subnet_group.this.name
   vpc_security_group_ids = [aws_security_group.db.id]
 
-  publicly_accessible  = false
-  multi_az             = false
-  skip_final_snapshot  = true
-  deletion_protection  = false
+  publicly_accessible = false
+  multi_az            = false
+  skip_final_snapshot = true
+  deletion_protection = false
 
   backup_retention_period = 0
 

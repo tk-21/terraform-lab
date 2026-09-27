@@ -4,6 +4,7 @@ variable "private_subnet_ids" { type = list(string) }
 
 variable "alb_target_group_arn" { type = string }
 variable "alb_listener_arn" { type = string }
+variable "alb_security_group_id" { type = string }
 
 variable "container_port" { type = number }
 variable "health_check_path" { type = string }

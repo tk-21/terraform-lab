@@ -43,7 +43,7 @@ resource "aws_subnet" "private" {
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.this.id
-  tags = { Name = "${var.name}-rt-public" }
+  tags   = { Name = "${var.name}-rt-public" }
 }
 
 resource "aws_route" "public_default" {
@@ -61,20 +61,20 @@ resource "aws_route_table_association" "public" {
 
 resource "aws_eip" "nat" {
   domain = "vpc"
-  tags = { Name = "${var.name}-nat-eip" }
+  tags   = { Name = "${var.name}-nat-eip" }
 }
 
 resource "aws_nat_gateway" "this" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public["0"].id
-  tags = { Name = "${var.name}-nat" }
+  tags          = { Name = "${var.name}-nat" }
 
   depends_on = [aws_internet_gateway.this]
 }
 
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  tags = { Name = "${var.name}-rt-private" }
+  tags   = { Name = "${var.name}-rt-private" }
 }
 
 resource "aws_route" "private_default" {

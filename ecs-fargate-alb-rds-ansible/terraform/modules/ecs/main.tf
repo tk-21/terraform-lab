@@ -14,13 +14,12 @@ resource "aws_security_group" "service" {
   description = "ECS service SG"
   vpc_id      = var.vpc_id
 
-  # ALB からのみ（ここは簡易でVPC内から許可ではなく、ALB SG参照にするのが理想。
-  # 今回はターゲットがprivateで、ALB→ECS通信が必要なので実務では ALB SG を渡して参照してください。
+  # ALB SG からの通信のみ許可（最小権限）
   ingress {
-    from_port   = var.container_port
-    to_port     = var.container_port
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
+    from_port       = var.container_port
+    to_port         = var.container_port
+    protocol        = "tcp"
+    security_groups = [var.alb_security_group_id]
   }
 
   egress {

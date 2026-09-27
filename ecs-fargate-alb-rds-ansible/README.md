@@ -1,5 +1,4 @@
 # ECS Fargate + ALB + RDS ハンズオン（Terraform + Ansible）
-https://chatgpt.com/g/g-p-690ea2b2c5948191a108d07e18727e7f/c/6957b4b4-7110-8323-9ee4-ce3d5f4c3272
 
 このリポジトリは、
 **Terraform で AWS 基盤を構築し、Ansible でアプリケーションを安全にデプロイする**

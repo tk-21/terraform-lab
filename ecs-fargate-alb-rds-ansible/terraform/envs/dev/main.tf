@@ -51,8 +51,9 @@ module "ecs" {
   vpc_id             = module.network.vpc_id
   private_subnet_ids = module.network.private_subnet_ids
 
-  alb_target_group_arn = module.alb.target_group_arn
-  alb_listener_arn     = module.alb.listener_arn
+  alb_target_group_arn  = module.alb.target_group_arn
+  alb_listener_arn      = module.alb.listener_arn
+  alb_security_group_id = module.alb.alb_security_group_id
 
   container_port    = var.container_port
   health_check_path = var.health_check_path
