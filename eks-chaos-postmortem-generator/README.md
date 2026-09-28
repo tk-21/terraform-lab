@@ -10,6 +10,32 @@ AWS Fault Injection Service（FIS）で EKS クラスターに意図的な障害
 
 ---
 
+## プロジェクトの目的と成功基準
+
+**目的**: 「障害をわざと起こして、人間がまとめる前にAIがポストモーテムを書き上げる」SREプラットフォームを作ること。
+
+具体的には以下を実現します。
+
+1. AWS FIS で EKS 上に意図的に障害を注入する（Pod Kill / Node Termination / Network Latency / CPU Stress の4種類）
+2. 障害発生を EventBridge が検知し、Step Functions でワークフローが起動する
+3. CloudWatch Logs / CloudTrail / Kubernetes Events などから障害データを自動収集する
+4. Amazon Bedrock（Claude Sonnet 4.6）が収集データから「概要・タイムライン・根本原因・影響範囲・再発防止策・アクションアイテム」の6項目を含むポストモーテムを自動生成する
+5. HTMLレポートを S3 に保存し、presigned URL 付きで SNS メール通知を送る
+
+**成功基準**:
+
+- Terraform で EKS / FIS / Lambda / Step Functions / S3 / EventBridge / DynamoDB / SNS が構築できる
+- FIS 実験（特に pod-kill）を実行すると、Kubernetes が自己修復しつつ、裏でイベント駆動のワークフローが起動する
+- Bedrock が障害データから6項目そろった構造化ポストモーテムを生成する
+- S3 に HTML レポートが保存され、presigned URL 付きで SNS メール通知が届く
+- 冪等性（DynamoDB で FIS 実験 ID の重複排除）、最小権限 IAM、StopCondition、可観測性といった SRE 的な安全設計が実装されている
+
+つまり「障害注入 → 自動データ収集 → AI分析 → レポート配信」が人手を介さず一気通貫で動くことが技術的なゴールであり、Chaos Engineering × AI の実験自動化・分析自動化という設計力を SRE 文脈で示すことがポートフォリオとしてのゴールです。
+
+> 既知のギャップ: Kubernetes イベント収集は Lambda パッケージングの依存追加に改善余地があります（詳細は [ARCHITECTURE.md](ARCHITECTURE.md) の「実装上の注意点と現状ギャップ」を参照）。現状、完全に一気通貫では動いていない可能性があります。
+
+---
+
 ## このハンズオンで得られること
 
 このハンズオンを通して、次の実践的な理解を得られます。
@@ -159,7 +185,7 @@ aws bedrock list-foundation-models \
 3. Terraform でインフラを構築する
 4. EKS に接続する
 5. Chaos Mesh をインストールする（Network Latency / CPU Stress 実験の前提）
-6. Kubernetes の初期セットアップを行う（FIS 用 ServiceAccount / RBAC）
+6. Kubernetes の初期セットアップを行う（`chaos-target` namespace 作成、RBACはTerraform管理済み）
 7. サンプルアプリをデプロイする
 8. SNSのメール購読を登録する
 9. FIS 実験テンプレート ID を確認する
@@ -404,9 +430,10 @@ kubectl get crd | grep chaos-mesh
 
 ---
 
-## Step 5-3. Kubernetes の初期セットアップ（FIS 用 ServiceAccount と RBAC）
+## Step 5-3. Kubernetes の初期セットアップ（`chaos-target` namespace）
 
-FIS が実験を実行するために必要な ServiceAccount と RBAC 権限を設定します。
+FIS 実行ロールの RBAC 権限（Pod Delete / Chaos Mesh リソース操作）は Terraform で管理済みです。
+EKS Access Entry（`aws_eks_access_entry.fis_execution`）で FIS 実行ロールに Kubernetes Group `fis-chaos-executors` を付与し、`kubernetes_cluster_role_binding_v1.fis_pod_delete` / `fis_chaos_mesh`（`terraform/environments/dev/main.tf`）がそのGroupにClusterRoleをバインドしています。手動での ServiceAccount 作成や `kubectl create clusterrolebinding` は不要です。
 
 ### 5-3-1. `chaos-target` namespace の作成
 
@@ -414,43 +441,24 @@ FIS が実験を実行するために必要な ServiceAccount と RBAC 権限を
 kubectl create namespace chaos-target
 ```
 
-### 5-3-2. FIS 実行用 ServiceAccount の作成
+### 5-3-2. RBAC 権限の確認
+
+FIS実行ロールのAccess Entryとバインディングが正しく設定されているか確認します。
 
 ```bash
-kubectl create serviceaccount fis-sa -n chaos-target
-```
+aws eks describe-access-entry \
+  --cluster-name eks-chaos-postmortem-dev \
+  --principal-arn arn:aws:iam::<account_id>:role/eks-chaos-postmortem-generator-fis-execution-role-dev \
+  --region ap-northeast-1 \
+  --query 'accessEntry.kubernetesGroups'
 
-### 5-3-3. Pod Delete 権限を付与（Pod Kill 実験用）
-
-```bash
-kubectl create clusterrole fis-pod-delete --verb=delete --resource=pods
-kubectl create clusterrolebinding fis-pod-delete --clusterrole=fis-pod-delete --serviceaccount=chaos-target:fis-sa
-```
-
-### 5-3-4. Chaos Mesh リソース操作権限を付与（Network Latency / CPU Stress 実験用）
-
-Chaos Mesh CRD に対する権限を設定します：
-
-```bash
-kubectl create clusterrole fis-chaos-mesh \
-  --verb=create,delete,get,list,patch,watch \
-  --resource=networkchaos.chaos-mesh.org,stresschaos.chaos-mesh.org
-
-kubectl create clusterrolebinding fis-chaos-mesh \
-  --clusterrole=fis-chaos-mesh \
-  --serviceaccount=chaos-target:fis-sa
-```
-
-権限確認:
-
-```bash
-kubectl auth can-i create networkchaos --as=system:serviceaccount:chaos-target:fis-sa -n chaos-target
-kubectl auth can-i delete pods --as=system:serviceaccount:chaos-target:fis-sa -n chaos-target
+kubectl get clusterrolebinding fis-pod-delete fis-chaos-mesh -o yaml
 ```
 
 期待すること:
 
-- 両コマンドが `yes` を返す
+- `kubernetesGroups` に `fis-chaos-executors` が含まれる
+- 両方の ClusterRoleBinding の `subjects[0].kind` が `Group`、`name` が `fis-chaos-executors`
 
 ---
 
@@ -868,25 +876,34 @@ aws fis start-experiment \
    - `ec2:DescribeInstances`
    - `cloudwatch:DescribeAlarms`
 
-3. **aws-auth ConfigMap が正しく設定されているか**
+3. **FIS実行ロールの EKS Access Entry が正しく設定されているか**
+
+   このプロジェクトのEKSクラスターは `authentication_mode = "API"` で運用しており、`aws-auth` ConfigMap は使用していません（[ARCHITECTURE.md](ARCHITECTURE.md) 参照）。クラスターへの認証は EKS Access Entry で行います。
+
+   `aws_eks_access_entry.fis_execution`（`terraform/environments/dev/main.tf`）で Terraform 管理しています。EKS Access Entry API は `system:` プレフィックスのusername/groupを許可しないため、カスタムGroup `fis-chaos-executors` を `kubernetes_groups` に設定し、`fis-pod-delete` / `fis-chaos-mesh` ClusterRoleBinding の subject もそのGroupにバインドしています。
+
    ```bash
-   kubectl get configmap aws-auth -n kube-system -o yaml
+   aws eks list-access-entries \
+     --cluster-name eks-chaos-postmortem-dev \
+     --region ap-northeast-1
+
+   aws eks describe-access-entry \
+     --cluster-name eks-chaos-postmortem-dev \
+     --principal-arn arn:aws:iam::999828867039:role/eks-chaos-postmortem-generator-fis-execution-role-dev \
+     --region ap-northeast-1
    ```
-   `mapRoles` に以下が含まれているか確認:
-   ```yaml
-   - rolearn: arn:aws:iam::999828867039:role/eks-chaos-postmortem-generator-fis-execution-role-dev
-     username: system:serviceaccount:chaos-target:fis-sa
-     groups:
-       - system:authenticated
+
+   表示されない場合は `terraform apply` が未実行です。逆に `terraform apply` 時に `ResourceInUseException`（既に存在するエラー）が出た場合は、以下でstateに取り込んでください。
+
+   ```bash
+   terraform import aws_eks_access_entry.fis_execution \
+     eks-chaos-postmortem-dev:arn:aws:iam::999828867039:role/eks-chaos-postmortem-generator-fis-execution-role-dev
    ```
 
 4. **Kubernetes RBAC 権限が設定されているか**
    ```bash
-   kubectl get clusterrolebinding | grep fis
-   # fis-pod-delete と fis-chaos-mesh が表示されるはず
-   
-   kubectl auth can-i delete pods --as=system:serviceaccount:chaos-target:fis-sa -n chaos-target
-   # yes が返されるはず
+   kubectl get clusterrolebinding fis-pod-delete fis-chaos-mesh -o yaml
+   # subjects[0].kind: Group, name: fis-chaos-executors になっているはず
    ```
 
 5. **FIS テンプレートのターゲット定義が正しいか**
@@ -915,7 +932,7 @@ aws fis start-experiment \
   ```bash
   kubectl get crd | grep chaos-mesh
   ```
-- FIS 用 ServiceAccount が `chaos-target` namespace に存在するか: `kubectl get sa -n chaos-target`
+- FIS実行ロールの Access Entry に `fis-chaos-executors` Group が設定されているか: `aws eks describe-access-entry --cluster-name eks-chaos-postmortem-dev --principal-arn <fis_execution_role_arn> --region ap-northeast-1`
 - RBAC 権限が正しく設定されているか: `kubectl get clusterrolebinding | grep fis`
 
 ### Bedrock 呼び出しで失敗する
@@ -938,7 +955,7 @@ aws fis start-experiment \
 確認ポイント:
 
 - `chaos-target` namespace の Pod に `chaos-target: pod-kill` ラベルが付与されているか
-- FIS 用 ServiceAccount `fis-sa` が存在するか: `kubectl get sa -n chaos-target`
+- FIS実行ロールの Access Entry が `fis-chaos-executors` Group を持っているか: `aws eks describe-access-entry --cluster-name eks-chaos-postmortem-dev --principal-arn <fis_execution_role_arn> --region ap-northeast-1`
 - Pod Delete の ClusterRole / ClusterRoleBinding が設定されているか: `kubectl get clusterrolebinding | grep fis-pod-delete`
 
 ### Kubernetes イベントが十分に取れない

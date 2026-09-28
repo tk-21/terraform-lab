@@ -73,16 +73,16 @@ resource "aws_iam_role_policy" "fis_execution" {
       },
       {
         # EC2インスタンス情報の読み取り: ノード情報を取得（FIS がノードを解決するために必須）
-        Sid    = "EC2DescribeInstances"
-        Effect = "Allow"
-        Action = ["ec2:DescribeInstances"]
+        Sid      = "EC2DescribeInstances"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeInstances"]
         Resource = "*"
       },
       {
         # EC2ノード終了: ChaosTarget=trueタグ付きノードのみに制限
-        Sid    = "EC2TerminateChaosTargetOnly"
-        Effect = "Allow"
-        Action = ["ec2:TerminateInstances"]
+        Sid      = "EC2TerminateChaosTargetOnly"
+        Effect   = "Allow"
+        Action   = ["ec2:TerminateInstances"]
         Resource = "*"
         Condition = {
           StringEquals = {
@@ -92,9 +92,9 @@ resource "aws_iam_role_policy" "fis_execution" {
       },
       {
         # StopCondition評価: CloudWatchアラーム状態の読み取り
-        Sid    = "CloudWatchAlarmRead"
-        Effect = "Allow"
-        Action = ["cloudwatch:DescribeAlarms"]
+        Sid      = "CloudWatchAlarmRead"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:DescribeAlarms"]
         Resource = "*"
       },
       {
@@ -275,8 +275,8 @@ resource "aws_fis_experiment_template" "network_latency" {
             namespaces = ["chaos-target"]
           }
           delay = {
-            latency  = "100ms"
-            jitter   = "10ms"
+            latency = "100ms"
+            jitter  = "10ms"
           }
         }
       })
@@ -290,10 +290,10 @@ resource "aws_fis_experiment_template" "network_latency" {
   }
 
   target {
-    name            = "chaos-cluster"
-    resource_type   = "aws:eks:cluster"
-    selection_mode  = "COUNT(1)"
-    resource_arns   = [var.cluster_arn]
+    name           = "chaos-cluster"
+    resource_type  = "aws:eks:cluster"
+    selection_mode = "COUNT(1)"
+    resource_arns  = [var.cluster_arn]
   }
 
   tags = merge(var.tags, {
@@ -374,10 +374,10 @@ resource "aws_fis_experiment_template" "cpu_stress" {
   }
 
   target {
-    name            = "chaos-cluster"
-    resource_type   = "aws:eks:cluster"
-    selection_mode  = "COUNT(1)"
-    resource_arns   = [var.cluster_arn]
+    name           = "chaos-cluster"
+    resource_type  = "aws:eks:cluster"
+    selection_mode = "COUNT(1)"
+    resource_arns  = [var.cluster_arn]
   }
 
   tags = merge(var.tags, {
@@ -447,8 +447,8 @@ resource "aws_cloudwatch_dashboard" "chaos" {
             ["ContainerInsights", "node_cpu_utilization", "ClusterName", var.cluster_name, { stat = "Average", label = "平均CPU%" }],
             ["ContainerInsights", "node_cpu_utilization", "ClusterName", var.cluster_name, { stat = "Maximum", label = "最大CPU%", color = "#d62728" }]
           ]
-          yAxis = { left = { min = 0, max = 100 } }
-          view  = "timeSeries"
+          yAxis  = { left = { min = 0, max = 100 } }
+          view   = "timeSeries"
           period = 60
           annotations = {
             horizontal = [{ value = 90, label = "StopCondition閾値", color = "#d62728" }]

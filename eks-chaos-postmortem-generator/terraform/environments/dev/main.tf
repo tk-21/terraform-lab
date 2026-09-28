@@ -242,40 +242,32 @@ output "s3_reports_bucket" {
 }
 
 # ============================================================
-# aws-auth ConfigMap：FIS実行ロールのEKS RBAC認証設定
+# EKSクラスター認証設定
+# ノードロールの認証は module.eks 内の aws_eks_access_entry.nodes（EKS Access Entry）で
+# 管理しており、authentication_mode = "API" のため aws-auth ConfigMap は使用しない
 # ============================================================
 
-# aws-auth ConfigMap へのノードロール設定（既存のマッピング）
-resource "kubernetes_config_map_v1_data" "aws_auth" {
-  metadata {
-    name      = "aws-auth"
-    namespace = "kube-system"
-  }
-
-  data = {
-    mapRoles = yamlencode([
-      {
-        rolearn  = "arn:aws:iam::${var.aws_account_id}:role/eks-chaos-postmortem-generator-nodes-role-${local.environment}"
-        username = "system:node:{{EC2PrivateDNSName}}"
-        groups = [
-          "system:bootstrappers",
-          "system:nodes"
-        ]
-      }
-    ])
-  }
-
-  force = true
-}
-
-# FIS実行ロール ARN を出力（aws-auth 設定で使用）
+# FIS実行ロール ARN を出力（RBAC/Access Entry設定で使用）
 output "fis_execution_role_arn" {
-  description = "FIS実行IAMロールのARN（aws-auth設定用）"
+  description = "FIS実行IAMロールのARN（Access Entry設定用）"
   value       = module.fis.fis_execution_role_arn
 }
 
+# FIS実行ロール用 EKS Access Entry
+# EKS Access Entry API は username/kubernetes_groups に "system:" プレフィックスを許可しないため、
+# aws-auth 時代の「system:serviceaccount:... へのなりすまし」は使えない。
+# 代わりにカスタムgroup "fis-chaos-executors" を付与し、下記 ClusterRoleBinding は
+# ServiceAccount ではなく Group を subject にする
+resource "aws_eks_access_entry" "fis_execution" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.fis.fis_execution_role_arn
+  type          = "STANDARD"
+
+  kubernetes_groups = ["fis-chaos-executors"]
+}
+
 # ============================================================
-# FIS 用 Kubernetes RBAC 権限設定（ServiceAccount ベース）
+# FIS 用 Kubernetes RBAC 権限設定（Access Entry の Group ベース）
 # ============================================================
 
 # Pod 削除権限（Pod Kill 実験用）
@@ -303,9 +295,9 @@ resource "kubernetes_cluster_role_binding_v1" "fis_pod_delete" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "fis-sa"
-    namespace = "chaos-target"
+    kind      = "Group"
+    name      = "fis-chaos-executors"
+    api_group = "rbac.authorization.k8s.io"
   }
 
   role_ref {
@@ -340,9 +332,9 @@ resource "kubernetes_cluster_role_binding_v1" "fis_chaos_mesh" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "fis-sa"
-    namespace = "chaos-target"
+    kind      = "Group"
+    name      = "fis-chaos-executors"
+    api_group = "rbac.authorization.k8s.io"
   }
 
   role_ref {

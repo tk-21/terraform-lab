@@ -7,8 +7,8 @@
 # DNS解決とDNSホスト名を有効化（EKSで必須）
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true  # EKSノードがホスト名を持つために必要
-  enable_dns_support   = true  # Route53リゾルバーを有効化
+  enable_dns_hostnames = true # EKSノードがホスト名を持つために必要
+  enable_dns_support   = true # Route53リゾルバーを有効化
 
   tags = merge(var.tags, {
     Name        = "${var.project}-vpc-${var.environment}"
@@ -25,11 +25,11 @@ resource "aws_subnet" "public_1a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "ap-northeast-1a"
-  map_public_ip_on_launch = true  # パブリックIPを自動付与
+  map_public_ip_on_launch = true # パブリックIPを自動付与
 
   tags = merge(var.tags, {
-    Name                                        = "${var.project}-public-1a-${var.environment}"
-    Environment                                 = var.environment
+    Name        = "${var.project}-public-1a-${var.environment}"
+    Environment = var.environment
     # EKS ALBコントローラーがALB用サブネットを識別するためのタグ
     "kubernetes.io/role/elb"                    = "1"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
@@ -62,8 +62,8 @@ resource "aws_subnet" "private_1a" {
   availability_zone = "ap-northeast-1a"
 
   tags = merge(var.tags, {
-    Name                                        = "${var.project}-private-1a-${var.environment}"
-    Environment                                 = var.environment
+    Name        = "${var.project}-private-1a-${var.environment}"
+    Environment = var.environment
     # EKS Internal ALB（ClusterIP）用サブネットを識別するためのタグ
     "kubernetes.io/role/internal-elb"           = "1"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
@@ -119,7 +119,7 @@ resource "aws_eip" "nat" {
 # 本番環境では可用性のため各AZに配置することを検討
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public_1a.id  # パブリックサブネットに配置
+  subnet_id     = aws_subnet.public_1a.id # パブリックサブネットに配置
 
   tags = merge(var.tags, {
     Name        = "${var.project}-nat-${var.environment}"

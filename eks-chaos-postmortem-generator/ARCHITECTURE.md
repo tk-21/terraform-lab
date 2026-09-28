@@ -184,6 +184,10 @@ flowchart LR
 - OIDC provider
 - EBS CSI Driver addon と IRSA ロール
 
+**認証方式**: `authentication_mode = "API"` を採用し、`aws-auth` ConfigMap には依存していません。ノードロールの認証は `aws_eks_access_entry`（`terraform/modules/eks/main.tf` の `aws_eks_access_entry.nodes`）で管理しています。`bootstrap_cluster_creator_admin_permissions = true` により、クラスター作成者（Terraform実行者）には自動でAdmin権限のAccess Entryが付与されます。
+
+> 過去の経緯: 当初は `kubernetes_config_map_v1_data`（後に `kubernetes_config_map_v1`）で `aws-auth` を管理していましたが、EKSがノードグループ作成時に ConfigMap や Access Entry を自動生成するため「既に存在する」エラーが再現性のある形で発生していました。`CONFIG_MAP → API_AND_CONFIG_MAP → API` の順に移行し、aws-auth への依存を完全に解消しています。
+
 `baseline` と `chaos` の役割分離:
 
 - `baseline`: `ChaosTarget=false`

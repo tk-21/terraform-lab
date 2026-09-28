@@ -43,7 +43,7 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
 
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
-  version  = "1.30"  # Kubernetesバージョン（定期的に更新が必要）
+  version  = "1.30" # Kubernetesバージョン（定期的に更新が必要）
   role_arn = aws_iam_role.eks_cluster.arn
 
   vpc_config {
@@ -53,6 +53,14 @@ resource "aws_eks_cluster" "main" {
     # 本番環境では必ずfalseに設定し、VPN/踏み台経由でのみアクセスすること
     endpoint_public_access  = true
     endpoint_private_access = true
+  }
+
+  # aws-auth ConfigMapに依存しないAPI認証方式（EKS Access Entry）に統一
+  # bootstrap_cluster_creator_admin_permissions: クラスター作成者（Terraform実行者）に
+  # 自動でAdmin権限のAccess Entryを付与し、ロックアウトを防ぐ
+  access_config {
+    authentication_mode                         = "API"
+    bootstrap_cluster_creator_admin_permissions = true
   }
 
   # CloudWatch Logsへのコントロールプレーンログ出力
@@ -115,6 +123,18 @@ resource "aws_iam_role_policy_attachment" "eks_ecr_read_only" {
 }
 
 # ============================================================
+# EKS Access Entry: ノードロールのクラスター参加認証
+# authentication_mode = "API" では aws-auth ConfigMap を使わないため、
+# ノードロールをAccess Entryとして明示的に登録する必要がある
+# ============================================================
+
+resource "aws_eks_access_entry" "nodes" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.eks_nodes.arn
+  type          = "EC2_LINUX"
+}
+
+# ============================================================
 # マネージドノードグループ: baseline（通常ワークロード用）
 # ============================================================
 
@@ -135,13 +155,14 @@ resource "aws_eks_node_group" "baseline" {
   }
 
   update_config {
-    max_unavailable = 1  # ローリングアップデート時の最大停止ノード数
+    max_unavailable = 1 # ローリングアップデート時の最大停止ノード数
   }
 
   depends_on = [
     aws_iam_role_policy_attachment.eks_worker_node_policy,
     aws_iam_role_policy_attachment.eks_cni_policy,
     aws_iam_role_policy_attachment.eks_ecr_read_only,
+    aws_eks_access_entry.nodes,
   ]
 
   tags = merge(var.tags, {
@@ -184,6 +205,7 @@ resource "aws_eks_node_group" "chaos" {
     aws_iam_role_policy_attachment.eks_worker_node_policy,
     aws_iam_role_policy_attachment.eks_cni_policy,
     aws_iam_role_policy_attachment.eks_ecr_read_only,
+    aws_eks_access_entry.nodes,
   ]
 
   tags = merge(var.tags, {
@@ -239,7 +261,7 @@ resource "aws_eks_addon" "kube_proxy" {
 resource "aws_eks_addon" "ebs_csi_driver" {
   cluster_name             = aws_eks_cluster.main.name
   addon_name               = "aws-ebs-csi-driver"
-  service_account_role_arn = aws_iam_role.ebs_csi.arn  # IRSAロールを使用
+  service_account_role_arn = aws_iam_role.ebs_csi.arn # IRSAロールを使用
 
   tags = merge(var.tags, {
     Environment = var.environment
