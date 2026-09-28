@@ -183,16 +183,16 @@ aws bedrock list-foundation-models \
 1. Terraform バックエンド用 S3 バケットを作る
 2. `terraform.tfvars` を設定する
 3. Terraform でインフラを構築する
-4. EKS に接続する
-5. Chaos Mesh をインストールする（Network Latency / CPU Stress 実験の前提）
-6. Kubernetes の初期セットアップを行う（`chaos-target` namespace 作成、RBACはTerraform管理済み）
-7. サンプルアプリをデプロイする
-8. SNSのメール購読を登録する
-9. FIS 実験テンプレート ID を確認する
-10. 最初の FIS 実験を実行する
-11. Step Functions / S3 / Amazon SNS で結果を確認する
-12. 追加の実験を試す
-13. 必要に応じてコスト削減またはクリーンアップする
+4. SNSのメール購読を登録する
+5. EKS に接続する
+   - 5-2. Chaos Mesh をインストールする（Network Latency / CPU Stress 実験の前提）
+   - 5-3. Kubernetes の初期セットアップを行う（`chaos-target` namespace 作成、RBACはTerraform管理済み）
+6. サンプルアプリをデプロイする
+7. FIS 実験テンプレート ID を確認する
+8. 最初の FIS 実験を実行する
+9. Step Functions / S3 / Amazon SNS で結果を確認する
+10. 追加の実験を試す
+11. 必要に応じてコスト削減またはクリーンアップする
 
 ---
 
@@ -507,37 +507,7 @@ kubectl get nodes --show-labels | grep chaos-target
 
 ---
 
-## Step 7. SNSのメール購読を登録する
-
-Terraform適用後、出力されたSNSトピックARNを確認します。
-
-```bash
-SNS_TOPIC_ARN=$(cd terraform/environments/dev && terraform output -raw sns_topic_arn && cd ../../..)
-```
-
-通知を受信するメールアドレスを購読登録します。
-
-```bash
-aws sns subscribe \
-  --topic-arn "$SNS_TOPIC_ARN" \
-  --protocol email \
-  --notification-endpoint "YOUR_EMAIL_ADDRESS" \
-  --region ap-northeast-1
-```
-
-登録したメールアドレスに届く確認メールで **Confirm subscription** を選択してください。確認が完了するまでSNS通知は配信されません。
-
-購読状態の確認:
-
-```bash
-aws sns list-subscriptions-by-topic \
-  --topic-arn "$SNS_TOPIC_ARN" \
-  --region ap-northeast-1
-```
-
----
-
-## Step 8. FIS 実験テンプレート ID を確認する
+## Step 7. FIS 実験テンプレート ID を確認する
 
 ```bash
 cd terraform/environments/dev
@@ -564,7 +534,7 @@ sns_topic_arn = "arn:aws:sns:ap-northeast-1:123456789012:eks-chaos-postmortem-ge
 
 ### 環境変数に設定（推奨）
 
-Step 9 で実験を実行する際に便利なよう、環境変数に設定します：
+Step 8 で実験を実行する際に便利なよう、環境変数に設定します：
 
 ```bash
 export POD_KILL_TEMPLATE=$(terraform output -raw pod_kill_experiment_template_id)
@@ -581,7 +551,7 @@ echo "CPU Stress: $CPU_STRESS_TEMPLATE"
 
 ---
 
-## Step 9. 最初の実験を実行する
+## Step 8. 最初の実験を実行する
 
 最初は `pod-kill` が一番わかりやすいです。Kubernetes の自己修復と、その後ろで AI ポストモーテム生成が走る全体像を確認できます。
 
@@ -656,7 +626,7 @@ aws fis get-experiment-template \
 
 ---
 
-## Step 10. 実験完了後の検証
+## Step 9. 実験完了後の検証
 
 実験が `completed` 状態になったら、以下を順番に確認します。
 
@@ -705,7 +675,7 @@ aws stepfunctions describe-execution \
   --region ap-northeast-1
 ```
 
-### 10-2. Lambda ログ確認
+### 10-4. Lambda ログ確認
 
 順番に追うなら次を確認します。
 
@@ -717,7 +687,7 @@ aws logs tail /aws/lambda/eks-chaos-postmortem-generator-report-formatter-dev --
 aws logs tail /aws/lambda/eks-chaos-postmortem-generator-notifier-dev --follow --region ap-northeast-1
 ```
 
-### 10-3. S3 レポート確認
+### 10-5. S3 レポート確認
 
 ```bash
 aws s3 ls s3://eks-chaos-postmortem-generator-reports-<account_id>-dev/reports/ --recursive --region ap-northeast-1
@@ -732,7 +702,7 @@ aws s3 presign \
   --region ap-northeast-1
 ```
 
-### 10-4. Amazon SNS 通知確認
+### 10-6. Amazon SNS 通知確認
 
 実験完了から3〜5分程度で、購読確認済みのメールアドレスにSNS通知が届く想定です。
 
@@ -744,12 +714,14 @@ aws s3 presign \
 - 根本原因
 - レポート URL
 
-### 10-5. 全体検証スクリプト
+### 10-7. 全体検証スクリプト
 
 以下を実行して、全体の検証を一度に行えます:
 
 ```bash
 #!/bin/bash
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 echo "=== 1. 実験状態 ==="
 aws fis get-experiment --id $EXPERIMENT_ID --region ap-northeast-1 --query 'experiment.state'
@@ -761,7 +733,7 @@ kubectl get pods -n chaos-target -o wide
 echo ""
 echo "=== 3. Step Functions 実行状況 ==="
 aws stepfunctions list-executions \
-  --state-machine-arn arn:aws:states:ap-northeast-1:999828867039:stateMachine:eks-chaos-postmortem-generator-postmortem-workflow-dev \
+  --state-machine-arn arn:aws:states:ap-northeast-1:${ACCOUNT_ID}:stateMachine:eks-chaos-postmortem-generator-postmortem-workflow-dev \
   --max-results 1 \
   --region ap-northeast-1 \
   --query 'executions[0].[status, startDate]'
@@ -779,7 +751,6 @@ done
 
 echo ""
 echo "=== 5. S3 レポート（最新3件） ==="
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUCKET="eks-chaos-postmortem-generator-reports-${ACCOUNT_ID}-dev"
 aws s3 ls s3://$BUCKET/reports/ --recursive --region ap-northeast-1 | tail -3
 
@@ -800,7 +771,7 @@ bash check_experiment.sh
 
 ---
 
-## Step 11. 追加で試せる実験
+## Step 10. 追加で試せる実験
 
 ### Node Termination
 
@@ -1016,6 +987,58 @@ cd ../../..
 ```
 
 SNSトピックとメール購読は `terraform destroy` により削除されます。
+
+### `aws_subnet` の destroy が終わらない場合
+
+`module.vpc.aws_subnet.xxx: Still destroying...` が数分以上続く場合、サブネット内に**VPC CNI（`aws-node`）が残したENI（ネットワークインターフェース）**が残っていて削除をブロックしていることが多いです。EKSノードが終了した際にENIが自動解放されず残るケースで、比較的よく起きます。
+
+別ターミナルで、destroyを止めずに確認できます。
+
+```bash
+aws ec2 describe-network-interfaces \
+  --filters "Name=subnet-id,Values=<destroyが詰まっているsubnet-id>" \
+  --region ap-northeast-1 \
+  --query 'NetworkInterfaces[].{ID:NetworkInterfaceId,Status:Status,Desc:Description,Attachment:Attachment.InstanceId}' \
+  --output table
+```
+
+`Description` が `aws-K8S-i-...` で `Status: available`（未アタッチ）のENIが見つかったら、手動で削除します。
+
+```bash
+aws ec2 delete-network-interface \
+  --network-interface-id <eni-id> \
+  --region ap-northeast-1
+```
+
+削除後、`terraform destroy` は自動でリトライして完了します（Ctrl+Cで止める必要はありません）。他のsubnetでも同様のENIが残っていることがあるので、destroyが複数subnetで詰まる場合は同じ手順で確認してください。
+
+### `aws_vpc` の destroy が終わらない場合
+
+subnet系のdestroyが全て終わった後、`module.vpc.aws_vpc.main: Still destroying...` で長時間（5分以上）止まる場合は、**EKSクラスターが自動生成したセキュリティグループ（`eks-cluster-sg-<cluster_name>-xxxxxxxx`）が残っている**ことが原因になり得ます。通常はクラスター削除と同時にAWS側で自動削除されますが、ENIを先に手動削除した場合などタイミングによって残ることがあります。
+
+```bash
+aws ec2 describe-security-groups \
+  --filters "Name=vpc-id,Values=<vpc-id>" \
+  --region ap-northeast-1 \
+  --query 'SecurityGroups[].{ID:GroupId,Name:GroupName}' --output table
+```
+
+`eks-cluster-sg-...` が残っていたら手動削除します（`default` はVPC削除時にAWSが自動処理するので触らなくてOK）。
+
+```bash
+aws ec2 delete-security-group \
+  --group-id <sg-id> \
+  --region ap-northeast-1
+```
+
+NAT Gateway・Internet Gateway・VPC Endpoint・ELB/ALBが残っていないかも合わせて確認すると原因の切り分けが早いです。
+
+```bash
+aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=<vpc-id>" --region ap-northeast-1 --query 'NatGateways[].{ID:NatGatewayId,State:State}' --output table
+aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=<vpc-id>" --region ap-northeast-1 --query 'InternetGateways[].{ID:InternetGatewayId,State:Attachments[0].State}' --output table
+aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=<vpc-id>" --region ap-northeast-1 --query 'VpcEndpoints[].{ID:VpcEndpointId,State:State}' --output table
+aws elbv2 describe-load-balancers --region ap-northeast-1 --query "LoadBalancers[?VpcId=='<vpc-id>'].{Name:LoadBalancerName,Arn:LoadBalancerArn}" --output table
+```
 
 ---
 
