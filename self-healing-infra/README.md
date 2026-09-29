@@ -1,6 +1,6 @@
 # 自己修復インフラ ハンズオン
 
-Security Group に `0.0.0.0/0 -> tcp/22` の穴が開けられたら、数秒で自動修復してメールで知らせる仕組みを作ります。
+Security Group に `0.0.0.0/0 -> tcp/22` の穴が開けられたら、20 秒前後で自動修復してメールで知らせる仕組みを作ります。
 
 設計の背景は [ARCHITECTURE.md](ARCHITECTURE.md) にあります。この README は「上から順に実行するだけ」の手順書です。
 
@@ -130,6 +130,8 @@ aws sns list-subscriptions-by-topic \
 
 `PendingConfirmation` ではなく ARN が表示されれば OK です。
 
+> **会社のメールの場合:** メールセキュリティ製品がリンクを自動で開き、購読が勝手に解除される（「Your subscription ... has been deactivated」が届く）ことがあります。その場合は個人の Gmail など、リンクスキャンのないアドレスに変えてください。
+
 ---
 
 ## Step 3. リソースが生きているか確認する
@@ -177,7 +179,7 @@ aws ec2 authorize-security-group-ingress \
   --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0
 ```
 
-数秒〜数十秒後に、次のことが起きます。
+20 秒前後（Config の評価待ちが大半）で、次のことが起きます。
 
 - ターミナル A に Lambda のログが流れる
 - 修復完了メールが届く
@@ -189,7 +191,7 @@ aws ec2 authorize-security-group-ingress \
 - `Applied compliant rules to sg-...`
 - `Email notified via SNS: ...`
 
-> 何も起きない場合は Step 8 を見てください。確認が終わったらターミナル A は `Ctrl+C` で止めます。
+> ログが出ない場合は Step 8 を見てください。確認が終わったらターミナル A は `Ctrl+C` で止めます。
 
 ---
 
@@ -241,6 +243,9 @@ ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID"
 | Lambda が SG を直せない | `aws iam list-role-policies --role-name sg-remediation-lambda-role` |
 | メールが届かない | Step 2 の購読が `PendingConfirmation` のままではないか / 迷惑メール / Lambda ログに `Email notified via SNS` があるか |
 | Ansible が失敗する | Step 0-3 のコレクション導入、`aws sts get-caller-identity`、`ansible-playbook ... --check -vvv` |
+| Ansible で `botocore and boto3` が無いと言われる | venv が有効か（`which ansible-playbook` が `.venv/bin/` を指すか）。`source .venv/bin/activate` してやり直す |
+| 購読解除メール（deactivated）が届く | 会社メールのリンクスキャンが原因。個人アドレスに変えて `terraform apply -replace=aws_sns_topic_subscription.email -var="notification_email=$NOTIFICATION_EMAIL"` |
+| `logs tail` が「log group does not exist」 | Terraform で作成済みのはず。`terraform apply` が完了しているか確認 |
 
 Lambda を手動で呼んで切り分ける場合:
 
@@ -271,6 +276,12 @@ Recorder が見つからない、または空であれば完了です。
 
 ---
 
+## 仕組みを知りたいとき
+
+なぜ自動で直るのか、Ansible はなぜ同じことができるのかは、[HOW_IT_WORKS.md](HOW_IT_WORKS.md) で解説しています。動かし終えた後に読むのがおすすめです。
+
+---
+
 ## 学べること
 
 - AWS Config によるドリフト検知と、EventBridge によるイベントのルーティング
@@ -290,6 +301,7 @@ Recorder が見つからない、または空であれば完了です。
 
 ## 関連ファイル
 
+- [HOW_IT_WORKS.md](HOW_IT_WORKS.md): 仕組みの解説（なぜ動くのか）
 - [ARCHITECTURE.md](ARCHITECTURE.md): 設計と責務分担
 - [terraform/main.tf](terraform/main.tf) / [terraform/config.tf](terraform/config.tf) / [terraform/lambda.tf](terraform/lambda.tf)
 - [lambda/handler.py](lambda/handler.py): 自動修復ロジック

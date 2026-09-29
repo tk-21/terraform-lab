@@ -5,6 +5,8 @@
   gather_facts: false
 
   vars:
+    # ansible-playbook を起動した Python（venv）をモジュールにも使う。boto3 が venv にあるため
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
     sg_id: "{{ sg_id }}"         # 実行時に -e "sg_id=sg-xxx" で渡す
     allowed_ssh_cidrs:
       - "10.0.0.0/8"          # 許可する CIDR（あるべき状態）
@@ -17,24 +19,25 @@
         region: ap-northeast-1
       register: sg_info
 
-    - name: Revoke ALL inbound rules (reset)
-      amazon.aws.ec2_security_group:
-        group_id: "{{ sg_id }}"
-        purge_rules: true   # 現状に関わらず全ルールをリセット
-        rules: []
-        region: ap-northeast-1
-      when: sg_info.security_groups | length > 0
+    - name: Fail if SG not found
+      ansible.builtin.fail:
+        msg: "Security group {{ sg_id }} not found"
+      when: sg_info.security_groups | length == 0
 
-    - name: Apply compliant rules only
+    - name: Reset inbound rules to compliant state only
       amazon.aws.ec2_security_group:
         group_id: "{{ sg_id }}"
+        # state: present では name / description が必須（既存の値をそのまま渡す）
+        name: "{{ sg_info.security_groups[0].group_name }}"
+        description: "{{ sg_info.security_groups[0].description }}"
+        vpc_id: "{{ sg_info.security_groups[0].vpc_id }}"
+        purge_rules: true   # 現状に関わらず、下記以外の inbound ルールを全て削除
         rules:
           - proto: tcp
             from_port: 22
             to_port: 22
-            cidr_ip: "{{ item }}"
+            cidr_ip: "{{ allowed_ssh_cidrs }}"   # リストで渡せる
         region: ap-northeast-1
-      loop: "{{ allowed_ssh_cidrs }}"
 
     - name: Notify Email - Remediation Complete
       community.aws.sns:

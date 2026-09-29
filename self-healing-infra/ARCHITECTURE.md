@@ -4,7 +4,7 @@
 
 この `self-healing-infra` プロジェクトは、AWS Config を使って Security Group の設定ドリフトを検知し、Lambda が自動修復し、メールで通知する「自己修復インフラ」の最小構成を学ぶためのハンズオンです。
 
-README は手順中心ですが、このドキュメントは以下を目的にしています。
+README は手順中心、[HOW_IT_WORKS.md](HOW_IT_WORKS.md) は「なぜ動くのか」を初学者向けに説明しています。このドキュメントは以下を目的にしています。
 
 - どのコンポーネントが何を担当しているかを一目で理解する
 - Terraform / Lambda / Ansible の責務分担を整理する
@@ -112,6 +112,7 @@ Lambda デプロイを定義しています。
 - `lambda/` ディレクトリを zip 化
 - Lambda 関数 `sg-auto-remediation`
 - SNS トピック ARN の環境変数注入
+- CloudWatch Logs のロググループ `/aws/lambda/sg-auto-remediation`（保持 7 日）。Lambda 初回実行前でも `logs tail` できるよう、Terraform で先に作成し、`destroy` 時にも一緒に消す
 
 ### 4.4 `lambda/handler.py`
 
@@ -129,7 +130,8 @@ Lambda デプロイを定義しています。
 
 - `hosts: localhost`
 - `connection: local`
-- `amazon.aws.ec2_security_group` で SG を再構成
+- `amazon.aws.ec2_security_group` で SG を再構成（`state: present` では `name` / `description` が必須のため、取得済みの既存値を渡す）
+- `ansible_python_interpreter: "{{ ansible_playbook_python }}"` で、boto3 のある venv の Python をモジュールに使う
 - SNS 経由でメールに通知
 
 ---
@@ -279,7 +281,8 @@ flowchart LR
 - `connection: local`
 - SSH 接続先ホストなし
 - AWS API を直接呼ぶ
-- `purge_rules: true` でインバウンドルールを完全リセット
+- `purge_rules: true` でインバウンドルールを完全リセット（許可 CIDR をリストで渡し、1 タスクで再適用）
+- SG が見つからなければ明示的に失敗する
 
 ここでも「対象サーバーに入って設定変更する Ansible」ではなく、「ローカル PC 自体が AWS API クライアントとして動く Ansible」になっています。
 
@@ -359,6 +362,8 @@ Lambda 実行ロール `sg-remediation-lambda-role` には次の権限が付与�
 
 メール購読は、初回に届く確認メールのリンクを承認するまで有効になりません。
 
+**会社のメールでの注意:** SNS のメールには末尾に `Unsubscribe` リンクが付きます。メールセキュリティ製品（Safe Links など）がリンクを自動で開くと購読が解除され、「Your subscription ... has been deactivated」というメールが届きます。この場合は、リンクスキャンのないアドレスを使うか、管理者に `sns.amazonaws.com` のリンクを対象外にしてもらいます。
+
 この差分は重要です。
 
 - Lambda は IAM ロールの `sns:Publish` 権限で publish する
@@ -411,7 +416,7 @@ Ansible は必須ではありませんが、教育的価値があります。
 
 ### 13.3 Config 依存の遅延
 
-「秒単位」で修復できる設計ではあるものの、厳密には AWS Config の評価タイミングに依存します。リアルタイムではなく、イベント反映まで数秒のラグがあります。
+違反の追加から修復完了までは、実測で約 20 秒でした（違反追加から Config Rule の `NON_COMPLIANT` 判定まで約 9 秒、Lambda 起動から修復・通知完了まで約 1 秒、残りは EventBridge の配信）。Lambda 自体は 1 秒程度ですが、AWS Config の評価タイミングに依存するため、リアルタイムではなく「数十秒以内」の設計です。
 
 ### 13.4 通知失敗時の再試行なし
 
