@@ -1,649 +1,296 @@
 # 自己修復インフラ ハンズオン
 
-AWS Config + EventBridge + Lambda + Ansible で、Security Group の設定ドリフトを自動検知・自動修復するハンズオンです。
+Security Group に `0.0.0.0/0 -> tcp/22` の穴が開けられたら、数秒で自動修復してメールで知らせる仕組みを作ります。
 
-この README は「実際に動かす手順書」として書いています。設計の背景や詳細構成を先に読みたい場合は [ARCHITECTURE.md](/home/takuya/terraform-lab/self-healing-infra/ARCHITECTURE.md) を参照してください。
+設計の背景は [ARCHITECTURE.md](ARCHITECTURE.md) にあります。この README は「上から順に実行するだけ」の手順書です。
 
----
-
-## 1. このハンズオンで何を作るか
-
-このプロジェクトでは、Security Group に誤って `0.0.0.0/0 -> tcp/22` が追加されたときに、次の流れで自動修復する仕組みを作ります。
-
-1. AWS Config が SG の変更を検知する
-2. Config Rule が `NON_COMPLIANT` と判定する
-3. EventBridge が Lambda を起動する
-4. Lambda が不正ルールを削除し、正しいルールだけを再適用する
-5. Chatwork に修復完了通知を送る
-
-あわせて、Ansible を使ってローカル PC から同じ修復ポリシーを手動で再適用する方法も確認します。
+- 所要時間: 30〜45 分
+- 課金: AWS Config は放置すると課金が続きます。**最後に必ず Step 9 で片付けてください**
 
 ---
 
-## 2. 先に全体像をつかむ
-
-### 自動修復の流れ
+## 何が起きる仕組みか
 
 ```text
-Security Group に不正ルールが追加される
-  -> AWS Config が変更を検知
-  -> Config Rule が NON_COMPLIANT と判定
+SG に不正ルールが追加される
+  -> AWS Config が検知 -> Config Rule が NON_COMPLIANT と判定
   -> EventBridge が Lambda を起動
-  -> Lambda が SG を全リセットして正しい SSH ルールだけ再適用
-  -> Chatwork に通知
+  -> Lambda が SG を全リセットして正しい SSH ルール (10.0.0.0/8) だけ再適用
+  -> SNS 経由でメール通知
 ```
 
-### 手動修復の流れ
-
-```text
-ローカル PC で ansible-playbook を実行
-  -> Ansible が AWS API を直接呼ぶ
-  -> SG を全リセットして正しい SSH ルールだけ再適用
-  -> Chatwork に通知
-```
-
-### このハンズオンで重要な考え方
-
-- Lambda は「自動修復」の経路
-- Ansible は「手動確認・手動再適用」の経路
-- どちらも「現在の状態を信用せず、一度リセットして正しい状態を書き戻す」方式
-- EC2 や SSM は使わない
-- Ansible は `hosts: localhost` / `connection: local` でローカル PC 上で動く
+Ansible は自動修復には関わりません。手元の PC から同じ修復を手動で実行するための補助です。
 
 ---
 
-## 3. ハンズオンのゴール
+## 進め方の全体像
 
-完了時に次の状態になっていれば成功です。
+| Step | やること | 実行場所 |
+|---|---|---|
+| 0 | 準備（ツール・AWS 認証・メールアドレス） | ルート |
+| 1 | Terraform でインフラ作成 | `terraform/` |
+| 2 | 購読確認メールを承認 | メールソフト |
+| 3 | 動作確認（リソースが生きているか） | どこでも |
+| 4 | Ansible dry-run | ルート |
+| 5 | 違反を作って自動修復を見る | ルート |
+| 6 | 修復結果を確認 | ルート |
+| 7 | Ansible で手動修復 | ルート |
+| 8 | 困ったとき | - |
+| 9 | 後片付け | `terraform/` |
 
-- Terraform で必要な AWS リソースを作成できる
-- Chatwork にテスト通知が届く
-- SG に `0.0.0.0/0 -> 22` を追加すると数秒で自動修復される
-- CloudWatch Logs に Lambda 実行ログが出る
-- Chatwork に自己修復完了通知が届く
-- Ansible からも同じ修復を手動実行できる
-
----
-
-## 4. 所要時間とコスト感
-
-| 項目 | 目安 |
-|---|---|
-| 所要時間 | 30〜45分 |
-| 主な課金源 | AWS Config, Lambda, CloudWatch Logs, S3 |
-| コスト感 | 数時間の検証なら小さいが、AWS Config は放置すると課金が続く |
-
-> ハンズオン後は必ず `terraform destroy` を実行してください。
+> 以降、コマンドは断りがなければ **プロジェクトルート** (`self-healing-infra/`) で実行します。
 
 ---
 
-## 5. 前提条件
+## Step 0. 準備
 
-### 5.1 必要な権限
-
-このハンズオンでは少なくとも次を扱える AWS 権限が必要です。
-
-- VPC / Subnet / Security Group 作成
-- IAM Role / Policy 作成
-- Lambda 作成
-- AWS Config 作成
-- EventBridge Rule 作成
-- S3 Bucket 作成
-- CloudWatch Logs 参照
-
-### 5.2 必要なツール
-
-```bash
-aws --version
-python3 --version
-terraform --version
-```
-
-Ansible はプロジェクトの venv に入れて使います。
-
-推奨バージョン:
-
-- AWS CLI v2.x
-- Python 3.10+
-- Terraform 1.6+
-
-### 5.3 リージョン
-
-このプロジェクトは `ap-northeast-1`（東京）前提です。
-
----
-
-## 6. 事前準備
-
-### 6.1 リポジトリルートに移動
+### 0-1. ルートに移動して venv を有効化
 
 ```bash
 cd /home/takuya/terraform-lab/self-healing-infra
-```
-
-### 6.2 venv を有効化
-
-このプロジェクトでは venv を使います。
-
-```bash
 source .venv/bin/activate
+which ansible-playbook   # .venv/bin/ansible-playbook が出れば OK
 ```
 
-確認:
+### 0-2. AWS 認証とリージョンを確認
 
 ```bash
-which python
-which ansible-playbook
+aws sts get-caller-identity   # 成功すれば OK
+aws configure get region      # ap-northeast-1 であること
 ```
 
-期待する状態:
+違う場合: `aws configure set region ap-northeast-1`
 
-- `python` が `.venv/bin/python` を指す
-- `ansible-playbook` が `.venv/bin/ansible-playbook` を指す
+### 0-3. Ansible のコレクションを入れる
 
-### 6.3 AWS 認証を確認
+Ansible の手動修復（Step 4・7）で使います。
 
 ```bash
-aws sts get-caller-identity
-aws configure get region
+ansible-galaxy collection install amazon.aws community.aws
 ```
 
-確認ポイント:
-
-- 呼び出しに成功する
-- リージョンが `ap-northeast-1` になっている
-
-リージョンが違う場合は明示的に設定します。
+### 0-4. 通知先メールアドレスを環境変数に入れる
 
 ```bash
-aws configure set region ap-northeast-1
+export NOTIFICATION_EMAIL="you@example.com"
+echo "$NOTIFICATION_EMAIL"
 ```
 
-### 6.4 Chatwork の準備
+> ターミナルを開き直すと消えます。開き直したら再度 export してください。
 
-1. Chatwork の API トークンを発行する
-2. 通知先ルームの Room ID を確認する
-
-Room ID の確認例:
-
-```text
-https://www.chatwork.com/#!rid123456
--> Room ID は 123456
-```
-
-### 6.5 環境変数を設定
-
-```bash
-export CHATWORK_API_TOKEN="your_api_token_here"
-export CHATWORK_ROOM_ID="your_room_id_here"
-```
-
-確認:
-
-```bash
-echo "$CHATWORK_ROOM_ID"
-test -n "$CHATWORK_API_TOKEN" && echo "CHATWORK_API_TOKEN is set"
-```
+**必要な AWS 権限:** VPC / SG / IAM / Lambda / Config / EventBridge / S3 / SNS の作成、CloudWatch Logs の参照
 
 ---
 
-## 7. 最短実行ルート
-
-先に全体をざっと流したい場合は、この順番で進めると迷いません。
-
-1. Chatwork テスト通知
-2. Terraform `init` / `plan` / `apply`
-3. SG ID を取得
-4. Config / Lambda / EventBridge の状態確認
-5. Ansible dry-run
-6. SG に違反ルールを追加
-7. 自動修復と通知を確認
-8. Ansible 手動修復を確認
-9. `terraform destroy`
-
-以下で各手順を詳しく説明します。
-
----
-
-## 8. 手順 1: Chatwork の疎通確認
-
-最初に通知経路だけ切り出して確認します。ここを先に通しておくと、後で通知が来ないときに AWS 側の問題か Chatwork 側の問題か切り分けやすくなります。
-
-```bash
-curl -X POST \
-  -H "X-ChatWorkToken: $CHATWORK_API_TOKEN" \
-  -d "body=テスト通知: self-healing-infra ハンズオン開始" \
-  "https://api.chatwork.com/v2/rooms/$CHATWORK_ROOM_ID/messages"
-```
-
-成功の目安:
-
-- `{"message_id":"..."}` のようなレスポンスが返る
-- Chatwork の対象ルームにメッセージが届く
-
-失敗した場合の確認:
-
-- API トークンが正しいか
-- Room ID が正しいか
-- 変数が未設定ではないか
-
----
-
-## 9. 手順 2: Terraform でインフラを作成
-
-### 9.1 Terraform が作るもの
-
-このプロジェクトの Terraform は大きく 3 つの役割に分かれています。
-
-| ファイル | 役割 |
-|---|---|
-| `terraform/main.tf` | VPC / Subnet / SG / IAM |
-| `terraform/config.tf` | AWS Config / S3 / EventBridge |
-| `terraform/lambda.tf` | Lambda パッケージングとデプロイ |
-
-### 9.2 `terraform init`
+## Step 1. Terraform でインフラを作る
 
 ```bash
 cd terraform
 terraform init
+terraform plan  -var="notification_email=$NOTIFICATION_EMAIL"
+terraform apply -var="notification_email=$NOTIFICATION_EMAIL"
 ```
 
-確認ポイント:
+`apply` は `yes` と入力すると実行されます。
 
-- provider の初期化が完了する
-- エラーなく `Terraform has been successfully initialized` が出る
+作られるもの:
 
-### 9.3 `terraform plan`
+| ファイル | 内容 |
+|---|---|
+| `main.tf` | VPC / Subnet / SG / IAM / SNS |
+| `config.tf` | AWS Config / S3 / EventBridge |
+| `lambda.tf` | Lambda |
 
-```bash
-terraform plan \
-  -var="chatwork_api_token=$CHATWORK_API_TOKEN" \
-  -var="chatwork_room_id=$CHATWORK_ROOM_ID"
-```
-
-確認ポイント:
-
-- 作成対象に Lambda / Config / EventBridge / SG が含まれている
-- 変数未設定エラーが出ていない
-
-### 9.4 `terraform apply`
-
-```bash
-terraform apply \
-  -var="chatwork_api_token=$CHATWORK_API_TOKEN" \
-  -var="chatwork_room_id=$CHATWORK_ROOM_ID" \
-  -auto-approve
-```
-
-確認ポイント:
-
-- apply が最後まで完了する
-- output として `production_sg_id` が取得できる
-
-### 9.5 SG ID を保存
-
-以降の手順で何度も使うため、環境変数に入れておきます。
+完了したら SG ID を変数に保存し、ルートへ戻ります。
 
 ```bash
 SG_ID=$(terraform output -raw production_sg_id)
-echo "$SG_ID"
-```
-
-期待する形:
-
-```text
-sg-xxxxxxxxxxxxxxxxx
-```
-
----
-
-## 10. 手順 3: 作成されたリソースを確認
-
-apply が終わったら、いきなり違反を作る前に「監視と修復の導線」が生きているかを順番に見ます。
-
-### 10.1 Security Group を確認
-
-```bash
-aws ec2 describe-security-groups \
-  --group-ids "$SG_ID" \
-  --query "SecurityGroups[0].IpPermissions" \
-  --output table
-```
-
-確認ポイント:
-
-- `10.0.0.0/8` からの `tcp/22` だけが入っている
-
-### 10.2 Config Recorder の状態確認
-
-apply 直後は少し待つことがあります。30 秒ほど待ってから確認してください。
-
-```bash
-aws configservice describe-configuration-recorder-status \
-  --query "ConfigurationRecordersStatus[0].recording"
-```
-
-期待値:
-
-```text
-true
-```
-
-### 10.3 Config Rule の状態確認
-
-```bash
-aws configservice describe-compliance-by-config-rule \
-  --config-rule-names no-unrestricted-ssh \
-  --query "ComplianceByConfigRules[0].Compliance.ComplianceType"
-```
-
-期待値:
-
-```text
-"COMPLIANT"
-```
-
-### 10.4 EventBridge ルールの状態確認
-
-```bash
-aws events describe-rule \
-  --name config-sg-violation \
-  --query "State"
-```
-
-期待値:
-
-```text
-"ENABLED"
-```
-
-### 10.5 Lambda の存在確認
-
-```bash
-aws lambda get-function \
-  --function-name sg-auto-remediation \
-  --query "Configuration.[FunctionName,Runtime,State]" \
-  --output table
-```
-
-確認ポイント:
-
-- 関数名が `sg-auto-remediation`
-- Runtime が `python3.12`
-- State が `Active`
-
----
-
-## 11. 手順 4: Ansible の dry-run を確認
-
-違反を作る前に、手動修復経路も通るか確認します。`--check` を付けると実変更なしで検証できます。
-
-リポジトリルートに戻ります。
-
-```bash
+echo "$SG_ID"   # sg-xxxxxxxxxxxxxxxxx
 cd ..
-ansible-playbook ansible/playbooks/fix_sg.yml \
-  -e "sg_id=$SG_ID" \
-  --check
 ```
 
-確認ポイント:
-
-- playbook がエラーなく完了する
-- AWS 認証エラーが出ない
-- `amazon.aws` コレクション関連エラーが出ない
-
-補足:
-
-- `changed` が表示されても `--check` 中は実際には変更されません
-- ここで失敗する場合は後の手動修復でも失敗するので、先に直しておくのがおすすめです
+> `SG_ID` は以降ずっと使います。ターミナルを開き直したら、この 2 行（`cd terraform` から）をやり直してください。
 
 ---
 
-## 12. 手順 5: 自動修復を実際に発火させる
+## Step 2. 購読確認メールを承認する（重要）
 
-ここがハンズオンのメインです。ターミナルを 2 つ用意すると観察しやすくなります。
+SNS のメール通知は、**承認するまで 1 通も届きません**。
 
-### 12.1 ターミナル A: Lambda ログ監視
+1. `NOTIFICATION_EMAIL` 宛てに「AWS Notification - Subscription Confirmation」が届く（迷惑メールも確認）
+2. メール内の **Confirm subscription** をクリックする
+
+確認:
 
 ```bash
-aws logs tail /aws/lambda/sg-auto-remediation \
-  --follow \
-  --format short
+aws sns list-subscriptions-by-topic \
+  --topic-arn "$(aws sns list-topics --query "Topics[?contains(TopicArn,'sg-remediation-notify')].TopicArn" --output text)" \
+  --query "Subscriptions[0].SubscriptionArn"
 ```
 
-### 12.2 ターミナル B: 違反ルールを追加
+`PendingConfirmation` ではなく ARN が表示されれば OK です。
+
+---
+
+## Step 3. リソースが生きているか確認する
+
+違反を作る前に、監視と修復の経路を順に確認します。
+
+| 確認対象 | コマンド | 期待値 |
+|---|---|---|
+| SG のルール | `aws ec2 describe-security-groups --group-ids "$SG_ID" --query "SecurityGroups[0].IpPermissions" --output table` | `10.0.0.0/8` の `tcp/22` だけ |
+| Config Recorder | `aws configservice describe-configuration-recorder-status --query "ConfigurationRecordersStatus[0].recording"` | `true` |
+| Config Rule | `aws configservice describe-compliance-by-config-rule --config-rule-names no-unrestricted-ssh --query "ComplianceByConfigRules[0].Compliance.ComplianceType"` | `"COMPLIANT"` |
+| EventBridge | `aws events describe-rule --name config-sg-violation --query "State"` | `"ENABLED"` |
+| Lambda | `aws lambda get-function --function-name sg-auto-remediation --query "Configuration.[FunctionName,Runtime,State]" --output table` | `python3.12` / `Active` |
+
+> Config Recorder が `false` の場合は、30 秒ほど待って再実行してください。
+
+---
+
+## Step 4. Ansible の dry-run
+
+手動修復の経路が通るかを、実変更なしで確認します。
+
+```bash
+ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID" --check
+```
+
+エラーなく終われば OK です（`changed` と出ても `--check` 中は変更されません）。ここで失敗する場合は Step 7 でも失敗するので、先に直してください。
+
+---
+
+## Step 5. 自動修復を発火させる
+
+ここがメインです。**ターミナルを 2 つ**開きます。ターミナル B では `SG_ID` の再設定が必要です（Step 1 参照）。
+
+**ターミナル A: Lambda のログを監視**
+
+```bash
+aws logs tail /aws/lambda/sg-auto-remediation --follow --format short
+```
+
+**ターミナル B: 違反ルールを追加**
 
 ```bash
 aws ec2 authorize-security-group-ingress \
-  --group-id "$SG_ID" \
-  --protocol tcp \
-  --port 22 \
-  --cidr 0.0.0.0/0
+  --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0
 ```
 
-成功すると、数秒後にターミナル A のログと Chatwork の通知が動き始めます。
+数秒〜数十秒後に、次のことが起きます。
 
-### 12.3 期待される時系列
+- ターミナル A に Lambda のログが流れる
+- 修復完了メールが届く
 
-| 時間の目安 | 起きること |
-|---|---|
-| 0 秒 | SG に違反ルールが追加される |
-| 数秒 | AWS Config が変更を検知する |
-| 数秒 | Config Rule が `NON_COMPLIANT` になる |
-| 数秒 | EventBridge が Lambda を起動する |
-| 数秒 | Lambda が全インバウンドルールを削除して正しいルールを再適用する |
-| 数秒 | Chatwork に自己修復完了通知が届く |
+ログで見るポイント:
 
-### 12.4 Lambda ログで見るポイント
+- `NON_COMPLIANT: no-unrestricted-ssh → sg-...`
+- `Revoked all inbound rules from sg-...`
+- `Applied compliant rules to sg-...`
+- `Email notified via SNS: ...`
 
-ログでは次のような流れが見えれば OK です。
-
-- 受信したイベントが表示される
-- `resourceId` と `configRuleName` がログに出る
-- 既存ルール削除のログが出る
-- 準拠ルール再適用のログが出る
-- Chatwork 通知成功のログが出る
+> 何も起きない場合は Step 8 を見てください。確認が終わったらターミナル A は `Ctrl+C` で止めます。
 
 ---
 
-## 13. 手順 6: 自動修復の結果を確認
-
-### 13.1 SG の最終状態を確認
+## Step 6. 修復結果を確認する
 
 ```bash
-aws ec2 describe-security-groups \
-  --group-ids "$SG_ID" \
-  --query "SecurityGroups[0].IpPermissions" \
-  --output table
-```
+# 0.0.0.0/0 が消え、10.0.0.0/8 の tcp/22 だけ残っていること
+aws ec2 describe-security-groups --group-ids "$SG_ID" \
+  --query "SecurityGroups[0].IpPermissions" --output table
 
-確認ポイント:
-
-- `0.0.0.0/0` が消えている
-- `10.0.0.0/8 -> tcp/22` だけが残っている
-
-### 13.2 Config Rule が戻っているか確認
-
-```bash
+# "COMPLIANT" に戻っていること（反映に少し時間がかかることがあります）
 aws configservice get-compliance-details-by-config-rule \
   --config-rule-name no-unrestricted-ssh \
   --query "EvaluationResults[0].ComplianceType"
 ```
 
-期待値:
-
-```text
-"COMPLIANT"
-```
-
-### 13.3 Chatwork 通知を確認
-
-通知文面の要点:
-
-- 自己修復完了
-- 対象 SG ID
-- `0.0.0.0/0 -> port 22` を削除したこと
+メールには「対象 SG ID」と「`0.0.0.0/0 → port 22` を削除したこと」が書かれています。
 
 ---
 
-## 14. 手順 7: Ansible で手動修復を試す
+## Step 7. Ansible で手動修復する
 
-今度は Ansible から同じ修復を手動で実行します。
-
-### 14.1 再度違反を作る
+もう一度違反を作り、今度は Ansible で直します。
 
 ```bash
 aws ec2 authorize-security-group-ingress \
-  --group-id "$SG_ID" \
-  --protocol tcp \
-  --port 22 \
-  --cidr 0.0.0.0/0
-```
+  --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0
 
-### 14.2 すぐに Ansible を実行
-
-```bash
-ansible-playbook ansible/playbooks/fix_sg.yml \
-  -e "sg_id=$SG_ID"
+ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID"
 ```
 
 確認ポイント:
 
 - playbook が成功終了する
-- Chatwork に通知が届く
-- 最終的な SG 状態が自動修復時と同じになる
+- メールが届く
+- SG の状態が Step 6 と同じになる
 
-### 14.3 なぜ Lambda と競合しても大丈夫か
-
-Lambda も Ansible も、どちらも同じポリシーで「全削除して正しい状態だけ再適用」を行います。つまり途中で同時実行に近い状態になっても、最終状態は同じです。
-
-これがこのハンズオンで学ぶ冪等性のポイントです。
+> Lambda と同時に動いても最終状態は同じです。どちらも「全削除して正しい状態を書き戻す」ためです（冪等性）。
 
 ---
 
-## 15. 手順 8: 後片付け
+## Step 8. 困ったとき
 
-AWS Config は放置すると課金が継続するため、検証が終わったら必ず削除します。
+| 症状 | 確認すること |
+|---|---|
+| 変数エラーで plan / apply が失敗 | `echo "$NOTIFICATION_EMAIL"` が空でないか |
+| Config Recorder が `false` | 30 秒待つ。`aws configservice describe-delivery-channels` も確認 |
+| Lambda が起動しない | `aws events describe-rule --name config-sg-violation --query "State"` と `aws lambda get-policy --function-name sg-auto-remediation` |
+| Lambda が SG を直せない | `aws iam list-role-policies --role-name sg-remediation-lambda-role` |
+| メールが届かない | Step 2 の購読が `PendingConfirmation` のままではないか / 迷惑メール / Lambda ログに `Email notified via SNS` があるか |
+| Ansible が失敗する | Step 0-3 のコレクション導入、`aws sts get-caller-identity`、`ansible-playbook ... --check -vvv` |
 
-```bash
-cd terraform
-terraform destroy \
-  -var="chatwork_api_token=$CHATWORK_API_TOKEN" \
-  -var="chatwork_room_id=$CHATWORK_ROOM_ID" \
-  -auto-approve
-```
-
-削除確認:
-
-```bash
-aws configservice describe-configuration-recorder-status
-```
-
-期待する状態:
-
-- Recorder が見つからない、または削除済みであることを確認できる
-
----
-
-## 16. つまずきやすいポイント
-
-### `terraform plan` / `apply` が変数未設定で失敗する
-
-確認:
-
-```bash
-echo "$CHATWORK_API_TOKEN"
-echo "$CHATWORK_ROOM_ID"
-```
-
-### Config Recorder が `false` のまま
-
-数十秒待って再確認してください。
-
-```bash
-aws configservice describe-delivery-channels
-aws configservice describe-configuration-recorder-status
-```
-
-### EventBridge ルールが無効
-
-```bash
-aws events describe-rule --name config-sg-violation --query "State"
-```
-
-### Lambda が起動しない
-
-```bash
-aws lambda get-policy --function-name sg-auto-remediation
-aws logs tail /aws/lambda/sg-auto-remediation --format short
-```
-
-### Lambda が SG を修復できない
-
-```bash
-aws iam list-role-policies --role-name sg-remediation-lambda-role
-```
-
-必要なら手動で Lambda を呼びます。
+Lambda を手動で呼んで切り分ける場合:
 
 ```bash
 aws lambda invoke \
   --function-name sg-auto-remediation \
   --cli-binary-format raw-in-base64-out \
   --payload "{\"detail\":{\"resourceId\":\"$SG_ID\",\"configRuleName\":\"no-unrestricted-ssh\"}}" \
-  /tmp/lambda-response.json
-
-cat /tmp/lambda-response.json
-```
-
-### Ansible が失敗する
-
-```bash
-which ansible-playbook
-python -c "import boto3; print(boto3.__version__)"
-aws sts get-caller-identity
-ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID" --check -vvv
-```
-
-### Chatwork に通知が届かない
-
-```bash
-curl -X POST \
-  -H "X-ChatWorkToken: $CHATWORK_API_TOKEN" \
-  -d "body=疎通テスト" \
-  "https://api.chatwork.com/v2/rooms/$CHATWORK_ROOM_ID/messages"
+  /tmp/lambda-response.json && cat /tmp/lambda-response.json
 ```
 
 ---
 
-## 17. ここまでで学べること
+## Step 9. 後片付け（必須）
 
-- AWS Config を使ったドリフト検知
-- EventBridge による違反イベントのルーティング
-- Lambda でのイベント駆動型修復
+```bash
+cd terraform
+terraform destroy -var="notification_email=$NOTIFICATION_EMAIL"
+```
+
+`yes` で実行します。削除後の確認:
+
+```bash
+aws configservice describe-configuration-recorder-status
+```
+
+Recorder が見つからない、または空であれば完了です。
+
+---
+
+## 学べること
+
+- AWS Config によるドリフト検知と、EventBridge によるイベントのルーティング
+- Lambda によるイベント駆動の自動修復
+- 差分修正ではなく、正しい状態を再適用して整合性を保つ考え方
 - Ansible の `connection: local` による AWS API 操作
-- 差分修正ではなく desired state の再適用で整合性を保つ考え方
 
----
-
-## 18. 次の発展課題
+## 発展課題
 
 | 課題 | 内容 |
 |---|---|
-| 修復履歴の永続化 | DynamoDB に修復履歴を書き、回数や頻度を可視化する |
+| 修復履歴の永続化 | DynamoDB に履歴を書き、頻度を可視化する |
 | 監視ルールの追加 | RDP や HTTP など他ポートも対象にする |
-| 通知強化 | Chatwork だけでなく SNS / Slack / PagerDuty などにも広げる |
-| 再発時エスカレーション | 同一 SG の違反が短時間に続いたら人間承認フローに切り替える |
-| マルチアカウント展開 | Organizations 配下に共通ガードレールとして配布する |
+| 通知先の追加 | SNS の購読先に Slack / PagerDuty / Chatwork を足す |
+| 再発時エスカレーション | 短時間に繰り返す違反は人間承認フローにする |
+| マルチアカウント展開 | Organizations 配下の共通ガードレールにする |
 
----
+## 関連ファイル
 
-## 19. 関連ドキュメント
-
-- [ARCHITECTURE.md](/home/takuya/terraform-lab/self-healing-infra/ARCHITECTURE.md): 設計と責務分担の詳細
-- [terraform/main.tf](/home/takuya/terraform-lab/self-healing-infra/terraform/main.tf): ネットワーク / SG / IAM
-- [terraform/config.tf](/home/takuya/terraform-lab/self-healing-infra/terraform/config.tf): Config / S3 / EventBridge
-- [terraform/lambda.tf](/home/takuya/terraform-lab/self-healing-infra/terraform/lambda.tf): Lambda デプロイ
-- [lambda/handler.py](/home/takuya/terraform-lab/self-healing-infra/lambda/handler.py): 自動修復ロジック
-- [ansible/playbooks/fix_sg.yml](/home/takuya/terraform-lab/self-healing-infra/ansible/playbooks/fix_sg.yml): 手動修復 playbook
+- [ARCHITECTURE.md](ARCHITECTURE.md): 設計と責務分担
+- [terraform/main.tf](terraform/main.tf) / [terraform/config.tf](terraform/config.tf) / [terraform/lambda.tf](terraform/lambda.tf)
+- [lambda/handler.py](lambda/handler.py): 自動修復ロジック
+- [ansible/playbooks/fix_sg.yml](ansible/playbooks/fix_sg.yml): 手動修復 playbook

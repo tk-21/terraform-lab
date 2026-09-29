@@ -2,7 +2,7 @@
 
 ## 1. このドキュメントの目的
 
-この `self-healing-infra` プロジェクトは、AWS Config を使って Security Group の設定ドリフトを検知し、Lambda が自動修復し、Chatwork に通知する「自己修復インフラ」の最小構成を学ぶためのハンズオンです。
+この `self-healing-infra` プロジェクトは、AWS Config を使って Security Group の設定ドリフトを検知し、Lambda が自動修復し、メールで通知する「自己修復インフラ」の最小構成を学ぶためのハンズオンです。
 
 README は手順中心ですが、このドキュメントは以下を目的にしています。
 
@@ -21,7 +21,7 @@ README は手順中心ですが、このドキュメントは以下を目的に�
 2. EventBridge が Lambda を起動し
 3. Lambda が SG のインバウンドルールを全削除して
 4. 正しい SSH ルール `10.0.0.0/8 -> tcp/22` だけを再適用し
-5. Chatwork に修復完了を通知する
+5. SNS 経由でメールに修復完了を通知する
 
 という閉ループを作っています。
 
@@ -43,13 +43,14 @@ flowchart LR
         ConfigRule -->|NON_COMPLIANT| EventBridge[EventBridge Rule<br/>config-sg-violation]
         EventBridge --> Lambda[Lambda<br/>sg-auto-remediation]
         Lambda -->|Describe / Revoke / Authorize| SG
-        Lambda -->|POST| Chatwork[Chatwork API]
+        Lambda -->|Publish| SNS[SNS Topic<br/>sg-remediation-notify]
+        SNS -->|email| Mail[通知先メール]
         ConfigRecorder --> S3[S3 Bucket<br/>Config 履歴保管]
     end
 
     Local[ローカル PC] -->|ansible-playbook| Ansible[Ansible Playbook<br/>fix_sg.yml]
     Ansible -->|AWS API| SG
-    Ansible -->|POST| Chatwork
+    Ansible -->|Publish| SNS
 ```
 
 ### 3.2 自動経路と手動経路
@@ -110,7 +111,7 @@ Lambda デプロイを定義しています。
 
 - `lambda/` ディレクトリを zip 化
 - Lambda 関数 `sg-auto-remediation`
-- Chatwork 通知用の環境変数注入
+- SNS トピック ARN の環境変数注入
 
 ### 4.4 `lambda/handler.py`
 
@@ -120,7 +121,7 @@ Lambda デプロイを定義しています。
 - SG の現在ルールを取得
 - インバウンドルールを全削除
 - 正しい SSH ルールのみ再適用
-- Chatwork に結果通知
+- SNS 経由でメールに結果通知
 
 ### 4.5 `ansible/playbooks/fix_sg.yml`
 
@@ -129,7 +130,7 @@ Lambda デプロイを定義しています。
 - `hosts: localhost`
 - `connection: local`
 - `amazon.aws.ec2_security_group` で SG を再構成
-- Chatwork に通知
+- SNS 経由でメールに通知
 
 ---
 
@@ -204,7 +205,7 @@ sequenceDiagram
     participant Rule as Config Rule
     participant EB as EventBridge
     participant Lambda as Lambda
-    participant CW as Chatwork
+    participant SNS as SNS / メール
 
     Actor->>SG: 0.0.0.0/0 -> tcp/22 を追加
     SG-->>Config: 変更イベント
@@ -214,7 +215,7 @@ sequenceDiagram
     Lambda->>SG: DescribeSecurityGroups
     Lambda->>SG: RevokeSecurityGroupIngress(全削除)
     Lambda->>SG: AuthorizeSecurityGroupIngress(10.0.0.0/8 のみ)
-    Lambda->>CW: 修復完了通知
+    Lambda->>SNS: 修復完了通知
 ```
 
 ### 7.2 Lambda の処理内容
@@ -225,7 +226,7 @@ Lambda は次の 3 関数に責務分割されています。
 |---|---|
 | `lambda_handler` | EventBridge/Config イベントの受信と全体制御 |
 | `remediate_sg` | SG のルール全削除と準拠ルール再適用 |
-| `notify_chatwork` | Chatwork API への通知 |
+| `notify_email` | SNS へ publish し、メールで通知 |
 
 ### 7.3 修復アルゴリズム
 
@@ -269,7 +270,7 @@ flowchart LR
     Local[ローカルPC] --> Playbook[ansible-playbook fix_sg.yml]
     Playbook --> AWSAPI[amazon.aws modules / boto3]
     AWSAPI --> SG[Security Group]
-    Playbook --> Chatwork[Chatwork API]
+    Playbook --> SNS[SNS Topic]
 ```
 
 ### 8.3 Playbook の特徴
@@ -343,24 +344,25 @@ Lambda 実行ロール `sg-remediation-lambda-role` には次の権限が付与�
 
 ## 11. 通知設計
 
-通知先は Chatwork です。Lambda と Ansible の両方が同じ通知チャネルを使います。
+通知先はメールです。Terraform が SNS トピックとメール購読を作成し、Lambda と Ansible の両方が同じトピックに publish します。
 
 | 実装 | 方法 |
 |---|---|
-| Lambda | `urllib.request` で Chatwork API に POST |
-| Ansible | `uri` モジュールで Chatwork API に POST |
+| Lambda | boto3 の `sns.publish` |
+| Ansible | `community.aws.sns` モジュール |
 
-環境変数:
+設定:
 
-- `CHATWORK_API_TOKEN`
-- `CHATWORK_ROOM_ID`
+- Lambda: 環境変数 `SNS_TOPIC_ARN`（Terraform が注入）
+- Ansible: トピック名 `sg-remediation-notify` を playbook に記述
+- 送信先アドレス: Terraform 変数 `notification_email`
 
-Lambda では Terraform の変数から環境変数に注入し、Ansible ではローカルシェルの環境変数を `lookup('env', ...)` で参照しています。
+メール購読は、初回に届く確認メールのリンクを承認するまで有効になりません。
 
 この差分は重要です。
 
-- Lambda は AWS 側にデプロイされた時点の設定を使う
-- Ansible は実行者のローカル環境に依存する
+- Lambda は IAM ロールの `sns:Publish` 権限で publish する
+- Ansible は実行者のローカル AWS 認証情報（`sns:Publish` が必要）に依存する
 
 ---
 
@@ -411,7 +413,7 @@ Ansible は必須ではありませんが、教育的価値があります。
 
 「秒単位」で修復できる設計ではあるものの、厳密には AWS Config の評価タイミングに依存します。リアルタイムではなく、イベント反映まで数秒のラグがあります。
 
-### 13.4 Chatwork 通知失敗時の再試行なし
+### 13.4 通知失敗時の再試行なし
 
 Lambda の通知処理には明示的な retry 制御や dead-letter queue がありません。SG 修復後に通知だけ失敗する可能性があります。
 
@@ -429,7 +431,7 @@ Lambda の通知処理には明示的な retry 制御や dead-letter queue が�
 ### 14.2 今後強化できる点
 
 - Lambda IAM を対象 SG 単位にさらに絞る
-- Chatwork API トークンを Terraform 変数直渡しではなく Secrets Manager / SSM に寄せる
+- SNS 購読先を Slack / Chatwork / PagerDuty などにも広げる
 - Lambda に失敗通知や DLQ を追加する
 - 修復前後の差分を CloudWatch Logs や DynamoDB に残す
 - SSH 以外の禁止ルールにも展開する
@@ -445,7 +447,7 @@ Lambda の通知処理には明示的な retry 制御や dead-letter queue が�
 3. EventBridge が Lambda を起動する
 4. Lambda が不正ルールを含む全インバウンドルールを削除する
 5. Lambda が `10.0.0.0/8 -> 22/tcp` のみを再投入する
-6. Chatwork に「自己修復完了」が投稿される
+6. 「自己修復完了」のメールが届く
 
 ### 15.2 障害時の代替フロー
 
@@ -462,7 +464,7 @@ ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=<sg-id>"
 - **Detect**: AWS Config でドリフトを検知する
 - **Route**: EventBridge で違反イベントだけを流す
 - **Remediate**: Lambda で機械的に正しい状態へ戻す
-- **Notify**: Chatwork で人間に透明性を持たせる
+- **Notify**: メールで人間に透明性を持たせる
 - **Reapply**: Ansible で手動でも同じ desired state を再適用できる
 
 つまりこれは、単なる SG 修復サンプルではなく、**「宣言した正しい状態を守り続ける」ための最小 self-healing loop** を学ぶ教材です。
@@ -491,7 +493,7 @@ ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=<sg-id>"
 - **EventBridge** でイベントをつなぎ
 - **Lambda** で自動修復し
 - **Ansible** で手動再適用経路も持ち
-- **Chatwork** で人間に通知する
+- **SNS（メール）** で人間に通知する
 
 という、非常に理解しやすい自己修復アーキテクチャになっています。
 

@@ -4,7 +4,7 @@
 
 AWS Config + Lambda + Ansible で、セキュリティグループの設定ドリフトを自動検知・修復するシステムを構築するハンズオン。
 
-**ゴール:** SG に `0.0.0.0/0 → port 22` の穴が開けられたら、10秒以内に Lambda が自動修復して Chatwork に通知する仕組みを動かす。
+**ゴール:** SG に `0.0.0.0/0 → port 22` の穴が開けられたら、10秒以内に Lambda が自動修復してメールで通知する仕組みを動かす。
 
 **Ansible の役割:** 自動修復の本体は Lambda（boto3 直接）。Ansible はローカルPC から手動確認・強制再適用するときに使う。EC2・SSM は登場しない。
 
@@ -16,12 +16,12 @@ SG（不正ルール追加）
   → Config Rule: INCOMING_SSH_DISABLED（NON_COMPLIANT 判定）
   → EventBridge（Lambda 起動）
   → Lambda / handler.py（boto3 で SG を直接修復）
-  → Chatwork（修復完了通知）
+  → SNS → メール（修復完了通知）
 
 Ansible（ローカルPC から手動実行・検証用）
   → connection: local（SSH しない）
   → boto3 → AWS API → SG 修復
-  → Chatwork 通知
+  → SNS → メール通知
 ```
 
 ## ディレクトリ構成
@@ -58,23 +58,22 @@ self-healing-infra/
 - **Lambda アーキテクチャ**: arm64
 - **Lambda ランタイム**: python3.12
 - **許可する SSH CIDR**: `10.0.0.0/8`（内部 VPC のみ）
-- **通知**: Chatwork API（Slack は使わない）
+- **通知**: SNS → メール（Chatwork / Slack は使わない）
 - **環境変数**:
-  - `CHATWORK_API_TOKEN`: Chatwork API トークン
-  - `CHATWORK_ROOM_ID`: 通知先ルーム ID
+  - `SNS_TOPIC_ARN`: 通知先 SNS トピック ARN（Terraform が注入）
 
 ## コーディング規約
 
 ### Python（Lambda）
 - 型ヒントを使う（`def remediate_sg(sg_id: str) -> None:`）
-- 関数を `lambda_handler` / `remediate_sg` / `notify_chatwork` に分離する
+- 関数を `lambda_handler` / `remediate_sg` / `notify_email` に分離する
 - `urllib.request` を使う（外部ライブラリ追加なし）
 - ログは `logger.info` / `logger.error` で統一
 
 ### Terraform
 - `variable` には `sensitive = true` を適切に設定する
 - `output` には `production_sg_id` のみ出力する
-- Lambda IAM ポリシーは最小権限（`ec2:DescribeSecurityGroups` / `ec2:AuthorizeSecurityGroupIngress` / `ec2:RevokeSecurityGroupIngress` のみ）
+- Lambda IAM ポリシーは最小権限（`ec2:DescribeSecurityGroups` / `ec2:AuthorizeSecurityGroupIngress` / `ec2:RevokeSecurityGroupIngress` と、通知用トピックへの `sns:Publish` のみ）
 
 ### Ansible Playbook
 - `hosts: localhost` / `connection: local` を必ず指定する
@@ -89,7 +88,7 @@ self-healing-infra/
 | Ansible の用途 | 手動確認・再適用のみ | 自動修復には使わない |
 | SSM / EC2 | 使わない | この構成では不要 |
 | Config 記録対象 | SG のみ | コスト削減（全リソース記録しない） |
-| Chatwork 通知 | urllib.request で直接 POST | 外部ライブラリ不要 |
+| メール通知 | SNS トピック + email 購読 | 外部サービス・トークン不要 |
 
 ## よく使うコマンド
 
@@ -97,8 +96,8 @@ self-healing-infra/
 # Terraform デプロイ
 cd terraform
 terraform init
-terraform plan  -var="chatwork_api_token=$CHATWORK_API_TOKEN" -var="chatwork_room_id=$CHATWORK_ROOM_ID"
-terraform apply -var="chatwork_api_token=$CHATWORK_API_TOKEN" -var="chatwork_room_id=$CHATWORK_ROOM_ID" -auto-approve
+terraform plan  -var="notification_email=$NOTIFICATION_EMAIL"
+terraform apply -var="notification_email=$NOTIFICATION_EMAIL" -auto-approve
 
 # SG ID 取得
 SG_ID=$(terraform output -raw production_sg_id)
@@ -127,7 +126,7 @@ ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID" --check
 ansible-playbook ansible/playbooks/fix_sg.yml -e "sg_id=$SG_ID"
 
 # クリーンアップ
-terraform destroy -var="chatwork_api_token=$CHATWORK_API_TOKEN" -var="chatwork_room_id=$CHATWORK_ROOM_ID" -auto-approve
+terraform destroy -var="notification_email=$NOTIFICATION_EMAIL" -auto-approve
 ```
 
 ## 進め方のルール
@@ -158,12 +157,12 @@ Config Recorder が記録していない:
       --query "ConfigurationRecordersStatus[0].recording"
   → false の場合は config.tf の depends_on を確認する
 
-Chatwork に通知が届かない:
-  → curl -X POST \
-      -H "X-ChatWorkToken: $CHATWORK_API_TOKEN" \
-      -d "body=テスト" \
-      "https://api.chatwork.com/v2/rooms/$CHATWORK_ROOM_ID/messages"
-  → {"message_id":"..."} が返れば Token/Room ID は正しい
+メールが届かない:
+  → 購読確認メールのリンクを踏んだか（未確認だと PendingConfirmation のまま届かない）
+  → aws sns list-subscriptions-by-topic \
+      --topic-arn $(aws sns list-topics --query "Topics[?contains(TopicArn,'sg-remediation-notify')].TopicArn" --output text) \
+      --query "Subscriptions[0].SubscriptionArn"
+  → 迷惑メールフォルダも確認する
 
 Ansible が失敗する:
   → boto3 が入っているか: python3 -c "import boto3; print(boto3.__version__)"

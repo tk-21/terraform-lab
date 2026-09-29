@@ -17,7 +17,7 @@ data "aws_caller_identity" "current" {}
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
-  tags = { Name = "self-healing-vpc" }
+  tags                 = { Name = "self-healing-vpc" }
 }
 
 # プライベートサブネット
@@ -25,7 +25,7 @@ resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.1.0/24"
   availability_zone = "ap-northeast-1a"
-  tags = { Name = "private-subnet" }
+  tags              = { Name = "private-subnet" }
 }
 
 # 監視対象の本番 SG（ドリフト検知・修復の対象）
@@ -37,11 +37,13 @@ resource "aws_security_group" "production" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]  # 内部のみ（あるべき状態）
+    cidr_blocks = ["10.0.0.0/8"] # 内部のみ（あるべき状態）
   }
 
   egress {
-    from_port   = 0; to_port = 0; protocol = "-1"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -72,8 +74,8 @@ resource "aws_iam_role_policy" "lambda_ec2" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = [
+      Effect = "Allow"
+      Action = [
         "ec2:DescribeSecurityGroups",
         "ec2:AuthorizeSecurityGroupIngress",
         "ec2:RevokeSecurityGroupIngress"
@@ -101,6 +103,30 @@ resource "aws_iam_role_policy_attachment" "config_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
 }
 
+# 通知用 SNS トピック + メール購読（購読確認メールのリンクを踏むまで配信されない）
+resource "aws_sns_topic" "notify" {
+  name = "sg-remediation-notify"
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  topic_arn = aws_sns_topic.notify.arn
+  protocol  = "email"
+  endpoint  = var.notification_email
+}
+
+resource "aws_iam_role_policy" "lambda_sns" {
+  name = "lambda-sns-publish-policy"
+  role = aws_iam_role.lambda_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sns:Publish"
+      Resource = aws_sns_topic.notify.arn
+    }]
+  })
+}
+
 # EventBridge → Lambda の呼び出し許可
 resource "aws_lambda_permission" "allow_eventbridge" {
   statement_id  = "AllowEventBridgeInvoke"
@@ -116,5 +142,7 @@ output "production_sg_id" {
 }
 
 # variables
-variable "chatwork_api_token" { type = string; sensitive = true }
-variable "chatwork_room_id"   { type = string }
+variable "notification_email" {
+  type        = string
+  description = "修復完了通知の送信先メールアドレス"
+}

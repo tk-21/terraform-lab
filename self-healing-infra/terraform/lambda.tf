@@ -15,8 +15,7 @@ resource "aws_lambda_function" "remediation" {
 
   environment {
     variables = {
-      CHATWORK_API_TOKEN = var.chatwork_api_token
-      CHATWORK_ROOM_ID   = var.chatwork_room_id
+      SNS_TOPIC_ARN = aws_sns_topic.notify.arn
     }
   }
 
