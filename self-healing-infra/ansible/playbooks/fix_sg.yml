@@ -12,7 +12,8 @@
   tasks:
     - name: Get current SG rules
       amazon.aws.ec2_security_group_info:
-        group_ids: ["{{ sg_id }}"]
+        filters:
+          group-id: "{{ sg_id }}"
         region: ap-northeast-1
       register: sg_info
 
