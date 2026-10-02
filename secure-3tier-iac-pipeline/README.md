@@ -417,6 +417,41 @@ terraform destroy -var-file=terraform.tfvars
 - Elastic IP が残っていないか
 - S3 バケット内にオブジェクトが残っていないか
 
+### `bootstrap.sh` で作成した tfstate バックエンドを削除する
+
+`bootstrap.sh` が作った S3 バケットと DynamoDB テーブルは Terraform 管理外のため、`terraform destroy` では消えません。手動で削除します。
+
+> **注意**: 必ず `terraform destroy` が完了した後に実行してください。先に消すと tfstate が失われ、残ったリソースを Terraform で削除できなくなります。
+
+バケットはバージョニングが有効なため、`aws s3 rb --force` では削除できません。全バージョンと削除マーカーを消してからバケットを削除します。
+
+```bash
+BUCKET="s3t-prod-tfstate-$(aws sts get-caller-identity --query Account --output text)"
+REGION="ap-northeast-1"
+
+# 全バージョンを削除
+aws s3api delete-objects --bucket "$BUCKET" --region "$REGION" \
+  --delete "$(aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" \
+    --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json)"
+
+# 削除マーカーを削除
+aws s3api delete-objects --bucket "$BUCKET" --region "$REGION" \
+  --delete "$(aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" \
+    --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json)"
+
+# バケットを削除
+aws s3api delete-bucket --bucket "$BUCKET" --region "$REGION"
+
+# ロック用 DynamoDB テーブルを削除
+aws dynamodb delete-table --table-name s3t-prod-tfstate-lock --region "$REGION"
+```
+
+補足:
+
+- 対象が空だと `delete-objects` が `Objects: null` でエラーになります。その場合は該当の手順を飛ばして構いません
+- 1,000 件を超える場合は、同じコマンドを繰り返してください
+- ローカルの `backend.hcl` を作った場合は、あわせて削除してください
+
 ## 関連ドキュメント
 
 - [ARCHITECTURE.md](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ARCHITECTURE.md)
