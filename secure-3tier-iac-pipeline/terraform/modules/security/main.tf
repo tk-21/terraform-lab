@@ -173,7 +173,7 @@ resource "aws_iam_role_policy" "secrets_manager" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:${var.rds_secret_arn_prefix}"
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.rds_secret_arn_prefix}"
       }
     ]
   })
@@ -205,7 +205,7 @@ resource "aws_iam_role_policy" "cloudwatch_agent" {
           "logs:DescribeLogGroups",
           "logs:DescribeLogStreams"
         ]
-        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+        Resource = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*"
       }
     ]
   })

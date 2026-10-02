@@ -66,7 +66,7 @@ secure-3tier-iac-pipeline/
 - Ansible Vault なしでのシークレット記載
 
 ## Terraform 規約
-- バージョン: Terraform >= 1.7, AWS Provider >= 5.40
+- バージョン: Terraform >= 1.7, AWS Provider >= 6.0
 - リージョン: `ap-northeast-1`
 - tfstate: S3 バックエンド + DynamoDB ロック（必須）
 - `common_tags` locals を全モジュールで使用

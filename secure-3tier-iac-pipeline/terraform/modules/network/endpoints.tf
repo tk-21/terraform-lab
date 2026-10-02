@@ -28,7 +28,7 @@ resource "aws_security_group" "vpc_endpoints" {
 # ---------------------------------------------------------------------------
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
   vpc_endpoint_type = "Gateway"
 
   route_table_ids = concat(
@@ -43,7 +43,7 @@ resource "aws_vpc_endpoint" "s3" {
 
 resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.dynamodb"
   vpc_endpoint_type = "Gateway"
 
   route_table_ids = concat(
@@ -64,12 +64,12 @@ resource "aws_vpc_endpoint" "dynamodb" {
 # ---------------------------------------------------------------------------
 locals {
   interface_endpoints = {
-    ssm            = "com.amazonaws.${data.aws_region.current.name}.ssm"
-    ssmmessages    = "com.amazonaws.${data.aws_region.current.name}.ssmmessages"
-    ec2messages    = "com.amazonaws.${data.aws_region.current.name}.ec2messages"
-    secretsmanager = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
-    logs           = "com.amazonaws.${data.aws_region.current.name}.logs"
-    kms            = "com.amazonaws.${data.aws_region.current.name}.kms"
+    ssm            = "com.amazonaws.${data.aws_region.current.region}.ssm"
+    ssmmessages    = "com.amazonaws.${data.aws_region.current.region}.ssmmessages"
+    ec2messages    = "com.amazonaws.${data.aws_region.current.region}.ec2messages"
+    secretsmanager = "com.amazonaws.${data.aws_region.current.region}.secretsmanager"
+    logs           = "com.amazonaws.${data.aws_region.current.region}.logs"
+    kms            = "com.amazonaws.${data.aws_region.current.region}.kms"
   }
 }
 
