@@ -549,8 +549,8 @@ DLQ_URL=$(aws sqs get-queue-url \
 
 aws sqs get-queue-attributes \
   --queue-url "${DLQ_URL}" \
-  --attribute-names ApproximateNumberOfMessagesVisible \
-  --query "Attributes.ApproximateNumberOfMessagesVisible"
+  --attribute-names ApproximateNumberOfMessages \
+  --query "Attributes.ApproximateNumberOfMessages"
 ```
 
 期待される出力: `"1"` 以上
@@ -561,6 +561,7 @@ aws sqs get-queue-attributes \
 aws sqs receive-message \
   --queue-url "${DLQ_URL}" \
   --max-number-of-messages 1 \
+  --visibility-timeout 0 \
   --query "Messages[0].Body" \
   --output text | python3 -m json.tool
 ```
