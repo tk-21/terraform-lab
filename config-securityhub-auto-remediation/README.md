@@ -611,13 +611,13 @@ terraform destroy
 
 `yes` を入力して実行します。完了まで通常は 5〜10 分です。Lambda が VPC に接続されているため、削除済みの Lambda 関数に紐づく VPC ENI の解放待ちで、Subnet と Lambda 用 Security Group の削除に最大 20 分程度かかることがあります。
 
-> `AWS Lambda VPC ENI` が `in-use` の場合は AWS が非同期で回収中です。手動で ENI を削除したり、`terraform destroy` を中断したりせず、そのまま完了またはエラーになるまで待機してください。
+> `AWS Lambda VPC ENI` が `in-use` の場合は AWS が非同期で回収中です。`terraform destroy` を中断せず、そのまま完了またはエラーになるまで待機してください。`available` のまま 10 分以上残る場合は、[トラブルシューティング](#terraform-destroy-が-subnet--security-group-の削除で進まない)の手順で手動削除できます。
 
 ### `BucketNotEmpty` で destroy が失敗した場合
 
-監査ログバケットとアクセスログバケットは、誤削除を防ぐため `force_destroy = false`、かつバージョニング有効で作成しています。そのため、バケット内にオブジェクトの過去バージョンまたは削除マーカーが残っていると、Terraform はバケットを削除できません。
+監査ログバケットとアクセスログバケットはバージョニング有効で作成しています。audit モジュールの `force_destroy` 変数は既定で `false` ですが、dev 環境では [dev/main.tf](terraform/environments/dev/main.tf) で `true` を渡しているため、通常は全バージョンごと削除されます。
 
-エラーに表示されたバケット名を指定して、全バージョンを削除してから `terraform destroy` を再実行してください。以下は開発環境の少量のログを削除する手順です。
+ただし、`force_destroy = true` を state に反映する前の環境(`terraform apply` を行っていない環境)では、バケット内にオブジェクトの過去バージョンまたは削除マーカーが残っていると、Terraform はバケットを削除できません。`terraform apply` で `force_destroy` を反映してから `destroy` するのが最も簡単です。反映できない場合は、エラーに表示されたバケット名を指定して、全バージョンを削除してから `terraform destroy` を再実行してください。以下は開発環境の少量のログを削除する手順です。
 
 ```bash
 BUCKET="csar-audit-logs-$(aws sts get-caller-identity --query Account --output text)"
@@ -735,6 +735,37 @@ aws configservice describe-delivery-channel-status \
   --delivery-channel-names csar-config-delivery \
   --region ap-northeast-1
 ```
+
+### `terraform destroy` が subnet / security group の削除で進まない
+
+`module.networking.aws_subnet.private[*]` や `aws_security_group.lambda` が `Still destroying...` のまま 10 分以上止まる場合、VPC 内 Lambda が作成した ENI（`AWS Lambda VPC ENI-...`）が残っています。Lambda 関数を削除しても、AWS 側が ENI を非同期で解放するため、subnet と SG が使用中扱いになります。通常は 20〜40 分で自然に解放されます。
+
+まず、SG に紐づく ENI の状態を確認します。
+
+```bash
+SG_ID=$(terraform -chdir=terraform/environments/dev state show \
+  module.networking.aws_security_group.lambda | awk '/^ *id /{print $3}' | tr -d '"')
+
+aws ec2 describe-network-interfaces \
+  --filters Name=group-id,Values="${SG_ID}" \
+  --query "NetworkInterfaces[].{id:NetworkInterfaceId,status:Status,desc:Description}" \
+  --output table
+```
+
+- 結果が空: 解放済みです。destroy はまもなく進みます。
+- `status` が `available`: どこにも接続されていない孤立 ENI です。次のコマンドで手動削除できます。
+- `status` が `in-use`: 解放処理中か、別リソースが使用中です。`desc` を確認し、Lambda ENI であれば待ちます。
+
+```bash
+# available の ENI をすべて削除（destroy は中断せず実行したままにする）
+aws ec2 describe-network-interfaces \
+  --filters Name=group-id,Values="${SG_ID}" Name=status,Values=available \
+  --query "NetworkInterfaces[].NetworkInterfaceId" --output text \
+  | tr '\t' '\n' \
+  | xargs -r -n1 aws ec2 delete-network-interface --network-interface-id
+```
+
+削除後、止まっていた subnet / SG の destroy が自動で再開します。`is currently in use` が出た場合は、1〜2 分待って再実行してください。
 
 ---
 

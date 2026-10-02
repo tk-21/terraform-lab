@@ -47,6 +47,9 @@ module "audit" {
 
   environment    = var.environment
   aws_account_id = local.aws_account_id
+
+  # 検証用のdev環境はdestroyを確実に通すため、バージョン含め強制削除を許可する
+  force_destroy = true
 }
 
 module "iam" {

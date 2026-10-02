@@ -10,8 +10,8 @@ locals {
 resource "aws_s3_bucket" "access_logs" {
   bucket = local.access_log_bucket
 
-  # terraform destroy時に誤削除を防ぐためforceDestroyはfalse
-  force_destroy = false
+  # 既定はfalseで誤削除を防ぐ。検証用のdev環境のみ変数でtrueにしてdestroyを通す
+  force_destroy = var.force_destroy
 }
 
 resource "aws_s3_bucket_versioning" "access_logs" {
@@ -52,7 +52,7 @@ resource "aws_s3_bucket_ownership_controls" "access_logs" {
 
 resource "aws_s3_bucket" "audit" {
   bucket        = local.audit_bucket_name
-  force_destroy = false
+  force_destroy = var.force_destroy
 }
 
 resource "aws_s3_bucket_versioning" "audit" {
