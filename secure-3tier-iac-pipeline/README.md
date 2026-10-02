@@ -27,7 +27,7 @@ Terraform と Ansible を使って、AWS 上にセキュアな 3 層 Web アプ�
 1. ローカル環境と AWS 認証を準備する
 2. `.venv` を有効化して作業環境をそろえる
 3. `bootstrap.sh` で tfstate 用 S3 / DynamoDB を作る
-4. `backend.tf` と `terraform.tfvars` を設定する
+4. `terraform.tfvars` を設定する（backend の bucket は `init` 時に渡す）
 5. `terraform init` と `terraform plan` で内容を確認する
 6. `terraform apply` はユーザー自身が実行する
 7. Ansible の変数と Vault を設定する
@@ -120,16 +120,17 @@ bash scripts/bootstrap.sh
 
 実行後、出力された S3 バケット名をメモしてください。
 
-## 4. `backend.tf` を更新する
+## 4. backend の bucket を確認する
 
-[terraform/envs/prod/backend.tf](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/terraform/envs/prod/backend.tf) の `bucket` はコメントアウトされたままです。`bootstrap.sh` の結果に合わせて実値を設定してください。
+[terraform/envs/prod/backend.tf](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/terraform/envs/prod/backend.tf) には `bucket` を書いていません。アカウント ID を含む値をコードに直書きしないため、`terraform init` 時に `-backend-config` で渡します。
 
-設定例:
+手順 3 で出力されたバケット名(`s3t-prod-tfstate-{AWS_ACCOUNT_ID}`)を、次の手順で使います。
+
+`backend.tf` の内容:
 
 ```hcl
 terraform {
   backend "s3" {
-    bucket         = "s3t-prod-tfstate-123456789012"
     key            = "prod/terraform.tfstate"
     region         = "ap-northeast-1"
     encrypt        = true
@@ -168,16 +169,18 @@ acm_certificate_arn = ""
 
 ```bash
 cd terraform/envs/prod
-terraform init
+terraform init -backend-config="bucket=s3t-prod-tfstate-123456789012"
 terraform fmt -recursive
 terraform validate
 terraform plan -var-file=terraform.tfvars
 ```
 
-`backend.tf` を後から変更した場合は、必要に応じて再初期化します。
+バケット名は手順 3 の出力に合わせてください。毎回入力したくない場合は、`backend.hcl`(`bucket = "..."` のみ記載、`.gitignore` に追加)を作り、`-backend-config=backend.hcl` で渡せます。
+
+backend 設定や bucket を変更した場合は、必要に応じて再初期化します。
 
 ```bash
-terraform init -reconfigure
+terraform init -reconfigure -backend-config="bucket=s3t-prod-tfstate-123456789012"
 ```
 
 ## 7. Terraform Apply はユーザー自身が実行する
@@ -360,7 +363,8 @@ ansible-playbook \
 
 ### `terraform init` で backend エラーが出る
 
-- `backend.tf` の `bucket` が未設定
+- `terraform init` に `-backend-config="bucket=..."` を渡していない
+- 渡したバケット名が `bootstrap.sh` の出力と一致していない
 - `bootstrap.sh` を実行していない
 - 変更後に `terraform init -reconfigure` をしていない
 

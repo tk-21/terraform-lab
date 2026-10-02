@@ -102,21 +102,12 @@ fi
 
 cat <<EOF
 
-=== Backend configuration (copy to backend.tf or use -backend-config) ===
+=== Backend bucket (backend.tf には bucket を書かず init 時に渡す) ===
 
-terraform {
-  backend "s3" {
-    bucket         = "${BUCKET_NAME}"
-    key            = "prod/terraform.tfstate"
-    region         = "${REGION}"
-    encrypt        = true
-    dynamodb_table = "${DYNAMODB_TABLE}"
-  }
-}
+bucket = ${BUCKET_NAME}
 
 === Next steps ===
-1. Update terraform/envs/prod/backend.tf with the bucket name above
-2. cd terraform/envs/prod
-3. terraform init
-4. terraform plan -var-file=terraform.tfvars
+1. cd terraform/envs/prod
+2. terraform init -backend-config="bucket=${BUCKET_NAME}"
+3. terraform plan -var-file=terraform.tfvars
 EOF
