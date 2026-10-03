@@ -169,7 +169,7 @@ acm_certificate_arn = ""
 
 ```bash
 cd terraform/envs/prod
-terraform init -backend-config="bucket=s3t-prod-tfstate-123456789012"
+terraform init -backend-config="bucket=s3t-prod-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 terraform fmt -recursive
 terraform validate
 terraform plan -var-file=terraform.tfvars
@@ -180,7 +180,8 @@ terraform plan -var-file=terraform.tfvars
 backend 設定や bucket を変更した場合は、必要に応じて再初期化します。
 
 ```bash
-terraform init -reconfigure -backend-config="bucket=s3t-prod-tfstate-123456789012"
+terraform init -reconfigure \
+  -backend-config="bucket=s3t-prod-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 ```
 
 ## 7. Terraform Apply はユーザー自身が実行する
