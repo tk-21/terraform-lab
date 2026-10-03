@@ -235,6 +235,17 @@ terraform apply -var-file=terraform.tfvars
 terraform output
 ```
 
+### 7-1. ASG のヘルスチェックは、デプロイ前は EC2 にしておく
+
+ASG の `health_check_type`([asg.tf](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/terraform/modules/compute/asg.tf))は、現在は暫定的に `"EC2"` です。
+`"ELB"` のままだと、アプリ未デプロイの間は `/health` が 200 を返さず、ASG がインスタンスを約4分ごとに終了・再作成し続けます。その間は Ansible が接続できません(`TargetNotConnected`)。
+
+1. `"EC2"` の状態で `terraform apply` する
+2. Ansible でアプリをデプロイし、`/health` が通ることを確認する(手順 10、11)
+3. `health_check_type` を `"ELB"` に戻して、もう一度 `terraform apply` する
+
+戻し忘れると、実際に異常なインスタンスが自動で入れ替わりません。
+
 ## 8. Ansible 用の変数を更新する
 
 Terraform 構築後、Ansible 側の設定を合わせます。
@@ -457,7 +468,42 @@ ansible-playbook \
 ### `aws_ssm` 接続で失敗する
 
 - 対象 EC2 が SSM Managed Instance になっているか確認する
+  ```bash
+  aws ssm describe-instance-information --region ap-northeast-1 \
+    --query 'InstanceInformationList[].[InstanceId,PingStatus]' --output table
+  ```
 - Session Manager 関連の VPC Endpoint と IAM 権限が正しく作成されているか確認する
+- `session-manager-plugin` が入っているか確認する(`which session-manager-plugin`)
+- インベントリのキャッシュ(5分)が古いと、すでに終了したインスタンスを指す。`ansible-inventory ... --flush-cache` で捨てる
+
+### `TargetNotConnected` が出る
+
+- 対象のインスタンスが消えているか、SSM に未登録の状態。ASG が入れ替えている場合は、手順 7-1 のヘルスチェックを確認する
+- `aws autoscaling describe-scaling-activities --auto-scaling-group-name s3t-prod-web-asg --region ap-northeast-1 --max-items 5` で、直近の終了理由を見る
+- `--flush-cache` でインベントリを更新してから再実行する
+
+### `Gathering Facts` で止まる(`EXEC remaining: N second(s)` が続く)
+
+- `aws_ssm` はモジュールを S3 経由で転送する。EC2 から S3 に届かないと、ダウンロードが返らずに待ち続ける
+- `aws ssm start-session --target <instance-id>` でセッションに入り、次を実行する。`000` やタイムアウトなら経路の問題
+  ```bash
+  curl -sS -m 10 -o /dev/null -w "%{http_code}\n" https://s3.ap-northeast-1.amazonaws.com/
+  ```
+- private サブネットの NACL([network/main.tf](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/terraform/modules/network/main.tf))で、S3 Gateway エンドポイント経由の戻りパケット(TCP 1024-65535、送信元は S3 のパブリック IP)が許可されているか確認する。NACL はステートレスなので、VPC CIDR の許可だけでは足りない
+- S3 の経路が塞がれていた間は、`user_data` の `dnf install`(AL2023 のリポジトリは S3 上)も失敗している可能性がある。`user_data` は初回起動時のみ実行されるため、必要ならインスタンスを作り直すか、Ansible で入れる
+
+### `Failed to create temporary directory` / `/home/ec2-user: Permission denied` が出る
+
+- `aws_ssm` 接続は `ssm-user` で入るため、`/home/ec2-user` 配下に作れない
+- [ansible.cfg](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/ansible.cfg) の `remote_tmp = /tmp/.ansible/tmp` を確認する
+
+### `Could not resolve hostname i-...`(ssh で接続しようとする)
+
+- [aws_ec2.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/inventories/aws_ec2.yml) の `compose` の値は Jinja2 の式として評価される。文字列は `"'aws_ssm'"` のように `'...'` で囲む必要がある(`"aws_ssm"` だけだと変数名とみなされ、ssh にフォールバックする)
+
+### `Could not load 'yaml' callback plugin` が出る
+
+- 新しい ansible-core では `yaml` コールバックが廃止された。`ansible.cfg` は `stdout_callback = default` と `result_format = yaml` を使う
 
 ### `/health` が失敗する
 
