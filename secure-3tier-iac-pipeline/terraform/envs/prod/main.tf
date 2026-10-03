@@ -85,6 +85,10 @@ module "database" {
   kms_key_arn     = aws_kms_key.main.arn
   rds_secret_arn  = aws_secretsmanager_secret.rds_master.arn
   common_tags     = local.common_tags
+
+  # [注意] database モジュール内のデータソースが AWSCURRENT バージョンを読むため、
+  #        secret_version の作成完了を待たせる (ARN 参照だけでは依存関係が張られない)
+  depends_on = [aws_secretsmanager_secret_version.rds_master]
 }
 
 # ---------------------------------------------------------------------------

@@ -211,13 +211,16 @@ terraform output
 
 Terraform 構築後、Ansible 側の設定を合わせます。
 
-### 8-1. AWS アカウント ID を更新する
+### 8-1. AWS アカウント ID を環境変数に設定する
 
-[ansible/group_vars/all/vars.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/group_vars/all/vars.yml) の以下を実際の AWS アカウント ID に書き換えてください。
+アカウント ID はリポジトリに書かず、環境変数 `AWS_ACCOUNT_ID` から取得します。
+[ansible/group_vars/all/vars.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/group_vars/all/vars.yml) と [ansible/inventories/aws_ec2.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/inventories/aws_ec2.yml) は `lookup('env', 'AWS_ACCOUNT_ID')` を使っており、未設定だとエラーになります。
 
-```yaml
-aws_account_id: "123456789012"
+```bash
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ```
+
+`scripts/run_ansible.sh` と `scripts/run_drift_check.sh` は、未設定なら STS から自動取得するため、この手順は不要です。`ansible-playbook` や `ansible-inventory` を直接実行する場合のみ必要です。
 
 この値は、SSM Session Manager のログバケット参照に使われます。
 
@@ -377,7 +380,7 @@ ansible-playbook \
 
 - `terraform apply` 後に EC2 が起動済みか確認する
 - EC2 タグ `Project=secure-3tier-iac-pipeline` と `Environment=prod` が付いているか確認する
-- [ansible/group_vars/all/vars.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/group_vars/all/vars.yml) の `aws_account_id` が置換済みか確認する
+- [ansible/group_vars/all/vars.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/group_vars/all/vars.yml) の `aws_account_id` 用に、環境変数 `AWS_ACCOUNT_ID` が設定されているか確認する
 
 ### `aws_ssm` 接続で失敗する
 

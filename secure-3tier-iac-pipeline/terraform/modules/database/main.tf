@@ -17,7 +17,7 @@ resource "random_id" "snapshot_suffix" {
 # ---------------------------------------------------------------------------
 resource "aws_db_subnet_group" "main" {
   name        = "${local.prefix}-db-subnet-group"
-  description = "Subnet group for ${local.prefix} Aurora cluster — data tier only"
+  description = "Subnet group for ${local.prefix} Aurora cluster - data tier only"
   subnet_ids  = var.data_subnet_ids
 
   tags = merge(local.common_tags, {

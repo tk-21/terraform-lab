@@ -8,7 +8,7 @@ data "aws_ssm_parameter" "al2023_ami" {
 # ---------------------------------------------------------------------------
 resource "aws_launch_template" "web" {
   name        = "s3t-prod-web-lt"
-  description = "Launch template for s3t-prod web tier — arm64, IMDSv2 required"
+  description = "Launch template for s3t-prod web tier, arm64, IMDSv2 required"
 
   image_id      = data.aws_ssm_parameter.al2023_ami.value
   instance_type = var.instance_type

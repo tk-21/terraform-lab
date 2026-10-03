@@ -6,7 +6,7 @@ data "aws_region" "current" {}
 # ---------------------------------------------------------------------------
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${local.prefix}-vpc-endpoints-sg"
-  description = "Security group for VPC Interface Endpoints — HTTPS from within VPC only"
+  description = "Security group for VPC Interface Endpoints - HTTPS from within VPC only"
   vpc_id      = aws_vpc.main.id
 
   ingress {

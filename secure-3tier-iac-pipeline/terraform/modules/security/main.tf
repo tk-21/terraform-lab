@@ -326,7 +326,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_ec2" {
 # [セキュリティ] SSHポート(22)は一切開放しない。SSM Session Manager を使用
 resource "aws_security_group" "ec2" {
   name        = "s3t-prod-web-sg"
-  description = "Security group for EC2 web instances — SSH not allowed, use SSM Session Manager"
+  description = "Security group for EC2 web instances, SSH not allowed, use SSM Session Manager"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {
@@ -367,7 +367,7 @@ resource "aws_vpc_security_group_egress_rule" "ec2_to_rds" {
 # [セキュリティ] DB層はインターネットから2段階隔離（NATなし + SG制限）
 resource "aws_security_group" "rds" {
   name        = "s3t-prod-rds-sg"
-  description = "Security group for RDS Aurora — accessible only from EC2 web SG"
+  description = "Security group for RDS Aurora, accessible only from EC2 web SG"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {

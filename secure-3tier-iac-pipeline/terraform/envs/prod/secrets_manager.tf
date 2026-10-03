@@ -39,14 +39,17 @@ resource "aws_secretsmanager_secret_version" "rds_master" {
 #        Lambda がデプロイ済みでない場合は apply がエラーになるためコメントアウトして
 #        Lambda デプロイ後に有効化すること。
 # ---------------------------------------------------------------------------
-resource "aws_secretsmanager_secret_rotation" "rds_master" {
-  secret_id = aws_secretsmanager_secret.rds_master.id
-
-  # [設計意図] Aurora MySQL 用 AWS 管理ローテーション Lambda (同一アカウントにデプロイ済み前提)
-  rotation_lambda_arn = "arn:aws:lambda:ap-northeast-1:${data.aws_caller_identity.current.account_id}:function:SecretsManagerMySQLRotationSingleUser"
-
-  rotation_rules {
-    automatically_after_days = 30
-    duration                 = "2h"
-  }
-}
+# [注意] ローテーション Lambda が未デプロイ、または Lambda のリソースポリシーで
+#        secretsmanager.amazonaws.com の invoke が許可されていないと AccessDeniedException になる。
+#        Lambda デプロイと権限付与 (aws_lambda_permission) を済ませてから有効化すること。
+# resource "aws_secretsmanager_secret_rotation" "rds_master" {
+#   secret_id = aws_secretsmanager_secret.rds_master.id
+#
+#   # [設計意図] Aurora MySQL 用 AWS 管理ローテーション Lambda (同一アカウントにデプロイ済み前提)
+#   rotation_lambda_arn = "arn:aws:lambda:ap-northeast-1:${data.aws_caller_identity.current.account_id}:function:SecretsManagerMySQLRotationSingleUser"
+#
+#   rotation_rules {
+#     automatically_after_days = 30
+#     duration                 = "2h"
+#   }
+# }
