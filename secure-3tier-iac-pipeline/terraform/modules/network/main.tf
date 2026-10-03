@@ -235,6 +235,19 @@ resource "aws_network_acl" "private" {
     to_port    = 0
   }
 
+  # インバウンド: エフェメラルポート (S3 Gateway エンドポイント経由の戻りパケット)
+  # [注意] NACL はステートレス。S3 Gateway エンドポイント経由の通信は戻りの送信元が S3 のパブリック IP になり、
+  #        VPC CIDR 許可だけでは拒否される (Ansible aws_ssm の S3 転送や dnf リポジトリ取得が止まる)
+  # [セキュリティ] 宛先を 1024-65535 に限定。SG でインバウンドは ALB(8080) のみ許可しているため新規接続は届かない
+  ingress {
+    rule_no    = 110
+    protocol   = "tcp"
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
+  }
+
   # アウトバウンド: HTTPS (EC2→Secrets Manager/SSM等のAWS APIはNAT経由のHTTPS)
   egress {
     rule_no    = 100

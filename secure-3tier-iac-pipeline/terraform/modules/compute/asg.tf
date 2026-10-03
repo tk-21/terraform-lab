@@ -100,7 +100,9 @@ resource "aws_autoscaling_group" "web" {
   target_group_arns   = [aws_lb_target_group.web.arn]
 
   # [設計意図] ALBのヘルスチェック結果でASGが異常インスタンスを判断・置換する
-  health_check_type         = "ELB"
+  # [注意] 暫定: アプリ未デプロイの間 /health が 200 を返さず、ASG がインスタンスを終了・再作成し続けるため EC2 に変更。
+  #        Ansible でアプリをデプロイして /health が通ることを確認したら "ELB" に戻すこと
+  health_check_type         = "EC2"
   health_check_grace_period = 300
 
   launch_template {
