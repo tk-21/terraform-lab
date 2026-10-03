@@ -15,6 +15,9 @@ locals {
 resource "aws_s3_bucket" "alb_logs" {
   bucket = local.alb_logs_bucket_name
 
+  # [設計意図] ハンズオン用途のため、中身が残っていても destroy で削除する
+  force_destroy = true
+
   tags = merge(local.common_tags, {
     Name    = local.alb_logs_bucket_name
     Purpose = "alb-access-logs"
@@ -115,8 +118,8 @@ resource "aws_lb" "main" {
   security_groups    = [var.alb_sg_id]
   subnets            = var.public_subnet_ids
 
-  # [セキュリティ] 削除保護を有効化（本番環境）
-  enable_deletion_protection = true
+  # [設計意図] ハンズオン用途のため削除保護は無効 (本番では true にすること)
+  enable_deletion_protection = false
 
   access_logs {
     bucket  = aws_s3_bucket.alb_logs.bucket
@@ -231,6 +234,9 @@ resource "aws_lb_listener" "https" {
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "app_data" {
   bucket = local.app_data_bucket_name
+
+  # [設計意図] ハンズオン用途のため、中身が残っていても destroy で削除する
+  force_destroy = true
 
   tags = merge(local.common_tags, {
     Name    = local.app_data_bucket_name

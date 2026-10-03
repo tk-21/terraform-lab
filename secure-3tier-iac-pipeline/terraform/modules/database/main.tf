@@ -8,10 +8,6 @@ data "aws_secretsmanager_secret_version" "rds_master" {
   secret_id = var.rds_secret_arn
 }
 
-resource "random_id" "snapshot_suffix" {
-  byte_length = 4
-}
-
 # ---------------------------------------------------------------------------
 # DB サブネットグループ — data tier subnets のみ使用
 # ---------------------------------------------------------------------------
@@ -79,15 +75,15 @@ resource "aws_rds_cluster" "main" {
   storage_encrypted = true
   kms_key_id        = var.kms_key_arn
 
-  # [注意] ハンズオン終了時は false に変更してから terraform destroy を実行
+  # [設計意図] ハンズオン用途のため削除保護は無効
   deletion_protection = var.deletion_protection
 
   backup_retention_period      = 7
   preferred_backup_window      = "17:00-18:00"      # UTC (JST 02:00-03:00)
   preferred_maintenance_window = "sun:18:00-sun:19:00" # UTC (JST 月曜03:00-04:00)
 
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${local.prefix}-aurora-final-${random_id.snapshot_suffix.hex}"
+  # [設計意図] ハンズオン用途のため最終スナップショットは作成しない (destroy でデータは完全に消える)
+  skip_final_snapshot = true
 
   # [セキュリティ] 監査ログを CloudWatch Logs に送信。後でアラート設定可能
   enabled_cloudwatch_logs_exports = ["audit", "error", "slowquery"]
@@ -104,8 +100,8 @@ resource "aws_rds_cluster" "main" {
   })
 
   lifecycle {
-    # [注意] 本番データ保護
-    prevent_destroy = true
+    # [設計意図] ハンズオン用途のため保護しない (作り直しを繰り返す前提)
+    prevent_destroy = false
     # Secrets Manager ローテーション後の差分を無視
     ignore_changes = [master_password]
   }
@@ -136,7 +132,8 @@ resource "aws_rds_cluster_instance" "writer" {
   })
 
   lifecycle {
-    prevent_destroy = true
+    # [設計意図] ハンズオン用途のため保護しない (作り直しを繰り返す前提)
+    prevent_destroy = false
   }
 }
 
@@ -159,6 +156,7 @@ resource "aws_rds_cluster_instance" "reader" {
   })
 
   lifecycle {
-    prevent_destroy = true
+    # [設計意図] ハンズオン用途のため保護しない (作り直しを繰り返す前提)
+    prevent_destroy = false
   }
 }

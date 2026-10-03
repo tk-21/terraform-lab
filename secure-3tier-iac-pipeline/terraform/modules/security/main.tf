@@ -12,6 +12,9 @@ locals {
 resource "aws_s3_bucket" "session_logs" {
   bucket = local.session_logs_bucket_name
 
+  # [設計意図] ハンズオン用途のため、中身 (全バージョン) が残っていても destroy で削除する
+  force_destroy = true
+
   tags = merge(local.common_tags, {
     Name    = local.session_logs_bucket_name
     Purpose = "ssm-session-logs"

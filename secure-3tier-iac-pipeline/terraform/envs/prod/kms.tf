@@ -84,7 +84,8 @@ resource "aws_kms_key" "main" {
 
   # [注意] 削除するとEBS/RDS/Secrets Managerのデータが永久に失われる
   lifecycle {
-    prevent_destroy = true
+    # [設計意図] ハンズオン用途のため保護しない (作り直しを繰り返す前提)
+    prevent_destroy = false
   }
 
   tags = {

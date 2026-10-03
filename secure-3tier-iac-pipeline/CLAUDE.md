@@ -71,6 +71,12 @@ secure-3tier-iac-pipeline/
 - tfstate: S3 バックエンド + DynamoDB ロック（必須）
 - `common_tags` locals を全モジュールで使用
 - `lifecycle { prevent_destroy = true }` をステートフルリソースに適用
+  - **例外 (ハンズオン用途)**: 作り直しを繰り返す前提のため、以下は保護を無効にしている (2026-10 にユーザー承認済み)
+    - `prevent_destroy = false`: Aurora クラスター / writer / reader、KMS キー
+    - `deletion_protection = false`: Aurora クラスター、ALB (`enable_deletion_protection`)
+    - `skip_final_snapshot = true`: Aurora (destroy でデータは完全に消える)
+  - 本番として使う場合は、上記をすべて元の保護有効の値に戻すこと
+  - `prevent_destroy` は変数化できない (リテラルのみ)。これらの保護を Claude Code が勝手に外したり戻したりしないこと
 - `moved` ブロックを使ったリファクタリング対応
 
 ## Ansible 規約

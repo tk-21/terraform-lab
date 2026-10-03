@@ -12,7 +12,9 @@ resource "aws_secretsmanager_secret" "rds_master" {
   # [注意] Phase 3 で aws_secretsmanager_secret_rotation リソースを追加し rotation_lambda_arn を接続する
   # automatically_after_days = 30 のローテーションルールはその際に設定する
 
-  recovery_window_in_days = 7
+  # [設計意図] ハンズオン用途のため猶予なしで即時削除する (作り直し時に同名シークレットで衝突しない)
+  # [注意] 0 にすると destroy 後に復元できない。本番では 7〜30 を設定すること
+  recovery_window_in_days = 0
 
   tags = {
     Name = "ata-prod-rds-master-password"

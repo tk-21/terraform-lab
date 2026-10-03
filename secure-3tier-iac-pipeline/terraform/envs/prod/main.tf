@@ -86,6 +86,9 @@ module "database" {
   rds_secret_arn  = aws_secretsmanager_secret.rds_master.arn
   common_tags     = local.common_tags
 
+  # [設計意図] ハンズオン用途のため Aurora の削除保護を無効化
+  deletion_protection = false
+
   # [注意] database モジュール内のデータソースが AWSCURRENT バージョンを読むため、
   #        secret_version の作成完了を待たせる (ARN 参照だけでは依存関係が張られない)
   depends_on = [aws_secretsmanager_secret_version.rds_master]
