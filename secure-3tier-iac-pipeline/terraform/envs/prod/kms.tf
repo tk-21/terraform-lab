@@ -28,6 +28,38 @@ resource "aws_kms_key" "main" {
         Resource = "*"
       },
       {
+        # [注意] CMK で暗号化した EBS を ASG が起動するには、サービスリンクロールがキーを使える必要がある。
+        #        ルート委任 (IAM ポリシー側) だけではこのロールに権限がなく、インスタンスが 0 台のまま起動に失敗する
+        Sid    = "AllowAutoScalingServiceLinkedRoleUseOfKey"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        # [注意] EBS ボリューム作成時の Grant 発行。AWS サービス (EBS) 経由の利用に限定する
+        Sid    = "AllowAutoScalingServiceLinkedRoleCreateGrant"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+        }
+        Action   = "kms:CreateGrant"
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      },
+      {
         # [セキュリティ] CloudWatch LogsのVPC Flow Logs暗号化に必要
         Sid    = "AllowCloudWatchLogsEncryption"
         Effect = "Allow"

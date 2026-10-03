@@ -68,8 +68,9 @@ resource "aws_rds_cluster" "main" {
 
   master_username = "admin"
   # [設計意図] Secrets Managerと手動統合してローテーションを完全制御
-  manage_master_user_password = false
-  master_password             = jsondecode(data.aws_secretsmanager_secret_version.rds_master.secret_string)["password"]
+  # [注意] manage_master_user_password は指定しない。AWS Provider 6 では false でも
+  #        master_password と競合するため、master_password のみで手動管理にする
+  master_password = jsondecode(data.aws_secretsmanager_secret_version.rds_master.secret_string)["password"]
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [var.rds_sg_id]
