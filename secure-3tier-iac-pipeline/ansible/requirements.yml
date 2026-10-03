@@ -1,0 +1,10 @@
+# [設計意図] Ansible コレクションの依存関係。venv を有効にして以下で導入する
+#   ansible-galaxy collection install -r ansible/requirements.yml
+# [注意] バージョンは導入後に `ansible-galaxy collection list` で確認し、version: で pin すること
+collections:
+  # 動的インベントリ (amazon.aws.aws_ec2) と aws_ssm lookup
+  - name: amazon.aws
+  # SSM Session Manager 接続 (ansible_connection: aws_ssm)
+  - name: community.aws
+  # os_hardening ロールの sysctl モジュール (ansible.posix.sysctl)
+  - name: ansible.posix

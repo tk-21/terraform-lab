@@ -11,10 +11,10 @@ filters:
 
 # [上級] タグからグループを自動生成
 keyed_groups:
-  - key: tags.Role
+  - key: ec2_tags.Role
     prefix: role
     separator: "_"
-  - key: tags.Environment
+  - key: ec2_tags.Environment
     prefix: env
     separator: "_"
   - key: placement.availability_zone
@@ -23,17 +23,19 @@ keyed_groups:
 
 # グループ名: role_webserver, env_prod, az_ap-northeast-1a 等が自動生成される
 groups:
-  webservers: "'webserver' in tags.Role"
-  prod: "'prod' in tags.Environment"
+  webservers: "'webserver' in ec2_tags.Role"
+  prod: "'prod' in ec2_tags.Environment"
 
 # [セキュリティ] SSH不使用。SSM Session Manager経由で接続
 compose:
   ansible_host: instance_id
-  ansible_connection: "aws_ssm"
-  ansible_aws_ssm_region: "ap-northeast-1"
+  # [注意] compose の値は Jinja2 の「式」として評価される。文字列リテラルは '...' で囲むこと
+  #        ("aws_ssm" だけだと変数名とみなされ未定義になり、デフォルトの ssh 接続に戻ってしまう)
+  ansible_connection: "'aws_ssm'"
+  ansible_aws_ssm_region: "'ap-northeast-1'"
   # [設計意図] アカウントIDはリポジトリに書かず、環境変数 AWS_ACCOUNT_ID から取得する
   # [注意] 未設定の場合は空文字ではなくエラーにする (mandatory)
-  ansible_aws_ssm_bucket_name: "s3t-prod-session-logs-{{ lookup('env', 'AWS_ACCOUNT_ID') | mandatory }}"
+  ansible_aws_ssm_bucket_name: "'s3t-prod-session-logs-' ~ (lookup('env', 'AWS_ACCOUNT_ID') | mandatory)"
 
 # キャッシュ設定 (API呼び出し削減)
 cache: true

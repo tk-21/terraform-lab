@@ -74,10 +74,37 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
+### 0-1. Ansible の依存パッケージを venv に入れる
+
+Ansible は system 版(`/usr/bin/ansible*`)ではなく、必ず `.venv` 内のものを使います。
+system 版は `/usr/bin/python3` で動くため、venv に入れた boto3 を参照できず、動的インベントリが失敗します。
+
+```bash
+source .venv/bin/activate
+pip install ansible-core boto3 botocore
+ansible-galaxy collection install -r ansible/requirements.yml
+```
+
+インストール後に確認します。
+
+```bash
+which ansible-inventory
+python -c "import boto3, botocore; print(boto3.__version__)"
+ansible-galaxy collection list | grep -E "amazon.aws|community.aws|ansible.posix"
+```
+
+期待値:
+
+- `which ansible-inventory` が `.venv/bin/ansible-inventory` を指している
+- boto3 のバージョンが表示される
+- `amazon.aws`、`community.aws`、`ansible.posix` が一覧に出る
+
 注記:
 
-- 現在のリポジトリ直下には `requirements.txt` がありません
-- 必要に応じて、利用するツール群に合わせて追加してください
+- 現在のリポジトリ直下には `requirements.txt` がありません。上記のインストール後に `pip freeze > requirements.txt` で、バージョンを pin して保存してください
+- コレクションのバージョンも、`collection list` で確認して [ansible/requirements.yml](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/requirements.yml) の `version:` に pin してください
+- 動的インベントリの `amazon.aws.aws_ec2` は `amazon.aws` コレクション、SSM 接続(`aws_ssm`)は `community.aws` コレクションに含まれます
+- `aws_ssm` 接続で実際に Playbook を動かすには、実行するマシンに Session Manager plugin(`session-manager-plugin`)も必要です
 
 ## 1. AWS 認証を確認する
 
@@ -236,6 +263,25 @@ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output tex
 - `vault_chatwork_token`
 - `chatwork_room_id`
 
+Vault パスワードファイル `~/.vault_pass` を作成します。パスワードは `vault.yml` の暗号化に使ったものと同じ必要があります。
+リポジトリ外に置き、権限は 600 にします。
+
+```bash
+stty -echo; printf "Vault password: "; read -r VP; stty echo; echo
+printf '%s\n' "$VP" > ~/.vault_pass; unset VP
+chmod 600 ~/.vault_pass
+```
+
+[ansible/ansible.cfg](/home/takuya/terraform-lab/secure-3tier-iac-pipeline/ansible/ansible.cfg) の `vault_password_file` が `~/.vault_pass` を指しているため、`ansible-inventory --list` や `ansible-playbook` でもパスワード指定は不要です。
+`--graph` は変数を展開しないので、パスワードがなくても動きます。
+
+復号できるか確認します。
+
+```bash
+cd ansible
+ansible-vault view group_vars/all/vault.yml
+```
+
 まだ暗号化していない場合:
 
 ```bash
@@ -254,7 +300,11 @@ ansible-vault edit group_vars/all/vault.yml
 
 EC2 が起動してから、Ansible が対象インスタンスを見つけられるか確認します。
 
+venv を有効にし、`ansible/` ディレクトリで実行します(リポジトリ直下では、インベントリが見つからず失敗します)。
+
 ```bash
+source .venv/bin/activate
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 cd ansible
 ansible-inventory -i inventories/aws_ec2.yml --graph
 ```
@@ -376,6 +426,27 @@ ansible-playbook \
 
 - `aws sts get-caller-identity` が成功するか確認する
 - SSO 利用時は `aws sso login` を再実行する
+
+### `ansible-inventory` で boto3 / botocore の import エラーが出る
+
+- `which ansible-inventory` が `/usr/bin/ansible-inventory` になっていないか確認する(system 版は venv の boto3 を使えない)
+- venv を有効にして `pip install ansible-core boto3 botocore` を実行する
+- 入れ直した後は `hash -r` を実行するか、新しいシェルを開く
+
+### `ansible-inventory` で `unknown plugin 'amazon.aws.aws_ec2'` と出る
+
+- `ansible-galaxy collection install -r ansible/requirements.yml` を、venv を有効にして実行する
+- `ansible-galaxy collection list | grep amazon.aws` で入っているか確認する
+
+### `ansible-inventory` で `Unable to parse ... as an inventory source` と出る
+
+- 実行ディレクトリが `ansible/` になっているか確認する(リポジトリ直下で実行すると、パスが `./inventories/aws_ec2.yml` を指して失敗する)
+
+### `Attempting to decrypt but no vault secrets found` と出る
+
+- `~/.vault_pass` が存在するか確認する(手順 8-2 で作成)
+- `ansible/` ディレクトリで実行しているか確認する(`ansible.cfg` の `vault_password_file` が読まれる)
+- パスワードが `vault.yml` の暗号化に使ったものと一致するか、`ansible-vault view group_vars/all/vault.yml` で確認する
 
 ### `ansible-inventory` でホストが 0 台になる
 

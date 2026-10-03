@@ -1,6 +1,7 @@
 # プロジェクト共通変数
 project_name: "secure-3tier-iac-pipeline"
-environment: "prod"
+# [注意] environment は Ansible の予約語 (タスクの環境変数指定) のため app_environment を使う
+app_environment: "prod"
 aws_region: "ap-northeast-1"
 # [設計意図] アカウントIDはリポジトリに書かず、環境変数 AWS_ACCOUNT_ID から取得する
 # [注意] 実行前に export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
