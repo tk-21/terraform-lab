@@ -150,7 +150,7 @@ curl -X POST "$API_ENDPOINT/review" \
 
 1. テスト用リポジトリを作成（または既存リポジトリのPRを使用）
 2. `examples/sample_playbook_bad.yml` を含むブランチを作成してPRを開く
-3. `.github/workflows/example_ansible_review.yml` がトリガーされることを確認
+3. レビュー対象リポジトリに配置した `example_ansible_review.yml` ベースのワークフローがトリガーされることを確認
 4. GitHub Actions ログでレビュー処理が完了することを確認
 5. PRコメントにMarkdownレビュー結果が投稿されることを確認
 6. `ai-review: critical` と `do-not-merge` ラベルが付与されることを確認

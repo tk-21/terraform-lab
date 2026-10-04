@@ -314,7 +314,7 @@ LLM の出力は信用しすぎない、という設計を形にしたモジュ�
 | 種類 | ファイル | 用途 |
 |---|---|---|
 | レビュー実行用 | `github_actions/ansible-ai-review/action.yml` | 他リポジトリから使う Composite Action |
-| 自己デプロイ用 | `.github/workflows/deploy.yml` | このリポジトリ自身の Terraform / Lambda 配備 |
+| 自己デプロイ用 | `.github/workflows/ansible-ai-reviewer-deploy.yml`（モノレポ直下） | このリポジトリ自身の Terraform / Lambda 配備 |
 
 ### 7.2 Composite Action の流れ
 
@@ -405,7 +405,7 @@ flowchart TB
 現在の実装上のポイント:
 
 - Terraform では placeholder ZIP を作る
-- 実コードの配備は `.github/workflows/deploy.yml` が担当する
+- 実コードの配備は `.github/workflows/ansible-ai-reviewer-deploy.yml`（モノレポ直下）が担当する
 
 つまり Lambda のコード配備は完全 Terraform 管理ではなく、次のハイブリッドです。
 

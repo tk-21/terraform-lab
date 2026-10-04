@@ -139,9 +139,11 @@ Terraform を実行する作業ディレクトリは `terraform/environments/dev
 
 ## Step 1. AWS 側の前提を整える
 
-### 1-1. Bedrock モデルアクセスを有効化する
+### 1-1. Bedrock モデルの利用準備を確認する
 
-AWS Console で `us-east-1` を開き、Amazon Bedrock の Model access から Claude Sonnet を有効化してください。
+Bedrock の Model access ページは廃止され、サーバーレス基盤モデルは初回呼び出し時に自動で有効になります。画面での有効化操作は不要です。
+
+ただし Anthropic モデルは、アカウントで初めて使うときに用途情報の提出が必要な場合があります。初回のレビュー実行が `AccessDeniedException` などで拒否された場合は、`us-east-1` の Bedrock コンソール Playground で Claude Sonnet を一度実行し、案内に従って提出してください。
 
 このプロジェクトでは次のリージョン構成です。
 
@@ -150,7 +152,7 @@ AWS Console で `us-east-1` を開き、Amazon Bedrock の Model access から C
 
 ### 1-2. GitHub Actions 用 OIDC ロールを用意する
 
-このリポジトリの `.github/workflows/deploy.yml` は OIDC 前提です。少なくとも次を扱えるロールを GitHub Actions から引き受けられるようにしておくと、後のデプロイがスムーズです。
+モノレポ直下の `.github/workflows/ansible-ai-reviewer-deploy.yml` は OIDC 前提です。少なくとも次を扱えるロールを GitHub Actions から引き受けられるようにしておくと、後のデプロイがスムーズです。
 
 - Terraform に必要な作成・更新権限
 - Lambda 更新権限
@@ -267,7 +269,7 @@ Terraform で作られる Lambda は最初 placeholder ZIP です。レビュー
 
 ### 方法A. GitHub Actions でデプロイする
 
-このリポジトリの GitHub Secrets に `AWS_ROLE_ARN` を登録し、`main` に push すると `.github/workflows/deploy.yml` が実行されます。
+このリポジトリの GitHub Secrets に `AWS_ROLE_ARN` を登録し、`main` に push すると（`ansible-playbook-ai-reviewer/terraform/**` または `lambda/**` の変更時）、モノレポ直下の `.github/workflows/ansible-ai-reviewer-deploy.yml` が実行されます。
 
 必要な GitHub Secret:
 
@@ -329,7 +331,7 @@ aws lambda wait function-updated \
 
 ### 6-1. サンプル workflow を配置する
 
-このリポジトリの [example_ansible_review.yml](/home/takuya/terraform-lab/ansible-playbook-ai-reviewer/.github/workflows/example_ansible_review.yml) をベースに、レビュー対象リポジトリの `.github/workflows/` に配置します。
+このリポジトリの [example_ansible_review.yml](examples/workflows/example_ansible_review.yml) をベースに、レビュー対象リポジトリの `.github/workflows/` に配置します。
 
 ### 6-2. 最小構成の例
 
