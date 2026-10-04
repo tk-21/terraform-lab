@@ -17,6 +17,9 @@ override.tf.json
 # Terraform provider lock files are generated locally.
 .terraform.lock.hcl
 
+# archive_file が毎回生成する placeholder ZIP
+**/modules/reviewer_lambda/placeholder.zip
+
 *.tfvars
 *.tfvars.json
 
@@ -89,6 +92,7 @@ dist/
 .zprofile
 .profile
 .gitconfig
+.gitmodules
 .ripgreprc
 .mcp.json
 # 末尾スラッシュなしでファイル/ディレクトリ両方にマッチさせる
