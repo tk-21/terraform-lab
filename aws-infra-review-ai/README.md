@@ -69,7 +69,7 @@ supervisor（統合・トレードオフ解消）
 
 まず何をするプロジェクトなのかを最短で掴みたい場合は、この 8 ステップです。
 
-1. AWS で Bedrock モデルアクセスを有効化する
+1. Bedrock モデルの利用準備を確認する（通常は操作不要）
 2. Terraform backend 用の S3 バケットと DynamoDB テーブルを作る
 3. `terraform.tfvars` を用意する
 4. `environments/dev` で `terraform init`
@@ -108,20 +108,15 @@ aws sts get-caller-identity
 
 ## ハンズオン 0: AWS 側の事前準備
 
-### 0-1. Bedrock モデルアクセスを有効化する
+### 0-1. Bedrock モデルの利用準備を確認する
 
 このプロジェクトでは Bedrock の以下モデルを利用します。
 
 - `anthropic.claude-3-5-sonnet-20241022-v2:0`
 
-AWS コンソールで次を実施してください。
+Bedrock の Model access ページは廃止され、サーバーレス基盤モデルは初回呼び出し時に自動で有効になります。画面での有効化操作は不要です。
 
-1. `Amazon Bedrock`
-2. `モデルアクセス`
-3. Anthropic Claude 3.5 Sonnet を申請・有効化
-4. リージョンが `ap-northeast-1` であることを確認
-
-これを忘れると、レビュー実行時に Bedrock 呼び出しが失敗します。
+ただし Anthropic モデルは、アカウントで初めて使うときに用途情報の提出が必要な場合があります。レビュー実行時に Bedrock 呼び出しが拒否された場合は、Bedrock コンソールの Playground で対象モデルを一度実行し、案内に従って提出してください。リージョンが `ap-northeast-1` であることも確認してください。
 
 ### 0-2. Terraform backend を作る
 
@@ -751,7 +746,7 @@ aws stepfunctions get-execution-history \
 
 よくある原因:
 
-- Bedrock モデルアクセス未有効化
+- Bedrock の Anthropic モデル利用の初回用途情報が未提出
 - Lambda タイムアウト
 - IAM 権限不足
 - 画像/PDF が 3MB を超過

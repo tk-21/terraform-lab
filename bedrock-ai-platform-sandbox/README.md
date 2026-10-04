@@ -206,21 +206,18 @@ aws sts get-caller-identity
 
 ---
 
-### Step 0: Bedrockモデルアクセスの有効化
+### Step 0: Bedrockモデルの利用準備の確認
 
-**このステップを省略するとterraform applyが失敗します。** AWSコンソールから事前にモデルアクセスを有効化してください。
+Bedrock の Model access ページは廃止され、サーバーレス基盤モデルは初回呼び出し時に自動で有効になります。画面での有効化操作は不要です。
 
-1. AWSコンソールにログイン
-2. リージョンを **ap-northeast-1（東京）** に変更
-3. `Amazon Bedrock` → `Model access` に移動
-4. 以下のモデルにチェックを入れて「Request model access」をクリック
+本プロジェクトで使うモデルは次のとおりです（いずれも Amazon 製のため、Anthropic のような用途情報の提出は不要です）。
 
 | モデル名 | 用途 |
 |---------|------|
 | Amazon Nova Lite | dev のルーターモデル（軽量・複雑タスク共通） |
 | Titan Text Embeddings V2 | Knowledge Base埋め込みモデル |
 
-> アクセス承認は通常即時〜数分で完了します。「Access status」が「Access granted」になったことを確認してから次のステップに進んでください。
+> リージョンは **ap-northeast-1（東京）** で、対象モデルが提供されていることを確認してください（確認コマンドはトラブルシューティング参照）。
 
 ---
 
@@ -826,9 +823,9 @@ aws dynamodb delete-table \
 
 ### Error: AccessDeniedException: You don't have access to the model
 
-**原因**: Bedrockモデルのアクセスが有効化されていない。
+**原因**: モデルが当該リージョンで提供されていない、またはモデル ID が誤っている。
 
-**解決策**: [Step 0: Bedrockモデルアクセスの有効化](#step-0-bedrockモデルアクセスの有効化) を実行してください。
+**解決策**: [Step 0: Bedrockモデルの利用準備の確認](#step-0-bedrockモデルの利用準備の確認) を確認してください。
 
 ```bash
 # 現在アクセスできるモデルを確認

@@ -249,7 +249,7 @@ bedrock-agent-resource-reporter/
 
 | フェーズ | やること | 目安時間 |
 |---|---|---|
-| 1. 事前準備 | ツール確認、AWS認証、Bedrockモデルアクセス有効化 | 10〜15分 |
+| 1. 事前準備 | ツール確認、AWS認証、Bedrockモデル利用準備の確認 | 10〜15分 |
 | 2. 設定確認 | `terraform.tfvars` の確認、必要なら値を変更 | 5分 |
 | 3. デプロイ | `terraform init` → `terraform plan` → `terraform apply` | 10分前後 |
 | 4. 動作確認 | Bedrock Agent を実行し、S3 と SNS の結果を確認 | 10分 |
@@ -329,19 +329,13 @@ aws sts get-caller-identity
 
 環境変数で直接指定する場合は、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_DEFAULT_REGION` を設定してください。
 
-### 4. Bedrock のモデルアクセスを有効化する
+### 4. Bedrock のモデル利用準備を確認する
 
-Claude 3 Haiku のモデルアクセスがないと、Terraform で Agent を作成しても利用できません。デプロイ前に必ず確認します。
+Bedrock の Model access ページは廃止され、サーバーレス基盤モデルは初回呼び出し時に自動で有効になります。画面での有効化操作は不要です。
 
-1. AWS コンソールでリージョンを `ap-northeast-1` に切り替える
-2. `Amazon Bedrock` を開く
-3. 左メニューの `Model access` を開く
-4. `Manage model access` を押す
-5. `Anthropic` の `Claude 3 Haiku` を選択する
-6. `Request model access` を実行する
-7. ステータスが `Access granted` になることを確認する
+ただし Anthropic モデル（Claude 3 Haiku）は、アカウントで初めて使うときに用途情報の提出が必要な場合があります。Agent の実行が拒否された場合は、`ap-northeast-1` の Bedrock コンソール Playground で Claude 3 Haiku を一度実行し、案内に従って提出してください。
 
-> モデルアクセスはリージョン単位です。東京リージョン `ap-northeast-1` で有効になっていることが重要です。
+> モデルの提供状況はリージョン単位です。東京リージョン `ap-northeast-1` で対象モデルが利用できることを、下記のトラブルシューティングのコマンドで確認できます。
 
 ### 5. `terraform.tfvars` を確認する
 
@@ -539,7 +533,7 @@ terraform destroy
 
 #### `Error: Error creating Bedrock Agent`
 
-Bedrock のモデルアクセスが有効になっていない可能性があります。まず Step 4 を見直してください。
+モデルが当該リージョンで提供されていない、または Anthropic 初回の用途情報が未提出の可能性があります。まず Step 4 を見直してください。
 
 ```bash
 aws bedrock list-foundation-models \

@@ -331,15 +331,15 @@ aws sts get-caller-identity
 - IAM ロール・ポリシーの作成
 - S3（Terraform バックエンド用）
 
-### Amazon Bedrock モデルアクセス
+### Amazon Bedrock モデルの利用準備
 
-デプロイ前に、マネジメントコンソールで以下のモデルへのアクセスを有効化してください。
+Bedrock の Model access ページは廃止され、サーバーレス基盤モデルは初回呼び出し時に自動で有効になります。画面での有効化操作は不要です。
 
-1. AWS コンソール → **Amazon Bedrock** → **モデルアクセス**
-2. 以下を有効化:
-   - `Anthropic / Claude 3 Haiku` （軽量タスク用）
-   - `Anthropic / Claude 3.5 Sonnet` （複雑タスク用）
-3. リクエスト承認は通常即時〜数分で完了する
+使用モデル:
+- `Anthropic / Claude 3 Haiku` （軽量タスク用）
+- `Anthropic / Claude 3.5 Sonnet` （複雑タスク用）
+
+Anthropic モデルは、アカウントで初めて使うときに用途情報の提出が必要な場合があります。呼び出しが拒否された場合は、Bedrock コンソールの Playground で一度実行し、案内に従って提出してください。
 
 ```bash
 # 有効化されているか確認
@@ -775,8 +775,8 @@ aws s3 ls s3://tfstate-event-driven-pipeline
 Error: AccessDeniedException: You don't have access to the model with the specified model ID.
 ```
 
-→ マネジメントコンソールで Bedrock のモデルアクセスを有効化してください（「前提条件」参照）。
-承認後、有効化まで数分かかる場合があります。
+→ Anthropic モデルの初回用途情報が未提出の可能性があります（「前提条件」参照）。
+Playground で一度実行して提出後、反映まで数分かかる場合があります。
 
 ### API Key なしでリクエストすると 403 になる
 
