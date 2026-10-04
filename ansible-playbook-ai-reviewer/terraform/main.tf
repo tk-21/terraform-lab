@@ -2,7 +2,7 @@
 # IAMロール・SSMパラメータ・Lambda・API Gatewayを構築
 
 terraform {
-  required_version = ">= 1.9.0"
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -16,9 +16,8 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.aws_region
-}
+# provider / backend はこのモジュールでは定義しない。
+# 呼び出し元 (environments/{env}) が provider と backend を持つ。
 
 # 現在のAWSアカウント情報を取得
 data "aws_caller_identity" "current" {}

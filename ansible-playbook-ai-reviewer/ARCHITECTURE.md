@@ -114,16 +114,17 @@ ansible-playbook-ai-reviewer/
 ├── README.md
 ├── ARCHITECTURE.md              # この文書
 ├── docs/
-│   ├── architecture.md          # 補助的な詳細資料
-│   ├── review_criteria.md
-│   └── runbook.md
+│   └── review_criteria.md
 ├── lambda/playbook_reviewer/    # 実行ロジック本体
 ├── terraform/                   # AWSインフラ定義
 ├── github_actions/ansible-ai-review/
 │   ├── action.yml               # 再利用可能なComposite Action
 │   └── README.md
-├── .github/workflows/           # このリポジトリ自身のCI/CD
 └── examples/                    # good / bad Playbookサンプル
+    └── workflows/               # 他リポジトリ向けサンプルワークフロー（実行されない）
+
+# このプロジェクトのCI/CDはモノレポ直下:
+#   ../.github/workflows/ansible-ai-reviewer-deploy.yml
 ```
 
 ### 4.1 大きなレイヤー分割
@@ -133,8 +134,8 @@ ansible-playbook-ai-reviewer/
 | `github_actions/ansible-ai-review` | 他リポジトリから使う再利用 Action |
 | `lambda/playbook_reviewer` | Playbook 解析・Bedrock 呼び出し・PR 反映 |
 | `terraform/` | API Gateway / Lambda / IAM / SSM の定義 |
-| `.github/workflows` | このリポジトリ自身のデプロイとサンプル運用 |
-| `docs/`, `examples/` | 利用者向け説明とデモ資産 |
+| `../.github/workflows`（モノレポ直下） | このプロジェクト自身のデプロイ |
+| `docs/`, `examples/` | レビュー観点の詳細とデモ資産・サンプルワークフロー |
 
 ---
 
@@ -553,17 +554,16 @@ flowchart TD
     Infra --> Py --> Deploy
 ```
 
-### 11.2 `deploy.yml` の責務
+### 11.2 `ansible-ai-reviewer-deploy.yml` の責務
 
-このワークフローは 2 段構成です。
+このワークフローは 2 段構成です。`terraform apply` は実行しません。
 
 - `terraform` job
   - `fmt`
   - `init`
   - `validate`
-  - `plan`
-  - `main` では `apply`
-- `deploy-lambda` job
+  - `plan`（PR のみ。結果を PR にコメント）
+- `deploy-lambda` job（`main` への push、または `main` での手動実行のみ）
   - Python 依存解決
   - ZIP 化
   - `update-function-code`
@@ -649,11 +649,11 @@ Action 側は Playbook を Base64 化して送っていますが、`parse_playbo
 
 Action は `jq '.issues | length'` を読みにいきますが、`index.py` の成功レスポンスは `issues_count` を返しており、`issues` 配列そのものは返していません。
 
-### 14.4 `deploy.yml` は Terraform 実行ポリシーとズレる
+### 14.4 Terraform 実行ポリシーとの整合（解消済み）
 
-このリポジトリのローカル指示では `terraform apply` はユーザー実行が原則ですが、GitHub Actions の `deploy.yml` では `main` push 時に自動 `terraform apply -auto-approve` します。
+このリポジトリのローカル指示は `terraform apply` をユーザー実行とする方針です。以前のワークフローは `main` push 時に自動 `terraform apply -auto-approve` しており、方針とズレていました。
 
-運用ポリシーとしてどう扱うかは、今後整理対象です。
+現在はワークフローから `apply` を外し、CI は `plan` と Lambda デプロイのみを行います。CI 用 IAM ロールも、`ReadOnlyAccess` と Lambda 更新・state 読み書きだけに絞っています（`terraform/bootstrap/`）。インフラ変更は手元の `terraform apply` で行います。
 
 ### 14.5 Terraform モジュール構成は良いが、Lambda コード管理は分離型
 

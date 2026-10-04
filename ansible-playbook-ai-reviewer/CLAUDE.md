@@ -18,7 +18,8 @@ ansible-playbook-ai-reviewer/
 │   ├── main.tf                        # IAM・Lambda・API Gateway
 │   ├── variables.tf
 │   ├── outputs.tf
-│   ├── backend.tf
+│   ├── environments/dev/              # backend・provider を持つ実行単位（module "../.." を呼ぶ）
+│   ├── bootstrap/                     # GitHub Actions OIDC ロール（独立 state）
 │   └── modules/
 │       ├── reviewer_lambda/
 │       │   ├── main.tf
@@ -46,9 +47,8 @@ ansible-playbook-ai-reviewer/
 │   └── workflows/
 │       └── example_ansible_review.yml # サンプル: Ansible PRのレビューワークフロー（実行されない）
 └── docs/
-    ├── architecture.md
-    ├── review_criteria.md             # レビュー観点の詳細説明
-    └── runbook.md
+    └── review_criteria.md             # レビュー観点の詳細説明
+    # 構成・運用の説明は ARCHITECTURE.md / README.md に集約（docs/ に重複を置かない）
 ```
 
 ### CI/CD の配置（モノレポ）
