@@ -44,9 +44,14 @@ modules/
 environments/
   {env}/
     main.tf
-    terraform.tfvars
+    terraform.tfvars.example   # コミットするのはこれだけ
     backend.tf
 ```
+
+### tfvars の扱い
+- `*.tfvars` は**常にローカル管理**（`.gitignore` で除外、コミットしない）
+- 実値を持つ `terraform.tfvars` は各自が `.example` からコピーして作成する
+- CI では `-var` / `TF_VAR_*` / GitHub Variables・Secrets で値を渡す
 
 ## IAM設計原則
 

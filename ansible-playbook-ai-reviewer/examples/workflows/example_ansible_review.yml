@@ -1,5 +1,12 @@
 # 使用例: Ansible PlaybookのPR時にAIレビューを実行するワークフロー
 # このファイルをAnsible管理リポジトリの .github/workflows/ にコピーして使う
+#
+# 注記:
+#   モノレポ直下の .github/workflows/ 以外は GitHub Actions に読まれないため、
+#   これは実行されないサンプルとして examples/workflows/ に置いている。
+#   コピー先では uses のパスを
+#   `<org>/ansible-playbook-ai-reviewer/github_actions/ansible-ai-review@<ref>`
+#   形式に置き換えること。
 
 name: Ansible Playbook AI Review
 

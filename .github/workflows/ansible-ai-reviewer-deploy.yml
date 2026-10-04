@@ -1,10 +1,30 @@
-name: Deploy
+# ============================================================
+# ansible-playbook-ai-reviewer: Terraform + Lambda デプロイワークフロー
+#
+# 注記:
+#   GitHub Actions はリポジトリ直下の .github/workflows/ しか読まないため、
+#   モノレポのこのワークフローはルートに置き、paths / working-directory は
+#   すべて ansible-playbook-ai-reviewer/ プレフィックス付きで指定している。
+#   (旧: ansible-playbook-ai-reviewer/.github/workflows/deploy.yml は無効だった)
+#
+# Secrets:
+#   AWS_ROLE_ARN : OIDC で AssumeRole する IAM ロールの ARN
+# ============================================================
+
+name: ansible-ai-reviewer Deploy
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+    paths:
+      - "ansible-playbook-ai-reviewer/terraform/**"
+      - "ansible-playbook-ai-reviewer/lambda/**"
+      - ".github/workflows/ansible-ai-reviewer-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ansible-playbook-ai-reviewer/terraform/**"
+      - "ansible-playbook-ai-reviewer/lambda/**"
   workflow_dispatch:
 
 permissions:
@@ -16,6 +36,8 @@ env:
   TF_VERSION: '1.9.x'
   PYTHON_VERSION: '3.12'
   AWS_REGION: 'ap-northeast-1'
+  PROJECT_DIR: 'ansible-playbook-ai-reviewer'
+  WORKING_DIR: 'ansible-playbook-ai-reviewer/terraform/environments/dev'
 
 jobs:
   terraform:
@@ -23,7 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: terraform/environments/dev
+        # defaults.run では env コンテキストが使えないためリテラルで指定する
+        working-directory: ansible-playbook-ai-reviewer/terraform/environments/dev
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +64,7 @@ jobs:
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
-        working-directory: terraform/
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
 
       - name: Terraform Init
         run: terraform init
@@ -61,7 +84,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const output = `### Terraform Plan結果 🔍
+            const output = `### Terraform Plan結果 (ansible-ai-reviewer) 🔍
 
             **ステータス**: ${{ steps.plan.outcome == 'success' && '✅ 成功' || '❌ 失敗' }}
 
@@ -76,6 +99,7 @@ jobs:
             *実行者: @${{ github.actor }}, ワークフロー: \`${{ github.workflow }}\`*`;
 
             // 既存の同種コメントを検索して更新（重複防止）
+            // モノレポ内の他プロジェクトのコメントと混ざらないよう識別子を含める
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -84,7 +108,7 @@ jobs:
 
             const botComment = comments.find(comment =>
               comment.user.type === 'Bot' &&
-              comment.body.includes('Terraform Plan結果')
+              comment.body.includes('Terraform Plan結果 (ansible-ai-reviewer)')
             );
 
             if (botComment) {
@@ -133,6 +157,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: 依存関係インストール & パッケージング
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           # arm64向けにmanylinux2014_aarch64バイナリをインストール
           pip install -r lambda/playbook_reviewer/requirements.txt \
@@ -144,6 +169,7 @@ jobs:
           zip -r ../../lambda_package.zip .
 
       - name: Lambdaへデプロイ
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           aws lambda update-function-code \
             --function-name ansible-ai-reviewer \

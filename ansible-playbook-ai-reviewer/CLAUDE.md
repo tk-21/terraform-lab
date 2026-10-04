@@ -40,18 +40,25 @@ ansible-playbook-ai-reviewer/
 │   └── ansible-ai-review/
 │       ├── action.yml                 # カスタムGitHub Action定義
 │       └── README.md
-├── .github/
-│   └── workflows/
-│       ├── deploy.yml                 # Terraform + Lambda デプロイ
-│       └── example_ansible_review.yml # サンプル: Ansible PRのレビューワークフロー
 ├── examples/
 │   ├── sample_playbook_good.yml       # ベストプラクティス準拠例
-│   └── sample_playbook_bad.yml        # 意図的に問題を含む例（レビューデモ用）
+│   ├── sample_playbook_bad.yml        # 意図的に問題を含む例（レビューデモ用）
+│   └── workflows/
+│       └── example_ansible_review.yml # サンプル: Ansible PRのレビューワークフロー（実行されない）
 └── docs/
     ├── architecture.md
     ├── review_criteria.md             # レビュー観点の詳細説明
     └── runbook.md
 ```
+
+### CI/CD の配置（モノレポ）
+
+GitHub Actions はリポジトリ直下の `.github/workflows/` しか読まない。
+このプロジェクトの実行ワークフローは**モノレポ直下**に置く:
+
+- `../.github/workflows/ansible-ai-reviewer-deploy.yml` : Terraform + Lambda デプロイ
+  （`paths:` と `working-directory` は `ansible-playbook-ai-reviewer/` プレフィックス付き）
+- `examples/workflows/example_ansible_review.yml` : 他リポジトリ向けサンプル（実行されない）
 
 ---
 

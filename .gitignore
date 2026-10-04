@@ -80,7 +80,24 @@ dist/
 *.log
 
 ################
-# Claude
+# Shell / ホーム直下の dotfiles
+# (サンドボックスが拒否パスの位置にダミーファイルとして作ることがある)
 ################
-.claude/settings.json
-.claude/settings.local.json
+.bashrc
+.bash_profile
+.zshrc
+.zprofile
+.profile
+.gitconfig
+.ripgreprc
+.mcp.json
+# 末尾スラッシュなしでファイル/ディレクトリ両方にマッチさせる
+.idea
+.vscode
+
+################
+# Claude (skills は共有して git 管理 / hooks・settings は個人用)
+################
+**/.claude/hooks/
+**/.claude/settings.json
+**/.claude/settings.local.json

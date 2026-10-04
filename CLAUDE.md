@@ -74,6 +74,38 @@ Claude Code は以下を禁止とする:
 
 ---
 
+## GitHub Actions（モノレポ）
+
+GitHub Actions はリポジトリ直下の `.github/workflows/` しか読まない。
+各プロジェクト配下の `.github/workflows/` は無効なので作らないこと。
+
+ワークフローを追加するときの必須ルール:
+- ファイル名は `<project>-<purpose>.yml`（例: `bedrock-finops-terraform.yml`）
+- `pull_request` / `push` トリガーには必ず `paths:` を付け、
+  `<project>/**` とそのワークフロー自身のみを対象にする（`paths:` なしは禁止）
+- `working-directory` は `<project>/` プレフィックス付きで指定する
+  （`defaults.run.working-directory` では `env` コンテキストが使えないためリテラルで書く）
+- `workflow_dispatch` のみのワークフローは `paths:` 不要
+- PR コメントの重複防止用の識別文字列にはプロジェクト名を含める
+
+---
+
+## tfvars の扱い
+
+`*.tfvars` / `*.tfvars.json` は**常にローカル管理**（コミットしない）。
+- リポジトリには `terraform.tfvars.example` のみコミットする
+- 機密でない値でも `terraform.tfvars` はコミットしない
+- CI では `-var` / `TF_VAR_*` / GitHub Variables・Secrets で値を渡す
+
+---
+
+## .claude/ の扱い
+
+- `.claude/skills/` は**共有**する（git 管理する）。ルートの `.claude/skills/` に一本化し、プロジェクト個別の重複を作らない。
+- `.claude/hooks/` と `.claude/settings*.json` は個人用（git 管理しない）。
+
+---
+
 ## .gitignore
 
 各プロジェクトに以下を必ず含めること:
