@@ -626,8 +626,13 @@ GitHub Actions に入る前に API 単体で疎通確認しておくと、切り
 
 ### 7-1. 環境変数を入れる
 
+エンドポイントは例の URL をコピーせず、Terraform の output から取得します（`xxxxxxxx` のままだと `Could not resolve host` になります）。
+
 ```bash
-export AI_REVIEWER_API_ENDPOINT="https://xxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/v1/review"
+# プロジェクトのルート (ansible-playbook-ai-reviewer/) で実行する
+export AI_REVIEWER_API_ENDPOINT="$(terraform -chdir=terraform/environments/dev output -raw api_endpoint)"
+echo "$AI_REVIEWER_API_ENDPOINT"   # https://<id>.execute-api.ap-northeast-1.amazonaws.com/v1/review になっていること
+
 export AI_REVIEWER_API_KEY="$(aws ssm get-parameter \
   --name "/ansible-ai-reviewer/api-gateway-key" \
   --with-decryption \
@@ -644,24 +649,124 @@ export AI_REVIEWER_API_SECRET="$(aws ssm get-parameter \
 
 ### 7-2. サンプル Playbook で呼び出す
 
+> **このテストは実際の PR にコメントを投稿します。** Lambda は、指定した `owner` / `repo` / `pr_number` に対して、SSM の GitHub Token でコメントとラベルを付けます。`your-org/your-repo` のような架空の値だと、Bedrock の呼び出しまでは成功しても、コメント投稿で `500`（PRコメント投稿に失敗しました）になります。
+> **GitHub Token がアクセスできるリポジトリの、実在する PR 番号**を指定してください。テスト用の PR を 1 つ作っておくと安全です。
+
+**PR 番号とは**
+
+GitHub が Pull Request ごとに自動で付ける連番の ID です。リポジトリごとに作成順に `#1`、`#2`、`#3` と増え、Issue と同じ番号の系列を共有します。Lambda は `owner` / `repo` / `pr_number` の 3 つでコメントの投稿先を特定します（例: `tk-21` / `terraform-lab` / `12` → `https://github.com/tk-21/terraform-lab/pull/12`）。
+
+確認方法:
+
+- PR の画面で、タイトルの横に `#12` のように表示されている
+- URL の末尾（`.../pull/12` なら `12`）
+- CLI: `gh pr list --repo <owner>/<repo>`
+
+**テスト用の PR を用意する手順**
+
+**1. 作業中の変更を整理する**
+
+ブランチを切る前に、未コミットの変更がないか確認します。`git switch -c` は未コミットの変更をそのまま新しいブランチに持ち込むため、無関係な変更がテスト用 PR に混ざらないようにします。
+
 ```bash
-curl -X POST "$AI_REVIEWER_API_ENDPOINT" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: $AI_REVIEWER_API_KEY" \
-  -d "{
-    \"playbook_content\": \"$(python3 - <<'PY'
-from pathlib import Path
-import json
-print(json.dumps(Path('examples/sample_playbook_bad.yml').read_text())[1:-1])
-PY
-)\",
-    \"playbook_filename\": \"sample_playbook_bad.yml\",
-    \"github_repo_owner\": \"your-org\",
-    \"github_repo_name\": \"your-repo\",
-    \"pr_number\": 1,
-    \"api_secret\": \"$AI_REVIEWER_API_SECRET\"
-  }" | jq .
+git status --short
 ```
+
+出力がある場合は、先にコミットするか、`git stash -u` で退避します。
+
+**2. ブランチを作る**
+
+```bash
+git switch main
+git pull
+git switch -c test/ai-review
+```
+
+**3. 小さな変更を 1 つコミットして push する**
+
+PR には何か差分が必要です。Step 8 で Action も試せるよう、Playbook（`.yml`）を 1 行だけ変更します。
+
+```bash
+echo "# AI review test" >> ansible-playbook-ai-reviewer/examples/sample_playbook_bad.yml
+git add ansible-playbook-ai-reviewer/examples/sample_playbook_bad.yml
+git commit -m "test: AI レビュー動作確認用の変更"
+git push -u origin test/ai-review
+```
+
+**4. PR を作る**
+
+GitHub CLI を使う場合:
+
+```bash
+gh pr create \
+  --base main \
+  --head test/ai-review \
+  --title "test: AI レビュー動作確認" \
+  --body "AI レビューの動作確認用。マージしない。"
+```
+
+実行すると、最後に PR の URL が表示されます。
+
+```
+https://github.com/<owner>/<repo>/pull/12
+```
+
+ブラウザで作る場合は、push 後にリポジトリを開くと表示される **Compare & pull request** ボタンを押し、**Create pull request** を押します。
+
+**5. PR 番号を `TEST_PR` に入れる**
+
+URL の末尾の数字が PR 番号です（上の例なら `12`）。
+
+```bash
+export TEST_PR=12
+```
+
+PR 番号は、`gh pr list --repo <owner>/<repo>` でも確認できます。
+
+**6. テスト後の片付け**
+
+PR はマージせず開いたままで構いません。終わったら閉じて、ブランチを削除します。
+
+```bash
+gh pr close test/ai-review --delete-branch
+git switch main
+```
+
+> Lambda がブランチの内容を取得するわけではありません。PR は、コメントの投稿先として存在すれば足ります。Playbook の内容は、Step 7 のリクエストで直接送っています。
+
+> 存在しない番号を指定すると、Lambda がコメントを投稿できず `500` になります。GitHub Token には、そのリポジトリの Pull requests と Issues の書き込み権限が必要です。
+
+```bash
+# プロジェクトのルート (ansible-playbook-ai-reviewer/) で実行する
+export TEST_OWNER="<GitHubのユーザー名または組織名>"
+export TEST_REPO="<リポジトリ名>"
+export TEST_PR=<実在するPR番号>
+
+# JSON は jq で組み立てる（YAML の引用符や改行で壊れない）
+jq -n \
+  --rawfile content examples/sample_playbook_bad.yml \
+  --arg owner "$TEST_OWNER" \
+  --arg repo "$TEST_REPO" \
+  --argjson pr "$TEST_PR" \
+  --arg secret "$AI_REVIEWER_API_SECRET" \
+  '{
+    playbook_content: $content,
+    playbook_filename: "sample_playbook_bad.yml",
+    github_repo_owner: $owner,
+    github_repo_name: $repo,
+    pr_number: $pr,
+    api_secret: $secret
+  }' \
+| curl -sS -X POST "$AI_REVIEWER_API_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $AI_REVIEWER_API_KEY" \
+    -d @- \
+    --max-time 120 \
+| jq .
+```
+
+- `examples/sample_playbook_bad.yml` は相対パスです。プロジェクトのルートで実行しないと `No such file` になります。
+- レビューは Bedrock の呼び出しを含むため、数十秒かかることがあります。
 
 期待されるレスポンス例:
 
@@ -671,7 +776,8 @@ PY
   "overall_score": 35,
   "risk_level": "HIGH",
   "issues_count": 9,
-  "comment_url": "https://github.com/your-org/your-repo/pull/1#issuecomment-...",
+  "critical_count": 3,
+  "comment_url": "https://github.com/<owner>/<repo>/pull/<番号>#issuecomment-...",
   "message": "レビュー完了: 9件の問題を検出しました（スコア: 35/100）"
 }
 ```
@@ -695,6 +801,117 @@ PR 作成後、workflow が正常に動けば次を確認できます。
 ### 8-3. 再実行してコメント更新を確認する
 
 同じ PR に追加 commit を push すると、新しいコメントが増えるのではなく既存レビューコメントが更新されます。
+
+---
+
+## Step 9. 後片付け
+
+動作確認が終わったら、不要なリソースと認証情報を片付けます。`terraform destroy` を含むため、**実行はすべてユーザー自身が行います**。順序が大事なので、上から順に進めてください。
+
+### 9-1. テスト用の PR とブランチを閉じる
+
+```bash
+gh pr close test/ai-review --delete-branch
+git switch main
+```
+
+### 9-2. GitHub 側の設定を外す
+
+| 対象 | 操作 |
+|---|---|
+| レビュー対象リポジトリの Secrets | **Settings → Secrets and variables → Actions** で `AI_REVIEWER_API_ENDPOINT` / `AI_REVIEWER_API_KEY` / `AI_REVIEWER_API_SECRET` を削除 |
+| デプロイ用の Secret | このリポジトリの `AWS_ROLE_ARN` を削除 |
+| GitHub Token（PAT） | **Settings → Developer settings → Personal access tokens** で、このプロジェクト用のトークンを **Delete**（失効） |
+| レビュー workflow | レビュー対象リポジトリに置いた `.github/workflows/` のレビュー用ファイルを削除 |
+
+PAT は、SSM の値を消しても GitHub 側では有効なままです。必ず GitHub 側で失効させてください。
+
+### 9-3. メインのインフラを削除する
+
+```bash
+cd terraform/environments/dev
+terraform plan -destroy      # 削除対象を確認する
+terraform destroy
+```
+
+削除されるもの: Lambda、API Gateway（API キー・使用量プランを含む）、IAM ロール、CloudWatch Logs のロググループ、SSM パラメータ（`github-token` / `api-key-secret` / `api-gateway-key`）。
+
+> SSM パラメータは Terraform 管理のため、ここで同時に削除されます。値を控えておきたい場合は、`destroy` の前に取り出してください。
+
+### 9-4. GitHub Actions 用の IAM ロールを削除する
+
+```bash
+cd ../../bootstrap
+terraform plan -destroy -var="github_owner=<GitHubのユーザー名または組織名>"
+terraform destroy       -var="github_owner=<GitHubのユーザー名または組織名>"
+```
+
+- **メインのインフラ（9-3）を先に削除**します。ロールはその後で消します。
+- `create_oidc_provider=true` で作成した場合は、OIDC プロバイダも削除されます。モノレポの他のプロジェクトが同じプロバイダを使っているなら、**`destroy` しないでください**。その場合は、`terraform state rm 'aws_iam_openid_connect_provider.github[0]'` で state から外してから（zsh では `[0]` が glob と解釈されるため、引用符が必要です） `destroy` します。
+- 既定（`create_oidc_provider=false`）では、既存のプロバイダは参照しているだけなので削除されません。
+
+### 9-5. state 用の S3 バケットを削除する
+
+バケットは Terraform の管理外（Step 1-0 で手作業で作成）です。**9-3 と 9-4 の state がこのバケットにあるため、必ず最後に削除**します。
+
+バージョニングを有効にしているため、`aws s3 rm --recursive` だけでは空になりません。全バージョンと削除マーカーを消します。
+
+```bash
+BUCKET=terraform-state-ansible-ai-reviewer
+
+# 全バージョンを削除（1000 件を超える場合は繰り返す）
+aws s3api delete-objects --bucket "$BUCKET" --delete "$(
+  aws s3api list-object-versions --bucket "$BUCKET" --output json \
+    --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}'
+)"
+
+# 削除マーカーを削除
+aws s3api delete-objects --bucket "$BUCKET" --delete "$(
+  aws s3api list-object-versions --bucket "$BUCKET" --output json \
+    --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}'
+)"
+
+# バケットを削除
+aws s3api delete-bucket --bucket "$BUCKET" --region ap-northeast-1
+```
+
+- 「Objects が null」というエラーが出た場合は、そのバージョン種別が 0 件なので、その手順は不要です。
+- コンソールで行う場合は、バケットを開いて **Empty** → **Delete** の順に操作します（バージョンもまとめて空にできます）。
+
+### 9-6. ローカルの後始末
+
+```bash
+# 手動デプロイ（方法B）で作った成果物
+rm -f lambda_package.zip
+rm -rf lambda/playbook_reviewer/package
+
+# 設定した環境変数
+unset AI_REVIEWER_API_ENDPOINT AI_REVIEWER_API_KEY AI_REVIEWER_API_SECRET
+unset TEST_OWNER TEST_REPO TEST_PR GITHUB_TOKEN
+```
+
+`terraform/environments/dev/terraform.tfvars` は、コミット対象外のローカルファイルです。不要なら削除してください。
+
+### 9-7. 削除できたことを確認する
+
+```bash
+aws lambda get-function --function-name ansible-ai-reviewer --region ap-northeast-1
+# → ResourceNotFoundException になれば削除済み
+
+aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Option=BeginsWith,Values=/ansible-ai-reviewer/" \
+  --region ap-northeast-1
+# → Parameters が空であること
+
+aws apigateway get-rest-apis --region ap-northeast-1 \
+  --query "items[?contains(name,'ansible-ai-reviewer')]"
+# → [] であること
+
+aws s3api head-bucket --bucket terraform-state-ansible-ai-reviewer
+# → 404 になれば削除済み
+```
+
+Bedrock はリクエスト数に応じた従量課金で、使っていない間は費用が発生しません。常時課金されるリソースは、このプロジェクトにはありません。
 
 ---
 
