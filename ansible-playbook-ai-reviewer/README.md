@@ -491,6 +491,83 @@ aws lambda wait function-updated \
 | `AI_REVIEWER_API_KEY` | `/ansible-ai-reviewer/api-gateway-key` の値 |
 | `AI_REVIEWER_API_SECRET` | `/ansible-ai-reviewer/api-key-secret` に登録した値 |
 
+2 つの値の役割:
+
+| Secret | 検証する場所 | 役割 |
+|---|---|---|
+| `AI_REVIEWER_API_KEY` | API Gateway（`x-api-key` ヘッダー） | リクエストの受付、レート制限・使用量の管理 |
+| `AI_REVIEWER_API_SECRET` | Lambda（リクエスト body の `api_secret`） | SSM の値と照合する 2 つ目の認証。API キーが漏れても不正呼び出しを防ぐ |
+
+### 5-1. 登録内容を確認する
+
+値そのものを画面に出さずに確認します。
+
+**(1) SSM の値が `PLACEHOLDER` のままでないこと**
+
+```bash
+for name in github-token api-key-secret api-gateway-key; do
+  value=$(aws ssm get-parameter \
+    --name "/ansible-ai-reviewer/$name" \
+    --with-decryption \
+    --region ap-northeast-1 \
+    --query 'Parameter.Value' --output text)
+  if [ "$value" = "PLACEHOLDER" ]; then
+    echo "NG: $name は PLACEHOLDER のまま"
+  else
+    echo "OK: $name (${#value} 文字)"
+  fi
+done
+```
+
+3 つとも `OK` になれば登録済みです。`api-key-secret` は `openssl rand -hex 32` で作っていれば 64 文字になります。
+
+**(2) GitHub Secrets に 3 つ登録されていること**
+
+GitHub CLI を使う場合（`<owner>/<repo>` はレビュー対象リポジトリ）:
+
+```bash
+gh secret list --repo <owner>/<repo>
+```
+
+`AI_REVIEWER_API_ENDPOINT` / `AI_REVIEWER_API_KEY` / `AI_REVIEWER_API_SECRET` の 3 つが表示されれば登録済みです。画面で確認する場合は **Settings → Secrets and variables → Actions** を開きます。値は登録後に表示できないため、名前の有無だけを確認します。
+
+**(3) GitHub Secrets の値が SSM と一致していること**
+
+Secret の値は読み出せないので、API を実際に呼んで確認します。Bedrock は呼ばれず、費用は発生しません。次の手順で、2 層の認証がそれぞれ働いていることが分かります。
+
+```bash
+# エンドポイントとキーを取得
+cd terraform/environments/dev
+export AI_REVIEWER_API_ENDPOINT="$(terraform output -raw api_endpoint)"
+export AI_REVIEWER_API_KEY="$(aws ssm get-parameter \
+  --name /ansible-ai-reviewer/api-gateway-key --with-decryption \
+  --region ap-northeast-1 --query Parameter.Value --output text)"
+
+BODY='{"playbook_content":"- hosts: all","playbook_filename":"test.yml","github_repo_owner":"x","github_repo_name":"x","pr_number":1,"api_secret":"wrong-secret"}'
+
+# 1) API キーなし → API Gateway が拒否する
+curl -s -o /dev/null -w "キーなし        : %{http_code}\n" \
+  -X POST "$AI_REVIEWER_API_ENDPOINT" \
+  -H "Content-Type: application/json" -d "$BODY"
+
+# 2) API キーあり・secret が誤り → Lambda が拒否する
+curl -s -w "\nsecret誤り     : %{http_code}\n" \
+  -X POST "$AI_REVIEWER_API_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $AI_REVIEWER_API_KEY" -d "$BODY"
+```
+
+期待する結果:
+
+| 呼び出し | HTTP | 意味 |
+|---|---|---|
+| キーなし | `403`（`{"message":"Forbidden"}`） | API Gateway の認証が効いている |
+| キーあり・secret 誤り | `403`（`{"error":"認証に失敗しました"}`） | API キーは通り、Lambda の secret 照合が効いている |
+
+2 つ目が `403` でなく `400` になる場合は、body の必須フィールドが不足しています。必須フィールドの検査は secret の検証より先に行われるためです。
+
+GitHub に登録した値が正しいかは、Step 8 の PR 実行で最終確認します。`403` が返る場合は、Secret の値が SSM と食い違っています。
+
 ---
 
 ## Step 6. レビュー workflow を設定する
@@ -523,7 +600,7 @@ jobs:
 
       - name: Ansible Playbook AI Review
         id: ai-review
-        uses: your-org/ansible-playbook-ai-reviewer/github_actions/ansible-ai-review@main
+        uses: tk-21/terraform-lab/ansible-playbook-ai-reviewer/github_actions/ansible-ai-review@main
         with:
           api_endpoint: ${{ secrets.AI_REVIEWER_API_ENDPOINT }}
           api_key: ${{ secrets.AI_REVIEWER_API_KEY }}
@@ -532,6 +609,14 @@ jobs:
           playbook_paths: 'playbooks/**/*.yml,roles/**/*.yml'
           fail_on_critical: 'true'
 ```
+
+### 6-3. 設定の注意点
+
+- **`uses:` のパス**: アクションはモノレポのサブディレクトリにあるため、`<owner>/<repo>/<サブディレクトリ>@<ref>` の形式で指定します（上の例のとおり）。ブランチ名の `@main` は、運用では固定したいタグやコミット SHA に置き換えることを推奨します。
+- **リポジトリが private の場合**: 他のリポジトリからアクションを使うには、アクションを置いているリポジトリ（`terraform-lab`）の **Settings → Actions → General → Access** で、同じユーザー／組織のリポジトリからの利用を許可します。レビュー対象が同じリポジトリ内なら、`uses: ./ansible-playbook-ai-reviewer/github_actions/ansible-ai-review` でも構いません。
+- **PR コメントは Lambda が投稿する**: コメントの投稿とラベル付けは、Lambda が SSM の `github-token` で行います。ワークフローの `github_token`（既定は `github.token`）は、変更ファイル一覧の取得にだけ使います。そのため `permissions` の `pull-requests: write` は、ワークフロー自身がコメントしない場合でも、一覧取得に必要な `pull-requests: read` 以上を付けてください。
+- **fork からの PR**: Secrets が渡されないため、API 呼び出しは失敗します。
+- **失敗条件**: API が 200 以外を返した場合（`review_status=error`）と、`fail_on_critical: 'true'` で CRITICAL が検出された場合（`review_status=failed`）は、ステップが失敗します。
 
 ---
 

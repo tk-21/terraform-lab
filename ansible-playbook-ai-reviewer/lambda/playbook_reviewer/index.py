@@ -15,6 +15,7 @@ API Gateway (POST /review) から呼び出される
   overall_score : int
   risk_level    : str
   issues_count  : int
+  critical_count: int（CRITICAL の件数。Action の fail_on_critical 判定に使用）
   comment_url   : str
   message       : str
 """
@@ -173,13 +174,17 @@ def handler(event: dict, context: LambdaContext) -> dict:
         # ラベル付与失敗はログのみ（コメント投稿成功を優先）
         logger.warning("ラベル付与失敗", extra={"error": str(e)})
 
-    issues_count = len(review_result.get("issues", []))
+    issues = review_result.get("issues", [])
+    issues_count = len(issues)
+    # GitHub Action が fail_on_critical の判定に使うため、CRITICAL の件数を返す
+    critical_count = sum(1 for issue in issues if issue.get("severity") == "CRITICAL")
     logger.info(
         "レビュー完了",
         extra={
             "score": review_result.get("overall_score"),
             "risk_level": risk_level,
             "issues_count": issues_count,
+            "critical_count": critical_count,
             "comment_action": comment_result["action"],
         },
     )
@@ -189,6 +194,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
         "overall_score": review_result.get("overall_score"),
         "risk_level": risk_level,
         "issues_count": issues_count,
+        "critical_count": critical_count,
         "comment_url": comment_result["comment_url"],
         "message": f"レビュー完了: {issues_count}件の問題を検出しました（スコア: {review_result.get('overall_score')}/100）",
     })

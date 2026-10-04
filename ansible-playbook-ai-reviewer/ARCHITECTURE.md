@@ -293,6 +293,7 @@ LLM の出力は信用しすぎない、という設計を形にしたモジュ�
 | `overall_score` | 総合点 |
 | `risk_level` | HIGH / MEDIUM / LOW |
 | `issues_count` | 問題数 |
+| `critical_count` | CRITICAL の件数（Action の `fail_on_critical` 判定に使用） |
 | `comment_url` | 投稿したコメントURL |
 | `message` | 要約メッセージ |
 
@@ -621,33 +622,21 @@ LLM は判定補助に使いながら、入力前の事前スキャンと出力�
 
 この章は重要です。ここでは「理想仕様」ではなく、現状実装を読んだうえでのズレやリスクを整理します。
 
-### 14.1 Action と Lambda のリクエスト契約が一致していない
+### 14.1〜14.3 Action と Lambda の契約のズレ（解消済み）
 
-`action.yml` が送っている JSON:
+以前は `action.yml` と `index.py` の間に次のズレがあり、そのままでは動きませんでした。現在は `action.yml` を Lambda の仕様に合わせ、あわせて Lambda に `critical_count` を追加して解消しています。
 
-- `playbook_path`
-- `repo_owner`
-- `repo_name`
-- `github_token`
+| 項目 | 以前の Action | 現在 |
+|---|---|---|
+| エンドポイント | `$API_ENDPOINT/review`（`/review` が二重になる） | `api_endpoint` をそのまま使う（`/review` を含む完全 URL） |
+| フィールド名 | `playbook_path` / `repo_owner` / `repo_name` | `playbook_filename` / `github_repo_owner` / `github_repo_name` |
+| `api_secret` | `X-Api-Secret` ヘッダ（Lambda は読まない） | body の `api_secret` |
+| `playbook_content` | Base64 化（Lambda はデコードしない） | 生の YAML 文字列 |
+| `github_token` | body に含めていた（Lambda は未使用） | 送らない（Lambda が SSM のトークンを使う） |
+| レスポンスの読み取り | `.issues` 配列（Lambda は返さない） | `issues_count` / `critical_count` |
+| JSON の組み立て | シェルの文字列連結（引用符で壊れる） | `jq -n` で組み立て、body は stdin で渡す |
 
-`index.py` が必須としている JSON:
-
-- `playbook_filename`
-- `github_repo_owner`
-- `github_repo_name`
-- `api_secret`
-
-つまり現状のままだと、そのままでは 400 エラーになる可能性が高いです。
-
-さらに Action は `api_secret` を body ではなく `X-Api-Secret` ヘッダに入れており、Lambda 側はヘッダを見ていません。
-
-### 14.2 `playbook_content` のエンコード前提が一致していない
-
-Action 側は Playbook を Base64 化して送っていますが、`parse_playbook()` は YAML 生文字列を期待しています。Lambda 側に Base64 デコード処理はありません。
-
-### 14.3 Action 側のレスポンス期待形式が Lambda と一致していない
-
-Action は `jq '.issues | length'` を読みにいきますが、`index.py` の成功レスポンスは `issues_count` を返しており、`issues` 配列そのものは返していません。
+また、API が 200 以外を返した場合（`review_status=error`）も、ステップを失敗させるようにしました。
 
 ### 14.4 Terraform 実行ポリシーとの整合（解消済み）
 
